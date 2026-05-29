@@ -1,0 +1,74 @@
+{
+    "id": "tpl-direction-menu",
+    "name": "Direction Menu",
+    "description": "After each response, presents 4 directions derived from the scene's predicted trajectory: a variation, the opposite, an outside intrusion, and a wildcard.",
+    "icon": "fa-solid fa-compass",
+    "category": "content",
+    "tags": ["directions", "menu", "choices", "plot", "navigation"],
+    "version": 2,
+    "author": "",
+    "prompt": "After your response, privately assess where the scene's momentum is carrying it — what would naturally happen next if the story followed its own gravity. Do not output this assessment.\n\nThen append a direction menu at the very end of your response using this exact format:\n\n[DIRECTIONS]\n1. (variation) ...\n2. (opposite) ...\n3. (outside) ...\n4. (wildcard) ...\n[/DIRECTIONS]\n\nThe four options are defined relative to the predicted continuation:\n\n1. VARIATION — The scene goes roughly where it was heading, but something inside the beat shifts. A complication emerges, a power dynamic tilts, a truth surfaces mid-stride. Same destination, meaningfully different texture.\n\n2. OPPOSITE — The scene resists its own momentum. If tension is building toward a breaking point, it collapses — or detonates early. If closeness is deepening, something severs it. The reversal should feel like a real possibility that was always lurking.\n\n3. OUTSIDE — Something external enters and redirects everything. A person arrives, a message interrupts, an ambient sound from beyond the scene demands attention, a memory surfaces unbidden, a larger event in the world reaches in. The intrusion should come from the world around the scene, not from nowhere.\n\n4. WILDCARD — An option that doesn't fit the expected trajectory at all: strange, bold, tonally surprising, dramatically dangerous, or genuinely hard to predict. It should feel tempting even if it's risky.\n\nRules:\n- All four options must be meaningfully distinct from each other.\n- Describe what happens to the scene — not what {{user}} chooses to do.\n- One to two vivid, specific lines per option. No hedging, no vague gestures.\n- Place the [DIRECTIONS] block at the absolute end of your response, after all narrative.",
+    "phase": "both",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 100,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "mergeVariable": {
+        "enabled": false,
+        "variableName": "",
+        "extractPattern": "",
+        "fieldNames": [],
+        "keyFields": [],
+        "mode": "snapshot",
+        "stripFromResponse": true,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "",
+        "formatEmpty": ""
+    },
+    "regexScripts": [
+        {
+            "id": "dm-directions-display",
+            "scriptName": "Direction Menu",
+            "findRegex": "/\\[DIRECTIONS\\]([\\s\\S]*?)\\[\\/DIRECTIONS\\]/g",
+            "replaceString": "<div class=\"dm-menu-data\" style=\"display:none\">$1</div>",
+            "trimStrings": [],
+            "placement": [2],
+            "disabled": false,
+            "markdownOnly": true,
+            "promptOnly": false,
+            "runOnEdit": true,
+            "substituteRegex": 0,
+            "minDepth": null,
+            "maxDepth": null,
+            "stripFromMes": true,
+            "renderPlacement": "bottom"
+        }
+    ],
+    "connectionProfile": "",
+    "maxTokens": 8192,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-direction-menu"
+}

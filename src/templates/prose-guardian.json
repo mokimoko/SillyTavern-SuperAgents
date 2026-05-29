@@ -1,0 +1,58 @@
+{
+    "id": "tpl-prose-guardian",
+    "name": "Prose Guardian",
+    "description": "Dynamic per-turn writing directives. A separate LLM analyzes recent messages and produces specific, targeted instructions — banning repeated words, rotating rhetorical devices, and enforcing sensory variety. Far more effective than static instructions because the analysis LLM does the actual work.",
+    "icon": "fa-solid fa-shield-halved",
+    "category": "content",
+    "tags": ["prose", "quality", "dynamic", "anti-repetition", "sensory", "rhetoric"],
+    "version": 2,
+    "author": "",
+    "prompt": "You are a prose quality analyzer. Read the recent conversation and produce a concise set of SPECIFIC writing directives for the next response.\n\nPerform each analysis step below on the assistant messages in the conversation. Output ONLY the directives — no commentary, no preamble.\n\n### 1. REPETITION BAN LIST\nIdentify words, phrases, imagery, gestures, physical descriptions, and emotional beats that appear 2+ times across the assistant's recent messages. List them as a flat ban list. Be specific — include the exact words.\n\nOutput:\nBANNED WORDS/PHRASES: [comma-separated list of specific words and phrases to avoid]\n\n### 2. RHETORICAL DEVICE ROTATION\nIdentify which rhetorical devices appeared recently (simile, metaphor, personification, hyperbole, understatement, irony, anaphora, asyndeton, polysyndeton, chiasmus, antithesis, alliteration, onomatopoeia, synecdoche, oxymoron, paradox, aposiopesis). Pick 1-2 that have NOT appeared and recommend them.\n\nOutput:\nUSE THESE DEVICES: [1-2 specific devices] — avoid [devices used recently]\n\n### 3. SENTENCE STRUCTURE DIRECTIVE\nAnalyze the recent sentence patterns (length, rhythm, paragraph structure). Prescribe the opposite.\n\nOutput:\nSENTENCE STRUCTURE: [specific instruction — e.g. \"Recent messages averaged long complex sentences. Use short punchy fragments this turn. Open with a fragment.\"]\n\n### 4. VOCABULARY TARGETS\nIdentify 3-5 common/repeated word choices and suggest specific, concrete replacements.\n\nOutput:\nVOCABULARY: Replace [word] with [alternative]. Replace [word] with [alternative]. [etc.]\n\n### 5. SENSORY CHANNEL ROTATION\nIdentify which senses dominated (sight, sound, smell, touch, taste, temperature, proprioception, interoception). Prescribe underused channels.\n\nOutput:\nSENSORY FOCUS: [which senses to lead with this turn, which to deprioritize]\n\n### 6. SHOW-DON'T-TELL CHECK\nFlag any recent instances of told emotions (\"she felt angry\", \"he was nervous\"). If found, instruct to demonstrate through behavior, dialogue subtext, or physiological specifics instead.\n\nOutput:\nSHOW-DON'T-TELL: [specific instruction based on what was found, or \"No issues detected.\"]\n\nKeep the total output under 300 words. Be blunt and clinical — these are machine directives, not suggestions.",
+    "phase": "pre",
+    "injection": {
+        "position": 1,
+        "depth": 3,
+        "role": 0,
+        "order": 80,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "mergeVariable": {
+        "enabled": false
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 2048,
+        "responseKey": "prose_guardian",
+        "display": {
+            "enabled": false,
+            "position": "top",
+            "hookClass": "",
+            "dataMap": {},
+            "contentField": ""
+        }
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 2048,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-prose-guardian"
+}

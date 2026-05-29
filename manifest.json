@@ -1,0 +1,12 @@
+{
+  "display_name": "SuperAgents",
+  "loading_order": 110,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "nrahis",
+  "version": "0.8.0",
+  "homePage": "https://github.com/nrahis/SillyTavern-SuperAgents",
+  "auto_update": false
+}

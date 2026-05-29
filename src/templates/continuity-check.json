@@ -1,0 +1,70 @@
+{
+    "id": "tpl-continuity-check",
+    "name": "Continuity Check",
+    "description": "Post-gen contradiction detector. Reviews each response against conversation history and tracked state, flagging character mix-ups, location jumps, timeline drift, and environmental inconsistencies.",
+    "icon": "fa-solid fa-magnifying-glass",
+    "category": "content",
+    "tags": ["continuity", "consistency", "checker", "contradictions", "quality"],
+    "version": 1,
+    "author": "",
+    "prompt": "### Continuity Check — Post-Generation Contradiction Detector\n\nReview the assistant's latest response (in <scene>) against the conversation history (in <chat_history>) and any tracked state injected below. Flag every contradiction you find.\n\nWhat to check:\n1. CHARACTER NAMES — mix-ups, wrong names, characters referred to by the wrong name or title.\n2. LOCATION — a character in place X suddenly appearing in place Y with no travel or transition.\n3. TIMELINE — events that happened \"yesterday\" drifting, time not progressing logically, anachronisms within the story's own timeline.\n4. DEAD / ABSENT / DEPARTED — characters who left, died, or were dismissed reappearing without explanation.\n5. ITEMS & ABILITIES — things that contradict established inventory, skills, what's been used or lost.\n6. PERSONALITY — a shy character suddenly delivering a confident monologue, or a stern character cracking jokes, without narrative justification.\n7. ENVIRONMENT — weather, time-of-day, lighting, and setting contradicting what was established. If it was night three messages ago with no time skip, it's still night.\n\nWhen in doubt, FLAG IT. A false positive is better than a missed contradiction.\n\nOutput exactly one tag:\n\n[CONTINUITY]\n{\"issues\": [{\"severity\": \"error|warning|note\", \"category\": \"name|location|timeline|character|item|personality|environment\", \"description\": \"Brief description\", \"suggestion\": \"How to fix\"}], \"verdict\": \"clean|minor_issues|major_issues\"}\n[/CONTINUITY]\n\nRules:\n- Output ONLY the [CONTINUITY] tag. No prose, no commentary.\n- Output valid JSON inside the tag.\n- \"error\" = outright contradiction that would confuse a reader. \"warning\" = likely inconsistency. \"note\" = minor or debatable.\n- \"verdict\": \"clean\" if no issues. \"minor_issues\" if only warnings/notes. \"major_issues\" if any errors.\n- If nothing is wrong, return: {\"issues\": [], \"verdict\": \"clean\"}\n- Be specific in descriptions — name the characters, locations, or details involved.\n- Keep it compact. Each issue should be 1-2 sentences.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 200,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 2048,
+        "responseKey": "continuity_check",
+        "includeHistory": true,
+        "historyMessageCount": 20,
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "cc-check-data",
+            "dataMap": {},
+            "contentField": "json"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "variableName": "sa_continuity",
+        "extractPattern": "\\[CONTINUITY\\]\\s*([\\s\\S]*?)\\s*\\[\\/CONTINUITY\\]",
+        "fieldNames": ["json"],
+        "keyFields": ["json"],
+        "mode": "snapshot",
+        "stripFromResponse": false,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 2048,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-continuity-check"
+}

@@ -1,0 +1,444 @@
+/* ============================================================
+   SuperAgents — base styles
+   Aesthetic mirrors SillyTavern-LandingPageRedux's modal:
+   dark surface (rgba 18,18,22,0.97), 56px icon rail, warm
+   tan/beige accent (rgba 180,160,140,...), sharp corners, tight
+   11-15px fonts. Real modal styles arrive with src/ui/modal.js.
+
+   CSS namespace: sa- (super agents). Modal sub-classes will be
+   sam- (super agents modal) to keep selectors short.
+   ============================================================ */
+
+:root {
+    /* Surfaces */
+    --sa-surface-main:     rgba(18, 18, 22, 0.97);
+    --sa-surface-rail:     rgba(255, 255, 255, 0.03);
+    --sa-surface-rail-hot: rgba(255, 255, 255, 0.06);
+    --sa-surface-input:    rgba(255, 255, 255, 0.04);
+    --sa-surface-info:     rgba(0, 0, 0, 0.15);
+
+    /* Borders */
+    --sa-border-faint:     rgba(255, 255, 255, 0.04);
+    --sa-border-soft:      rgba(255, 255, 255, 0.06);
+    --sa-border-mid:       rgba(255, 255, 255, 0.08);
+    --sa-border-strong:    rgba(255, 255, 255, 0.18);
+
+    /* Text */
+    --sa-text-primary:     rgba(255, 255, 255, 0.85);
+    --sa-text-body:        rgba(255, 255, 255, 0.80);
+    --sa-text-secondary:   rgba(255, 255, 255, 0.65);
+    --sa-text-muted:       rgba(255, 255, 255, 0.45);
+    --sa-text-faint:       rgba(255, 255, 255, 0.35);
+    --sa-text-ghost:       rgba(255, 255, 255, 0.25);
+
+    /* Accent (warm tan/beige — matches LPR) */
+    --sa-accent:           rgba(180, 160, 140, 0.9);
+    --sa-accent-soft:      rgba(180, 160, 140, 0.6);
+    --sa-accent-faint:     rgba(180, 160, 140, 0.25);
+    --sa-accent-bg:        rgba(180, 160, 140, 0.2);
+    --sa-accent-bg-hot:    rgba(180, 160, 140, 0.3);
+    --sa-accent-text:      rgba(220, 180, 140, 0.85);
+
+    /* Status */
+    --sa-status-warn:      rgba(230, 180, 100, 0.85);
+    --sa-status-error:     rgba(230, 140, 120, 0.9);
+
+    /* Layout */
+    --sa-rail-width:       56px;
+    --sa-rail-item:        42px;
+    --sa-radius:           0;       /* sharp corners — LPR style */
+    --sa-radius-pill:      6px;     /* only specific elements (avatars, dots) */
+
+    /* Type scale */
+    --sa-font-title:       15px;
+    --sa-font-label:       13px;
+    --sa-font-body:        12px;
+    --sa-font-meta:        11px;
+    --sa-font-micro:       10px;
+
+    /* Z-axis (lives above modals, below toastr) */
+    --sa-z-overlay:        10001;
+    --sa-z-modal:          10002;
+    --sa-z-menu:           10003;
+
+    /* Floating panels live BELOW the Landing Page (9000) and BELOW the White
+       Lotus side panel (1000), but ABOVE ST's chat/message containers. This
+       keeps the State Card and Phone from punching through the landing page
+       and from layering over WL's right-edge HUD when both are open. */
+    --sa-z-panel:          800;
+}
+
+
+/* ============================================================
+   SuperAgents — unified modal (sam-) + floating panels (sa-panel)
+   Mirrors the LandingPageRedux / SimpleSummarizer modal: dark
+   surface, 56px icon rail, warm tan/beige accent, sharp corners.
+   ============================================================ */
+
+/* ── Overlay + modal shell ─────────────────────────────────── */
+.sam-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: var(--sa-z-overlay);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease;
+}
+.sam-overlay.sam-visible { opacity: 1; pointer-events: all; }
+
+.sam-modal {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -48%);
+    width: min(860px, 94vw);
+    height: min(640px, 88vh);
+    background: var(--sa-surface-main);
+    border: 1px solid var(--sa-border-mid);
+    border-radius: var(--sa-radius);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+    z-index: var(--sa-z-modal);
+    display: flex;
+    flex-direction: column;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.18s ease, transform 0.18s ease;
+    overflow: hidden;
+    color: var(--sa-text-body);
+    font-size: var(--sa-font-body);
+}
+.sam-modal.sam-visible {
+    opacity: 1;
+    pointer-events: all;
+    transform: translate(-50%, -50%);
+}
+
+/* ── Header ────────────────────────────────────────────────── */
+.sam-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--sa-border-soft);
+    flex-shrink: 0;
+}
+.sam-title {
+    font-size: var(--sa-font-title);
+    font-weight: 600;
+    color: var(--sa-text-primary);
+    letter-spacing: 0.2px;
+}
+.sam-title i { color: var(--sa-accent); margin-right: 7px; }
+.sam-close {
+    width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    color: var(--sa-text-muted);
+    transition: color 0.15s ease, background 0.15s ease;
+}
+.sam-close:hover { color: var(--sa-text-primary); background: var(--sa-surface-rail-hot); }
+
+/* ── Body: rail + content ──────────────────────────────────── */
+.sam-body { display: flex; flex: 1; min-height: 0; }
+
+.sam-rail {
+    width: var(--sa-rail-width);
+    flex-shrink: 0;
+    background: var(--sa-surface-rail);
+    border-right: 1px solid var(--sa-border-soft);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 8px 0;
+    gap: 4px;
+}
+.sam-rail-item {
+    width: var(--sa-rail-item);
+    height: var(--sa-rail-item);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    color: var(--sa-text-muted);
+    font-size: 16px;
+    border-radius: var(--sa-radius);
+    transition: color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+.sam-rail-item:hover { color: var(--sa-text-primary); background: var(--sa-surface-rail-hot); }
+.sam-rail-active {
+    color: var(--sa-accent-text);
+    background: var(--sa-accent-bg);
+    box-shadow: inset 2px 0 0 var(--sa-accent);
+}
+
+.sam-content {
+    flex: 1;
+    min-width: 0;
+    overflow-y: auto;
+    padding: 14px 16px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--sa-border-strong) transparent;
+}
+
+/* ── Tab head + section dividers ───────────────────────────── */
+.sam-tab-head {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 12px;
+}
+.sam-tab-title { font-size: var(--sa-font-title); font-weight: 600; color: var(--sa-text-primary); }
+.sam-tab-actions { display: flex; gap: 6px; }
+.sam-tab-actions-foot { margin-top: 8px; }
+
+.sam-divider-label {
+    display: flex; align-items: center; gap: 6px;
+    font-size: var(--sa-font-meta);
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--sa-text-faint);
+    margin: 16px 0 8px;
+}
+.sam-divider-label i { color: var(--sa-accent-soft); }
+
+/* ── Buttons ───────────────────────────────────────────────── */
+.sam-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 11px;
+    font-size: var(--sa-font-label);
+    color: var(--sa-text-body);
+    background: var(--sa-surface-input);
+    border: 1px solid var(--sa-border-mid);
+    border-radius: var(--sa-radius);
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.sam-btn:hover { background: var(--sa-surface-rail-hot); border-color: var(--sa-border-strong); color: var(--sa-text-primary); }
+.sam-btn-sm { padding: 4px 9px; font-size: var(--sa-font-meta); }
+.sam-btn-accent { color: var(--sa-accent-text); border-color: var(--sa-accent-faint); background: var(--sa-accent-bg); }
+.sam-btn-accent:hover { background: var(--sa-accent-bg-hot); border-color: var(--sa-accent-soft); }
+
+.sam-icon-btn {
+    width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--sa-text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--sa-radius);
+    cursor: pointer;
+    font-size: 12px;
+    transition: color 0.15s ease, background 0.15s ease;
+}
+.sam-icon-btn:hover { color: var(--sa-text-primary); background: var(--sa-surface-rail-hot); }
+.sam-icon-danger:hover { color: var(--sa-status-error); }
+
+/* ── Rows (settings) ───────────────────────────────────────── */
+.sam-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--sa-border-faint);
+}
+.sam-row-info { min-width: 0; }
+.sam-row-title { font-size: var(--sa-font-label); color: var(--sa-text-primary); }
+.sam-row-title i { color: var(--sa-accent-soft); margin-right: 5px; }
+.sam-row-desc { font-size: var(--sa-font-meta); color: var(--sa-text-muted); margin-top: 2px; }
+.sam-row-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+/* ── Switch (toggle) ───────────────────────────────────────── */
+.sam-switch { position: relative; display: inline-block; width: 34px; height: 18px; flex-shrink: 0; cursor: pointer; }
+.sam-switch input { opacity: 0; width: 0; height: 0; }
+.sam-switch-track {
+    position: absolute; inset: 0;
+    background: var(--sa-border-mid);
+    border-radius: 10px;
+    transition: background 0.15s ease;
+}
+.sam-switch-track::before {
+    content: ''; position: absolute;
+    width: 12px; height: 12px; left: 3px; top: 3px;
+    background: var(--sa-text-secondary);
+    border-radius: 50%;
+    transition: transform 0.15s ease, background 0.15s ease;
+}
+.sam-switch input:checked + .sam-switch-track { background: var(--sa-accent-bg-hot); }
+.sam-switch input:checked + .sam-switch-track::before { transform: translateX(16px); background: var(--sa-accent); }
+
+/* ── Cards (agent / group list) ────────────────────────────── */
+.sam-list { display: flex; flex-direction: column; gap: 6px; }
+.sam-card {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 11px;
+    background: var(--sa-surface-info);
+    border: 1px solid var(--sa-border-faint);
+    border-radius: var(--sa-radius);
+    transition: border-color 0.15s ease, background 0.15s ease;
+}
+.sam-card:hover { border-color: var(--sa-border-mid); background: var(--sa-surface-rail); }
+.sam-card-icon {
+    width: 30px; height: 30px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--sa-accent-soft);
+    background: var(--sa-accent-faint);
+    border-radius: var(--sa-radius-pill);
+    font-size: 13px;
+}
+.sam-card-info { flex: 1; min-width: 0; }
+.sam-card-name { font-size: var(--sa-font-label); color: var(--sa-text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sam-card-desc { font-size: var(--sa-font-meta); color: var(--sa-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+
+.sam-badges { display: flex; gap: 4px; flex-shrink: 0; }
+.sam-badge {
+    font-size: var(--sa-font-micro);
+    padding: 2px 7px;
+    border-radius: var(--sa-radius-pill);
+    color: var(--sa-accent-text);
+    background: var(--sa-accent-bg);
+    white-space: nowrap;
+}
+.sam-badge-soft { color: var(--sa-text-muted); background: var(--sa-surface-rail-hot); }
+
+.sam-card-actions { display: flex; gap: 1px; flex-shrink: 0; }
+
+/* ── Empty states + notes ──────────────────────────────────── */
+.sam-empty {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center;
+    padding: 36px 20px;
+    color: var(--sa-text-muted);
+    gap: 10px;
+}
+.sam-empty i { font-size: 1.9em; opacity: 0.3; }
+.sam-empty p { margin: 0; font-size: var(--sa-font-label); max-width: 360px; }
+.sam-empty-sm { padding: 14px; font-size: var(--sa-font-meta); }
+.sam-note {
+    font-size: var(--sa-font-meta);
+    color: var(--sa-text-muted);
+    line-height: 1.5;
+    background: var(--sa-surface-info);
+    border: 1px solid var(--sa-border-faint);
+    border-radius: var(--sa-radius);
+    padding: 10px 12px;
+}
+.sam-note p { margin: 0; }
+
+/* ── Floating panel drag affordance (shared by State Card / Phone) ── */
+.sa-panel--dragging { user-select: none; cursor: grabbing; }
+.sa-panel--dragging * { cursor: grabbing !important; }
+
+/* ============================================================
+   SuperAgents — agent editor (sae-), rendered in the modal pane
+   ============================================================ */
+
+.sae-head {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 14px;
+}
+.sae-head-title { font-size: var(--sa-font-title); font-weight: 600; color: var(--sa-text-primary); }
+.sae-back { padding: 5px 10px; }
+
+.sae-form { display: flex; flex-direction: column; }
+
+.sae-field { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.sae-label { font-size: var(--sa-font-label); color: var(--sa-text-primary); }
+.sae-desc { font-size: var(--sa-font-meta); color: var(--sa-text-muted); }
+.sae-hint { font-size: var(--sa-font-meta); color: var(--sa-text-muted); margin: 4px 0 8px; }
+
+.sae-row { display: flex; gap: 10px; align-items: flex-end; }
+.sae-row .sae-field { margin-top: 10px; }
+.sae-grow { flex: 1; min-width: 0; }
+.sae-fixed { flex: 0 0 120px; }
+
+.sae-input, .sae-select, .sae-textarea {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--sa-surface-input);
+    border: 1px solid var(--sa-border-mid);
+    border-radius: var(--sa-radius);
+    color: var(--sa-text-body);
+    font-size: var(--sa-font-label);
+    padding: 7px 9px;
+    font-family: inherit;
+    transition: border-color 0.15s ease;
+}
+.sae-input:focus, .sae-select:focus, .sae-textarea:focus {
+    outline: none;
+    border-color: var(--sa-accent-soft);
+}
+.sae-textarea { resize: vertical; min-height: 120px; line-height: 1.45; }
+.sae-select { cursor: pointer; }
+
+.sae-slider-row { display: flex; align-items: center; gap: 10px; }
+.sae-slider-row input[type="range"] { flex: 1; accent-color: var(--sa-accent); }
+.sae-slider-val { font-size: var(--sa-font-label); color: var(--sa-accent-text); min-width: 42px; text-align: right; }
+
+.sae-check-row { display: flex; gap: 16px; flex-wrap: wrap; padding: 4px 0; }
+.sae-check { display: flex; align-items: center; gap: 6px; font-size: var(--sa-font-label); color: var(--sa-text-body); cursor: pointer; }
+.sae-check input { accent-color: var(--sa-accent); }
+
+.sae-hidden { display: none; }
+
+.sae-foot {
+    display: flex; justify-content: flex-end; gap: 8px;
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid var(--sa-border-soft);
+}
+
+/* ── Group editor: member checklist (sae-group-) ─────────────────────── */
+.sae-group-select-actions {
+    display: flex; align-items: center; gap: 8px;
+    margin: 8px 0 6px;
+}
+.sae-group-count {
+    margin-left: auto;
+    font-size: var(--sa-font-meta);
+    color: var(--sa-text-muted);
+}
+.sae-group-agent-list {
+    display: flex; flex-direction: column; gap: 2px;
+    max-height: 320px; overflow-y: auto;
+    border: 1px solid var(--sa-border-soft);
+    border-radius: var(--sa-radius);
+    padding: 4px;
+}
+.sae-group-agent {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 9px;
+    border-radius: var(--sa-radius);
+    cursor: pointer;
+    transition: background 0.12s ease;
+}
+.sae-group-agent:hover { background: var(--sa-surface-input); }
+.sae-group-cb { accent-color: var(--sa-accent); flex: 0 0 auto; }
+.sae-group-agent-icon { flex: 0 0 auto; color: var(--sa-accent-text); width: 18px; text-align: center; }
+.sae-group-agent-name {
+    flex: 1; min-width: 0;
+    font-size: var(--sa-font-label);
+    color: var(--sa-text-body);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+
+/* ============================================================
+   Run indicator — the in-input "stop agents" button.
+   Mirrors ST's #mes_stop so it sits naturally in #rightSendForm.
+   ============================================================ */
+#sa_stop.sa-stop-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    color: var(--sa-accent-text, rgba(220, 180, 140, 0.85));
+    /* match the sizing/spacing of sibling send-form controls */
+    font-size: 20px;
+    margin: 0 4px;
+    transition: color 0.12s ease, transform 0.12s ease;
+}
+#sa_stop.sa-stop-btn:hover {
+    color: rgba(230, 120, 110, 0.95); /* warm red on hover = "stop" */
+    transform: scale(1.05);
+}
+#sa_stop.sa-stop-btn:active { transform: scale(0.95); }
+/* displayNone is ST's own utility class; redeclare defensively so our button
+   stays hidden even if load order means ST's stylesheet isn't applied yet. */
+#sa_stop.sa-stop-btn.displayNone { display: none !important; }

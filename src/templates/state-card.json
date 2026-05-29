@@ -1,0 +1,90 @@
+{
+    "id": "tpl-state-card",
+    "name": "State Card",
+    "description": "Persistent floating-panel tracker for world events, user physical state, and per-character relationship dynamics. Runs as a separate post-gen LLM call — analyzes the scene and stores structured data without touching the narrative.",
+    "icon": "fa-solid fa-id-card",
+    "category": "tracker",
+    "tags": ["tracker", "state", "panel", "characters", "meters", "schema", "relationships", "user-stats"],
+    "version": 5,
+    "author": "",
+    "prompt": "### State Card — Post-Generation State Tracker\nAnalyze the scene that just played out and produce a state snapshot. Output ONLY a state block — no narrative, no commentary, no explanation:\n\n[STATECARD]\n{\"worldEvents\":[\"event 1\",\"event 2\"],\"user\":{\"health\":100,\"energy\":80,\"hunger\":70,\"hygiene\":85},\"characters\":{\"Character Name\":{\"affection\":50,\"attraction\":30,\"trust\":60,\"loyalty\":55,\"arousal\":0,\"feeling\":\"Curious\",\"condition\":\"Healthy\",\"resources\":\"None notable\",\"allegiance\":\"Neutral\"}}}\n[/STATECARD]\n\n=== WORLD EVENTS ===\n1-3 brief macro-scale events affecting the world around the story. These are NOT about individual characters — they're about weather, politics, wars, plagues, festivals, market shifts, natural disasters, social upheaval, or any large-scale phenomenon that shapes the backdrop. Keep each entry to one concise sentence.\n\nIf nothing notable is happening at a macro level, output an empty array: []\n\n=== USER STATS ===\nTrack {{user}}'s physical state:\n- health (0–100): 0 = critically injured/dying, 100 = peak physical health. Decreases from injury, illness, exhaustion.\n- energy (0–100): 0 = collapsing from exhaustion, 100 = well-rested and alert. Drains from exertion, recovers with rest.\n- hunger (0–100): 0 = starving, 100 = well-fed. Drains over time, recovers with food.\n- hygiene (0–100): 0 = filthy/foul, 100 = freshly cleaned. Degrades gradually, especially with physical activity.\n\n=== CHARACTERS ===\nTrack every character currently present in the scene. All meters are relative to {{user}}.\n\nMeters (0–100):\n- affection: Platonic warmth, care, fondness. How much they like {{user}} as a person.\n- attraction: Non-platonic physical/romantic pull. Can exist independently of affection.\n- trust: How much they believe {{user}} and rely on their word.\n- loyalty: Willingness to act on {{user}}'s behalf, even at cost to themselves.\n- arousal: Current physical arousal state. Fluctuates within scenes, not a long-term relationship metric.\n\nBadge:\n- feeling: One or two words for their current emotional state.\n\nText:\n- condition: Physical state — injuries, fatigue, intoxication, illness. \"Healthy\" if nothing notable.\n- resources: What they're carrying or have access to that matters — weapons, tools, money, supplies. NOT clothing (tracked elsewhere). \"None notable\" if irrelevant.\n- allegiance: Who or what they serve, follow, or answer to. Their loyalties beyond {{user}}.\n\n=== RULES ===\n- Output ONLY the [STATECARD] block. Nothing else — no prose, no explanation, no commentary.\n- Include EVERY character present in the scene. Remove characters who leave. Add characters who arrive.\n- PRESERVE CONTINUITY. Only change what the narrative actually changes.\n- Meters shift gradually — a single exchange rarely moves a meter more than 10–15 points. Arousal is the exception; it can spike or crash quickly based on the scene.\n- String values should be concise — a few words, not sentences.\n- Output valid JSON. Keep it compact (no pretty-printing).\n- Base your analysis on what actually happened in the scene — do not invent events or emotions not supported by the text.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 85,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 8192,
+        "responseKey": "state_card"
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "variableName": "sa_state_card",
+        "extractPattern": "\\[STATECARD\\]\\s*([\\s\\S]*?)\\s*\\[\\/STATECARD\\]",
+        "fieldNames": ["json"],
+        "keyFields": ["json"],
+        "mode": "snapshot",
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "formatHeader": "Current tracked state (preserve continuity — only change what the narrative actually changes):",
+        "formatItem": "{{json}}",
+        "formatEmpty": "No state tracked yet. Establish sensible defaults from the setting and characters present. Start user stats at reasonable values (health 100, energy 80, hunger 70, hygiene 80). Start character meters at neutral midpoints (affection 50, attraction 20, trust 40, loyalty 40, arousal 0)."
+    },
+    "regexScripts": [],
+    "stateCard": {
+        "enabled": true,
+        "schema": {
+            "worldEvents": {
+                "label": "World Events",
+                "icon": "◈",
+                "maxItems": 3
+            },
+            "userStats": [
+                { "key": "health", "label": "Health", "color": "#5DCA7B", "max": 100 },
+                { "key": "energy", "label": "Energy", "color": "#E8C547", "max": 100 },
+                { "key": "hunger", "label": "Hunger", "color": "#D4537E", "max": 100 },
+                { "key": "hygiene", "label": "Hygiene", "color": "#5A8DB8", "max": 100 }
+            ],
+            "characterTextFields": [
+                { "key": "feeling", "label": "Feeling", "type": "badge", "badgeColor": "#AFA9EC" },
+                { "key": "condition", "label": "Condition" },
+                { "key": "resources", "label": "Resources" },
+                { "key": "allegiance", "label": "Allegiance" }
+            ],
+            "meters": [
+                { "key": "affection", "label": "Affection", "color": "#7F77DD", "max": 100 },
+                { "key": "attraction", "label": "Attraction", "color": "#D4537E", "max": 100 },
+                { "key": "trust", "label": "Trust", "color": "#5DCAA5", "max": 100 },
+                { "key": "loyalty", "label": "Loyalty", "color": "#378ADD", "max": 100 },
+                { "key": "arousal", "label": "Arousal", "color": "#EF9F27", "max": 100 }
+            ]
+        }
+    },
+    "connectionProfile": "",
+    "maxTokens": 8192,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-state-card"
+}

@@ -1,0 +1,85 @@
+{
+    "id": "tpl-narrative-engine",
+    "name": "Narrative Engine",
+    "description": "Per-turn continuity and literary tracker. A separate post-gen LLM call analyzes the scene and tracks spatial positioning, physical state, dress, motifs, themes, and open threads. Designed to complement — not overlap with — Story Progression.",
+    "icon": "fa-solid fa-gear",
+    "category": "tracker",
+    "tags": ["continuity", "tracking", "motifs", "themes", "literary"],
+    "version": 3,
+    "author": "",
+    "prompt": "### Narrative Engine — Post-Generation Continuity Tracker\nAnalyze the scene that just played out and produce a continuity snapshot. Output ONLY an engine block — no narrative, no commentary, no explanation:\n\n[ENGINE]\n{\"spatial\":\"...\",\"condition\":\"...\",\"dress\":\"...\",\"motifs\":\"...\",\"themes\":\"...\",\"threads\":\"...\"}\n[/ENGINE]\n\n=== FIELDS ===\n\n**spatial** — Where each character is positioned within the scene. Be specific and physical: \"leaning against the doorframe\", \"sitting cross-legged on the floor beside the bed\". Not vague stage directions.\n\n**condition** — Physical state affecting how characters move or are described: injuries, fatigue, intoxication, wet, cold, etc. \"Normal\" if nothing notable.\n\n**dress** — What each character is currently wearing, especially anything specifically described, changed mid-scene, or relevant to the narrative. Be concrete.\n\n**motifs** — Track ONLY specific, tangible, iconic objects (a uniquely carved jade, a signature weapon, a specific flower) OR specific animal parallels (comparing a character to a wounded crane, a rabid dog) that define a character's identity or the dynamic between characters. Do NOT use generic settings, elements, or concepts such as water, darkness, winter, fire, claiming. \"None\" if no highly specific iconic symbol has organically emerged yet.\n\n**themes** — Broader thematic patterns developing organically across the story over time. Must emerge from actual events and character behavior, not be imposed or assumed. \"None\" until something genuinely develops.\n\n**threads** — 1-2 immediate unresolved actions, lies, unanswered questions, or dangling consequences that need addressing in the next few turns.\n\n=== RULES ===\n- Output ONLY the [ENGINE] block. Nothing else.\n- Use direct, clinical, database-style language. NO flowery prose.\n- Do NOT invent entries to fill space. If a field has nothing notable, say so plainly.\n- Update fields based on what actually happened. Do not copy previous entries unchanged unless they are still accurate.\n- Output valid JSON. Keep it compact (no pretty-printing).\n- Base your analysis on what actually happened in the scene — do not invent details not supported by the text.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 100,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 2048,
+        "responseKey": "narrative_engine",
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "ne-engine-data",
+            "dataMap": {},
+            "contentField": "json"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "variableName": "sa_narrative_engine",
+        "extractPattern": "\\[ENGINE\\]\\s*([\\s\\S]*?)\\s*\\[\\/ENGINE\\]",
+        "fieldNames": ["json"],
+        "keyFields": ["json"],
+        "mode": "snapshot",
+        "stripFromResponse": false,
+        "injectFormatted": true,
+        "formatHeader": "Previous narrative engine state (preserve continuity — update only what the scene actually changed):",
+        "formatItem": "{{json}}",
+        "formatEmpty": "No engine state established yet. Analyze the scene and establish all fields based on what is present."
+    },
+    "regexScripts": [
+        {
+            "id": "ne-strip-legacy-engine",
+            "scriptName": "Strip Legacy Engine Blocks",
+            "findRegex": "/<engine>[\\s\\S]*?<\\/engine>/g",
+            "replaceString": "",
+            "trimStrings": [],
+            "placement": [2],
+            "disabled": false,
+            "markdownOnly": true,
+            "promptOnly": false,
+            "runOnEdit": true,
+            "substituteRegex": 0,
+            "minDepth": null,
+            "maxDepth": null,
+            "stripFromMes": true
+        }
+    ],
+    "connectionProfile": "",
+    "maxTokens": 2048,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-narrative-engine"
+}

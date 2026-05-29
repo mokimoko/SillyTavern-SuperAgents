@@ -1,0 +1,88 @@
+{
+    "id": "tpl-parallel-offscreen",
+    "name": "Parallel Off-Screen",
+    "description": "Tracks what absent characters, factions, and individuals are doing off-screen between scenes. Runs as a separate post-gen analysis call. Focuses on specific people and their actions — not macro world events.",
+    "icon": "fa-solid fa-binoculars",
+    "category": "tracker",
+    "tags": ["offscreen", "npcs", "characters", "parallel", "absent", "micro"],
+    "version": 5,
+    "author": "",
+    "prompt": "### Parallel Off-Screen — Post-Generation Tracker\nThe world doesn't pause while the main scene plays out. Analyze the scene that just played out and report what specific absent characters, factions, and individuals are doing off-screen — concrete actions by named people that may later intersect with the story.\n\nOutput this block:\n\n[PARALLEL|Scope|Relevance]\n- Subject: development\n- Subject: development\n- Subject: development\n[/PARALLEL]\n\nField guide:\n- Scope: Where this is happening — a specific location name, \"Multiple locations\", or \"Background\"\n- Relevance: One tag — \"rising tension\", \"opportunity\", \"complication\", \"threat\", \"alliance forming\", \"quiet shift\", \"countdown\", or \"imminent\" (use \"imminent\" ONLY when an off-screen thread is about to collide with the main scene)\n\nRules:\n- Output ONLY the [PARALLEL] block. Nothing else — no prose, no explanation, no commentary.\n- 2-4 bullet points. Each names a SPECIFIC character, faction, or individual and describes what they are doing RIGHT NOW.\n- This tracker is for INDIVIDUAL ACTIONS — named people making plans, traveling, scheming, preparing, meeting, arguing. NOT for macro world-scale events like wars, weather, plagues, market shifts, or political upheaval. Those belong in the world events layer.\n- Prioritize characters who are absent from the current scene but have been established in the story.\n- Maintain continuity with the previous off-screen state. If you reported someone traveling last turn, they should arrive or still be en route. Don't drop threads.\n- Off-screen developments start below the current scene's intensity and build naturally over time. Not everything is urgent.\n- Be specific and directional: plans forming, rumors spreading, resources being gathered, loyalties shifting, threats approaching. No vague filler.\n- You may rotate which characters appear each turn. Not every absent character needs tracking every single message.\n- Do NOT output a PARALLEL block if nothing meaningful is happening off-screen. Output nothing rather than filling it with noise.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 100,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 2048,
+        "responseKey": "parallel_offscreen",
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "parallel-hud-data",
+            "dataMap": {
+                "scope": "data-scope",
+                "relevance": "data-relevance"
+            },
+            "contentField": "content"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_parallel",
+        "extractPattern": "\\[PARALLEL\\|([^|]+)\\|([^\\]]+)\\]\\n([\\s\\S]*?)\\[\\/PARALLEL\\]",
+        "fieldNames": ["scope", "relevance", "content"],
+        "keyFields": ["scope"],
+        "stripFromResponse": false,
+        "injectFormatted": true,
+        "formatHeader": "Previous off-screen developments (these are about specific individuals and their actions — NOT macro world events):",
+        "formatItem": "[{{scope}} — {{relevance}}]\n{{content}}",
+        "formatEmpty": "No off-screen developments tracked yet."
+    },
+    "regexScripts": [
+        {
+            "id": "po-strip-inline-tags",
+            "scriptName": "Strip Parallel Tags from Narrative",
+            "findRegex": "/\\[PARALLEL\\|[^\\]]*\\][\\s\\S]*?\\[\\/PARALLEL\\]/g",
+            "replaceString": "",
+            "trimStrings": [],
+            "placement": [2],
+            "disabled": false,
+            "markdownOnly": true,
+            "promptOnly": false,
+            "runOnEdit": true,
+            "substituteRegex": 0,
+            "minDepth": null,
+            "maxDepth": null,
+            "stripFromMes": false
+        }
+    ],
+    "connectionProfile": "",
+    "maxTokens": 2048,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-parallel-offscreen"
+}

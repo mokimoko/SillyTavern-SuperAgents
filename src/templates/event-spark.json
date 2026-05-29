@@ -1,0 +1,43 @@
+{
+    "id": "tpl-event-spark",
+    "name": "Event Spark",
+    "description": "Randomly injects a narrative event, character moment, or story seed into the scene. Fires at 30% chance per turn. Inspired by the White Lotus randomizer.",
+    "icon": "fa-solid fa-bolt",
+    "category": "randomizer",
+    "tags": ["random", "events", "narrative", "variety"],
+    "version": 1,
+    "author": "",
+    "prompt": "Work the following into this response {{random::as a brief background detail — one or two sentences at most, don't dwell on it::as the central focus of this response — let it drive the scene}}:\n\n{{random::a memory of {{char}}'s (recent)::a memory of {{char}}'s (from long ago)::a moment in which {{char}} looks really cool (narration should reflect that)::a moment in which {{char}} makes a mistake::an impulsive physical reaction from {{char}}::{{char}} understanding something::{{char}} misunderstanding something::an insightful observation about {{char}}::an opportunity for appreciative objectification of {{char}}'s body::something that allows {{char}} to display a talent::{{char}} totally misreading the room or someone's tone::{{char}} having an intrusive thought::something causing {{char}} physical discomfort::a past choice coming back to bite {{char}} in the ass::{{char}} forgetting something::a storm or other weather-related event::something happens that {{char}} and/or {{user}} isn't meant to overhear::a major event that effects the general public happens and everyone is talking about it::a recent major event that happened which everyone knows about::a recent major event that happened which only certain people know about::someone else's petty drama::someone else's tragedy::a holiday that happens this time of year::a celebration that is being held in the near future::something that has been planned for a while::a shortage that is causing complaints::an annoying new law or rule::a weirdly specific superstition or local legend being mentioned::a sudden intrusion::a reason to hide::a theft::losing something::a reason to go on an outing::getting lost::a loud commotion nearby::an urgent message arriving::a sudden physical hazard::a reason to suddenly chase after someone or something::an unexpected visitor::a sudden need to urgently acquire a specific item right now::a sudden deadline being moved up::an accident or injury::a fight breaking out::{{char}} forgets something important but doesn't realize it::{{char}} latches on to the wrong detail::someone from {{char}}'s past appears::someone starts showing signs of being sick::a gross description::lay the groundwork for a future misunderstanding::set up a mildly embarrassing misunderstanding::set up a major misunderstanding::plant a seed for a future inside joke or shared humor::leave an opening for {{char}} to be caught doing something foolish::leave an opening for {{char}} to be caught doing something endearing::leave a breadcrumb about a quirky, harmless secret {{char}} is hiding::plant a seed for a completely petty and harmless future grievance::plant a seed for a future tragedy or regression::highlight an interaction that could easily spark a scandalous rumor later::set up a subtle shift in the power dynamic::leave a loose thread that invites immediate action in the next turn::frame {{char}}'s internal reaction as the start of a major character shift}}\n\nDo not write actions or dialogue for {{user}}.",
+    "phase": "pre",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 95,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 8192,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 30,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-event-spark"
+}
