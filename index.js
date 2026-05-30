@@ -143,6 +143,7 @@ import { renderDirectionMenu, initDirectionMenuDelegation } from './src/render/h
 // UI layer: unified management modal (Step 9)
 import { openModal, closeModal, isModalOpen, registerPanelControl } from './src/ui/modal.js';
 import { initRunIndicator } from './src/ui/runIndicator.js';
+import { initDiffButtons } from './src/ui/diffButton.js';
 import {
     initStateCard,
     show as showStateCard,
@@ -334,6 +335,7 @@ function initNamespace() {
             isModalOpen,
             registerPanelControl,
             initRunIndicator,
+            initDiffButtons,
             stateCard: {
                 init:   initStateCard,
                 show:   showStateCard,
@@ -447,6 +449,10 @@ jQuery(async () => {
         // run (post-gen rewrite/sidecar or a manual run) the same way ST's own
         // stop aborts a generation.
         initRunIndicator();
+
+        // UI: ReCast-style diff viewer — a per-message button that opens a
+        // read-only inline diff of a rewrite agent's change, with revert.
+        initDiffButtons();
 
         // User-facing slash commands (/sa-run, /sa-list, /sa-toggle, /sa-open).
         registerSlashCommands();

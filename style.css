@@ -442,3 +442,57 @@
 /* displayNone is ST's own utility class; redeclare defensively so our button
    stays hidden even if load order means ST's stylesheet isn't applied yet. */
 #sa_stop.sa-stop-btn.displayNone { display: none !important; }
+
+
+/* ============================================================================
+   ReCast-style diff viewer (v0 — read-only inline diff + revert)
+   Colors lifted from ReCast per gameplan §1; rc-/recast_ prefixes renamed to
+   sa- to avoid clashes if both extensions load together.
+   ============================================================================ */
+
+/* The message-action button that opens the diff (lives in .extraMesButtons). */
+.sa_diff_btn {
+    cursor: pointer;
+}
+
+/* Diff body inside the popup: preserve the message's own line breaks/spacing
+   so the diff reads like the prose it came from. */
+.sa-diff-body,
+.sa-diff-plain {
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.5;
+    font-size: 0.95em;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.sa-diff-del {
+    background: rgba(220, 50, 50, 0.28);
+    color: #ff9090;
+    text-decoration: line-through;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+.sa-diff-ins {
+    background: rgba(50, 200, 80, 0.24);
+    color: #90ee90;
+    text-decoration: none;
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
+/* Shown when the change is past the size guard, or as a no-engine fallback. */
+.sa-diff-toobig {
+    opacity: 0.8;
+    margin-bottom: 0.5em;
+    font-style: italic;
+}
+
+/* Small header line above the diff naming the agent that made the change. */
+.sa-diff-summary {
+    opacity: 0.85;
+    margin-bottom: 0.6em;
+    font-size: 0.9em;
+}
