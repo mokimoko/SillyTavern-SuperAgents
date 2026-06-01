@@ -80,6 +80,7 @@ export function recordAgentRun(messageIndex, record) {
         originalText: record.originalText ?? null,
         result: record.result ?? null,
         mode: record.mode ?? 'rewrite',
+        swipeId: message.swipe_id ?? 0,
     };
 
     saveChatDebounced();

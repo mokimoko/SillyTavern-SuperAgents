@@ -14,7 +14,7 @@
 
 import { substituteParams } from '../../../../../../script.js';
 import { callAgentLLM, isAbortError } from '../core/llm.js';
-import { recordAgentRun, hasAgentRun, revertAgentRewrite } from '../core/idempotency.js';
+import { recordAgentRun, hasAgentRun, getAgentRunRecord, clearAgentRun, revertAgentRewrite } from '../core/idempotency.js';
 import { formatMergeVariableData } from './mergeVariable.js';
 import { getGlobalSettings } from '../data/store.js';
 
@@ -47,10 +47,23 @@ export async function executeRewriteAgent(agent, message, messageIndex, generati
         if (formatted) expandedPrompt += '\n\n' + formatted;
     }
 
-    // If this agent already ran on this message (regenerate / manual re-run),
-    // restore the original text first so we rewrite from clean source.
+    // If this agent already ran on this message, decide whether to revert or
+    // just clear the stale record. Revert only makes sense on the SAME swipe
+    // (regenerate / manual re-run). On a NEW swipe, message.mes already has the
+    // fresh text — reverting would overwrite it with the old swipe's original,
+    // corrupting both the rewrite input and the stored originalText for the diff.
     if (hasAgentRun(messageIndex, agent.id)) {
-        revertAgentRewrite(messageIndex, agent.id);
+        const existingRecord = getAgentRunRecord(messageIndex, agent.id);
+        const currentSwipeId = message.swipe_id ?? 0;
+        const recordSwipeId = existingRecord?.swipeId ?? 0;
+
+        if (recordSwipeId === currentSwipeId) {
+            // Same swipe: genuine re-run — revert to clean source first.
+            revertAgentRewrite(messageIndex, agent.id);
+        } else {
+            // Different swipe: just discard the stale record, don't touch message.mes.
+            clearAgentRun(messageIndex, agent.id);
+        }
     }
 
     const rewriteMode = agent.postProcess.rewriteMode || 'rewrite';
