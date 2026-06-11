@@ -5,8 +5,8 @@
   "optional": [],
   "js": "index.js",
   "css": "style.css",
-  "author": "nrahis",
+  "author": "mokimoko",
   "version": "0.8.0",
-  "homePage": "https://github.com/nrahis/SillyTavern-SuperAgents",
+  "homePage": "https://github.com/mokimoko/SillyTavern-SuperAgents",
   "auto_update": false
 }
