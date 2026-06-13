@@ -94,16 +94,38 @@ export function formatMergeVariableData(config) {
 
 /**
  * Store items in per-swipe storage so swipe navigation can restore them.
+ *
+ * IMPORTANT: this lives at the TOP LEVEL of the message object (message.saAgentSwipes),
+ * NOT inside message.extra. ST snapshots and restores `extra` per swipe via
+ * structuredClone (syncMesToSwipe/syncSwipeToMes), so anything stored under
+ * extra gets shadowed by a stale per-swipe clone and reads back the wrong
+ * swipe's data. A sibling key on the message is untouched by swipe sync and
+ * still persists to the chat JSONL.
  * @param {object} message - chat[n]
  * @param {string} varName - merge variable name
  * @param {object[]} items - the items to store
  */
 function storePerSwipe(message, varName, items) {
     const swipeId = message.swipe_id ?? 0;
-    if (!message.extra) message.extra = {};
-    if (!message.extra.saAgentSwipes) message.extra.saAgentSwipes = {};
-    if (!message.extra.saAgentSwipes[varName]) message.extra.saAgentSwipes[varName] = {};
-    message.extra.saAgentSwipes[varName][swipeId] = items;
+    if (!message.saAgentSwipes) message.saAgentSwipes = {};
+    if (!message.saAgentSwipes[varName]) message.saAgentSwipes[varName] = {};
+    message.saAgentSwipes[varName][swipeId] = items;
+}
+
+/**
+ * Public wrapper: bind a merge variable's current value to a message's active
+ * swipe. Used by the pre-gen display path (lifecycle), where the agent's output
+ * was written to the chat variable before the bot message existed, so per-swipe
+ * storage couldn't be set at write time. Reads the variable and pins it to the
+ * now-rendered message's swipe so it survives swipe navigation.
+ *
+ * @param {object} message - chat[n]
+ * @param {string} varName
+ */
+export function bindVariableToSwipe(message, varName) {
+    if (!message || !varName) return;
+    const items = readMergeArray(varName);
+    storePerSwipe(message, varName, items);
 }
 
 // ============================================================================
@@ -120,7 +142,12 @@ function buildExtractRegex(pattern) {
     try {
         const slashMatch = pattern.match(/^\/(.+)\/([gimsuy]*)$/);
         if (slashMatch) {
-            return new RegExp(slashMatch[1], slashMatch[2]);
+            // Force the global flag: both call sites use String.matchAll(), which
+            // THROWS on a non-global RegExp. A user authoring a custom pattern as
+            // /foo/ (no g) would otherwise crash extraction. Dedup so /foo/g stays
+            // valid (no doubled flag).
+            const flags = slashMatch[2].includes('g') ? slashMatch[2] : slashMatch[2] + 'g';
+            return new RegExp(slashMatch[1], flags);
         }
         return new RegExp(pattern, 'gs');
     } catch (err) {

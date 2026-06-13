@@ -1,0 +1,81 @@
+{
+    "id": "tpl-director",
+    "name": "Director",
+    "description": "A pre-generation scene director. Before the main model writes the reply, a separate (ideally smarter) model reads the full scene — character card, persona, World Info, running summary, author's note, and the message you just typed — and produces a short outline of what should happen next turn. That outline is injected into the main reply wrapped in <director> tags, and shown as an editable block under the message. Inspired by the Director extension; rebuilt as a SuperAgents agent so it batches, persists, and uses the shared rich-context pipeline.",
+    "icon": "fa-solid fa-clapperboard",
+    "category": "content",
+    "tags": ["director", "pre-gen", "planning", "scene", "outline"],
+    "version": 2,
+    "author": "",
+    "prompt": "### Scene Director — Pre-Generation Planner\n\nROLE: Read the current scene state and the player's pending action. Produce a concise OUTLINE of what should happen next turn. You do NOT write prose, dialogue, or the character's reply.\n\nPLAN AGAINST:\n- What the player just did and what it demands a response to.\n- Each present character's immediate goal, leverage, and likely reaction.\n- Unresolved threads or tension that should advance.\n- The physical situation: who is where, what is happening.\n- World and lore facts that should shape the moment.\n\nDIRECTIVES:\n- Favor consequence and forward motion over restating what already happened.\n- Let characters resist, refuse, or surprise. Do not steer toward agreement or comfort unless the scene earns it.\n\nOUTPUT:\n- 3–6 short bullet points. Each bullet is ONE concrete beat the writer must deliver, in order.\n- Describe what happens, not the words. No quoted dialogue, no narration.\n- No preamble, no headers, no commentary, no prose paragraphs.",
+    "phase": "pre",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 0,
+        "order": 50,
+        "scan": false,
+        "template": "<director>\nThe following is a private outline of what should happen this turn. Use it as direction; do not quote it, mention it, or treat it as something a character said.\n{{output}}\n</director>"
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 800,
+        "responseKey": "director",
+        "includeHistory": false,
+        "historyMessageCount": 20,
+        "richContext": {
+            "enabled": true,
+            "character": true,
+            "persona": true,
+            "worldInfo": true,
+            "summary": true,
+            "authorsNote": true,
+            "pendingUser": true,
+            "historyCount": 10
+        },
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "director-plan-data",
+            "dataMap": {},
+            "contentField": "plan"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "variableName": "sa_director_plan",
+        "extractPattern": "",
+        "fieldNames": ["plan"],
+        "keyFields": ["plan"],
+        "mode": "snapshot",
+        "stripFromResponse": false,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "{{plan}}",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 800,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-director"
+}

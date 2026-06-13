@@ -276,8 +276,29 @@ function collectMatches(regex, text) {
 }
 
 /**
+ * HTML-escape a string for safe interpolation into innerHTML. Applied to
+ * capture-group values (untrusted LLM output) before they're substituted into
+ * a replaceString template — the template itself is author-controlled markup
+ * (e.g. `<div class="...">$1</div>`) and is intentionally NOT escaped, but the
+ * captured `$1` text is, so a `<`/`>`/`"`/`&` in the model's output can't break
+ * the container or inject markup once renderer.js drops it into the DOM.
+ * @param {string} s
+ * @returns {string}
+ */
+function escapeHtml(s) {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+/**
  * Apply capture group substitution to a replacement template.
- * Supports $0..$N and {{match}} syntax.
+ * Supports $0..$N and {{match}} syntax. Capture-group values are HTML-escaped
+ * (the rendered result is injected via innerHTML downstream); the template
+ * markup around them is left intact.
  * @param {string} replaceString
  * @param {string[]} allGroups - Index 0 = full match, 1+ = capture groups
  * @returns {string}
@@ -286,7 +307,7 @@ function applyReplacement(replaceString, allGroups) {
     let result = replaceString.replace(/\{\{match\}\}/gi, '$0');
     result = result.replace(/\$(\d+)/g, (_, num) => {
         const idx = parseInt(num, 10);
-        return idx < allGroups.length ? (allGroups[idx] ?? '') : '';
+        return idx < allGroups.length ? escapeHtml(allGroups[idx] ?? '') : '';
     });
     return result;
 }

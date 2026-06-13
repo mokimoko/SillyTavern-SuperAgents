@@ -22,6 +22,7 @@ import {
 import { debug } from '../../index.js';
 import { callAgentLLM, isAbortError } from '../core/llm.js';
 import { recordAgentRun } from '../core/idempotency.js';
+import { buildRichContext } from '../core/richContext.js';
 import {
     readMergeArray,
     formatMergeVariableData,
@@ -62,6 +63,33 @@ export function buildHistoryContext(beforeIndex, messageCount = 20) {
  */
 export function buildPreGenContext(messageCount = 15) {
     return buildHistoryContext(chat.length, messageCount);
+}
+
+// ============================================================================
+// RICH CONTEXT
+// ============================================================================
+
+/**
+ * If an agent opted into rich context, build the labelled-section block
+ * (card / persona / World Info / Summary / Author's Note / pending message /
+ * history) and return it ready to append to the agent's system prompt. Returns
+ * '' when the agent hasn't enabled it. Read-only; never throws.
+ *
+ * @param {object} agent
+ * @param {number} mesNum         context point (highest message index to read)
+ * @param {string} pendingUserText  the not-yet-committed user message ('' post-gen)
+ * @param {number} maxContext
+ * @returns {Promise<string>}
+ */
+export async function buildAgentRichContext(agent, mesNum, pendingUserText = '', maxContext = 8192) {
+    const flags = agent?.sidecarCall?.richContext;
+    if (!flags?.enabled) return '';
+    try {
+        return await buildRichContext({ mesNum, flags, pendingUserText, maxContext });
+    } catch (err) {
+        debug(`${LOG_PREFIX} rich context failed for "${agent.name}":`, err?.message);
+        return '';
+    }
 }
 
 // ============================================================================
@@ -196,6 +224,13 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
     const globalSettings = getGlobalSettings();
     const showNotifications = globalSettings.showNotifications;
 
+    // Rich context (opt-in): card / persona / World Info / Summary / Author's
+    // Note. Post-gen, so no pending message. Appended to the system prompt.
+    const richContext = await buildAgentRichContext(agent, messageIndex, '', maxTokens);
+    if (richContext) {
+        expandedPrompt += '\n\n' + richContext;
+    }
+
     // Build optional history context
     let historyBlock = '';
     if (agent.sidecarCall?.includeHistory) {
@@ -286,15 +321,19 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
 /**
  * Run a single pre-gen sidecar agent.
  *
- * Makes an LLM call with recent chat history as context.
- * Returns the LLM response text for injection into the main generation.
+ * Makes an LLM call with recent chat history as context (plus rich context —
+ * card / persona / World Info / Summary / Author's Note / pending message — if
+ * the agent opted in). Returns the LLM response text for injection into the
+ * main generation.
  *
  * @param {object} agent
  * @param {string} contextText — formatted recent chat history
  * @param {string} generationType
+ * @param {string} [pendingUserText] — the user's not-yet-committed message
+ * @param {object} [opts] — { signal, timeoutMs } for cancel/timeout
  * @returns {Promise<{response: string, error?: string}>}
  */
-export async function executePreGenSidecarAgent(agent, contextText, generationType) {
+export async function executePreGenSidecarAgent(agent, contextText, generationType, pendingUserText = '', opts = {}) {
     let expandedPrompt = substituteParams(agent.prompt).trim();
     if (!expandedPrompt) {
         return { response: '' };
@@ -308,14 +347,24 @@ export async function executePreGenSidecarAgent(agent, contextText, generationTy
         }
     }
 
+    // Rich context (opt-in): the same inputs the main chat sees. Appended to
+    // the system prompt so the planner directs from the real scene state, not
+    // just the last N lines. mesNum = end of chat (pre-gen reads everything).
+    const richContext = await buildAgentRichContext(agent, chat.length - 1, pendingUserText);
+    if (richContext) {
+        expandedPrompt += '\n\n' + richContext;
+    }
+
     const maxTokens = agent.sidecarCall?.maxTokens || agent.maxTokens || 8192;
     const globalSettings = getGlobalSettings();
     const showNotifications = globalSettings.showNotifications;
-    // Pre-gen runs before the post-gen cancel controller exists, but still
-    // honors the configured wall-clock timeout so a stalled stream can't hang
-    // the main generation. 0 disables it (undefined → callAgentLLM default).
+    // Cancel/timeout: the pre-gen run controller passes a signal (+timeout) so
+    // the user can stop a slow planner. With no caller opts, fall back to the
+    // configured wall-clock timeout alone so a stalled stream can't hang main gen.
     const tmo = globalSettings.agentCallTimeoutMs;
-    const timeoutMs = (typeof tmo === 'number' && tmo >= 0) ? tmo : undefined;
+    const fallbackTimeout = (typeof tmo === 'number' && tmo >= 0) ? tmo : undefined;
+    const signal = opts.signal ?? null;
+    const timeoutMs = opts.timeoutMs !== undefined ? opts.timeoutMs : fallbackTimeout;
 
     if (showNotifications) {
         toastr.info('Analyzing context...', agent.name, { timeOut: 0, extendedTimeOut: 0 });
@@ -329,6 +378,7 @@ export async function executePreGenSidecarAgent(agent, contextText, generationTy
             userContent,
             profileRef: agent.connectionProfile || '',
             maxTokens,
+            signal,
             timeoutMs,
             callerName: `pre-gen:${agent.name}`,
         });
@@ -351,7 +401,9 @@ export async function executePreGenSidecarAgent(agent, contextText, generationTy
                 const msg = err.reason === 'timeout' ? 'Timed out' : 'Stopped';
                 toastr.info(msg, agent.name, { timeOut: 4000 });
             }
-            return { response: '', cancelled: true };
+            // Propagate so the caller's run scaffolding unwinds on user stop /
+            // timeout (the batch wrapper and processPreGenAgents re-throw aborts).
+            throw err;
         }
         console.error(`${LOG_PREFIX} Pre-gen sidecar "${agent.name}" failed:`, err);
         if (showNotifications) {

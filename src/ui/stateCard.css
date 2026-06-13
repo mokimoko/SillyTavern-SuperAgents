@@ -100,6 +100,12 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+    /* flex:1 + min-height:0 lets the body absorb the panel's remaining height
+       and scroll internally when content overflows (many character cards) —
+       without min-height:0 a flex child refuses to shrink below content size
+       and the scrollbar never appears. */
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-y: auto;
     overflow-x: hidden;
     scrollbar-width: thin;
@@ -115,6 +121,10 @@
     border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
     overflow: hidden;
+    /* Don't let the flex body squeeze a card's content — cards keep their
+       natural height and the body scrolls instead. Critical for the pinned
+       "You" / World Events cards so the user stats always have room. */
+    flex-shrink: 0;
     transition: border-color 0.15s;
 }
 .sa-sc-card:hover { border-color: rgba(255, 255, 255, 0.09); }
@@ -281,3 +291,45 @@
     color: rgba(200, 210, 225, 0.15);
     margin-top: 4px;
 }
+
+
+/* ── Resize handles (injected by draggablePanel when resizable:true) ──
+   Thin invisible slivers along each edge + slightly larger corner squares.
+   The panel keeps overflow:hidden so handles sit flush inside the rounded
+   border; they're transparent and only express themselves via the cursor. ── */
+.sa-panel-rh { position: absolute; z-index: 10; }
+.sa-panel-rh-n  { top: 0; left: 8px; right: 8px; height: 5px; cursor: n-resize; }
+.sa-panel-rh-s  { bottom: 0; left: 8px; right: 8px; height: 5px; cursor: s-resize; }
+.sa-panel-rh-e  { right: 0; top: 8px; bottom: 8px; width: 5px; cursor: e-resize; }
+.sa-panel-rh-w  { left: 0; top: 8px; bottom: 8px; width: 5px; cursor: w-resize; }
+.sa-panel-rh-ne { top: 0; right: 0; width: 12px; height: 12px; cursor: ne-resize; }
+.sa-panel-rh-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: se-resize; }
+.sa-panel-rh-sw { bottom: 0; left: 0; width: 12px; height: 12px; cursor: sw-resize; }
+.sa-panel-rh-nw { top: 0; left: 0; width: 12px; height: 12px; cursor: nw-resize; }
+
+/* Faint grip dots on the SE corner so the resize affordance is discoverable. */
+.sa-panel-rh-se::after {
+    content: '';
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+    width: 6px;
+    height: 6px;
+    border-right: 2px solid rgba(255, 255, 255, 0.18);
+    border-bottom: 2px solid rgba(255, 255, 255, 0.18);
+    border-bottom-right-radius: 3px;
+}
+
+/* While resizing: kill transitions + text selection, freeze inner pointer
+   events so a fast drag doesn't get swallowed by a child element. */
+.sa-panel--resizing { transition: none !important; user-select: none; }
+.sa-panel--resizing * { pointer-events: none; }
+
+/* A resizable panel manages its own height inline; don't let the CSS cap fight
+   the dragged height. (applySize also sets max-height:none inline once a size
+   is stored, but this keeps a freshly-shown unsized panel from clipping.) */
+.sa-sc-panel.sa-panel-resizable { max-height: min(80vh, 860px); }
+
+/* Collapsed + resizable: the slim bar wins over any stored height so the
+   folded panel doesn't keep a tall transparent body region. */
+.sa-sc-collapsed-panel.sa-panel-resizable { height: auto !important; }

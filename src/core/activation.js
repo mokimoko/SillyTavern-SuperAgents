@@ -15,6 +15,7 @@
 
 import { chat } from '../../../../../../script.js';
 import { getEnabledAgents, getAgentById } from '../data/store.js';
+import { readPendingUserMessage } from './richContext.js';
 
 // ============================================================================
 // GENERATION TYPE
@@ -122,15 +123,22 @@ export function shouldActivate(agent, generationType) {
  * Build the activation snapshot for a generation. Rolls probability gates
  * once, here, so the same set of agents is used for both pre-gen and post-gen.
  *
+ * Also captures the pending user message (still in the textarea at
+ * GENERATION_AFTER_COMMANDS time — ST hasn't committed it to chat yet) so
+ * rich-context agents can see what the user just typed. Stored on the snapshot
+ * because the textarea is cleared by the time post-gen runs.
+ *
  * @param {string} generationType — raw or normalized; normalized internally
- * @returns {{ generationType: string, activeAgentIds: string[] }}
+ * @param {object} [options] — generation options from the event (automatic_trigger)
+ * @returns {{ generationType: string, activeAgentIds: string[], pendingUserText: string }}
  */
-export function buildActivationSnapshot(generationType) {
+export function buildActivationSnapshot(generationType, options) {
     const genType = normalizeGenType(generationType);
     const activeAgents = getEnabledAgents().filter(a => shouldActivate(a, genType));
     return {
         generationType: genType,
         activeAgentIds: activeAgents.map(a => a.id),
+        pendingUserText: readPendingUserMessage(options),
     };
 }
 

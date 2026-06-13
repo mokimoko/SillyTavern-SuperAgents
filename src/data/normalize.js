@@ -67,6 +67,11 @@ export function createDefaultAgent() {
             role: 0,        // SYSTEM
             order: 100,
             scan: false,
+            // Wraps the agent's injected output before it enters the main
+            // prompt. {{output}} is replaced with the text. Empty = inject raw.
+            // Borrowed from Director's <director>\n{{outline}}\n</director> idea:
+            // a tag boundary keeps a planner's plan from being read as dialogue.
+            template: '',
         },
         postProcess: {
             enabled: false,
@@ -142,6 +147,11 @@ function defaultSidecarCall() {
         responseKey: '',
         includeHistory: false,
         historyMessageCount: 20,
+        // Rich context: the "what the main chat sees" inputs (card, persona,
+        // World Info, Summary, Author's Note, the pending user message). All
+        // off by default so a plain tracker pays nothing; a Director turns the
+        // relevant ones on. See core/richContext.js.
+        richContext: defaultRichContext(),
         display: {
             enabled: false,
             position: 'top',
@@ -149,6 +159,20 @@ function defaultSidecarCall() {
             dataMap: {},
             contentField: '',
         },
+    };
+}
+
+/** @returns {object} default rich-context flags (mirrors richContext.js). */
+function defaultRichContext() {
+    return {
+        enabled: false,
+        character: false,
+        persona: false,
+        worldInfo: false,
+        summary: false,
+        authorsNote: false,
+        pendingUser: false,
+        historyCount: 0,
     };
 }
 
@@ -201,6 +225,7 @@ function normalizeSidecarCall(raw) {
         historyMessageCount: Number.isFinite(Number(raw.historyMessageCount))
             ? clamp(Number(raw.historyMessageCount), 1, 100)
             : d.historyMessageCount,
+        richContext: normalizeRichContext(raw.richContext),
         display: {
             enabled: Boolean(rawDisplay.enabled),
             position: rawDisplay.position === 'bottom' ? 'bottom' : 'top',
@@ -212,6 +237,27 @@ function normalizeSidecarCall(raw) {
                 ? rawDisplay.contentField.trim()
                 : '',
         },
+    };
+}
+
+// ----------------------------------------------------------------------
+// Normalize: richContext
+// ----------------------------------------------------------------------
+
+function normalizeRichContext(raw) {
+    const d = defaultRichContext();
+    if (!raw || typeof raw !== 'object') return d;
+    return {
+        enabled: Boolean(raw.enabled),
+        character: Boolean(raw.character),
+        persona: Boolean(raw.persona),
+        worldInfo: Boolean(raw.worldInfo),
+        summary: Boolean(raw.summary),
+        authorsNote: Boolean(raw.authorsNote),
+        pendingUser: Boolean(raw.pendingUser),
+        historyCount: Number.isFinite(Number(raw.historyCount))
+            ? clamp(Number(raw.historyCount), 0, 100)
+            : d.historyCount,
     };
 }
 

@@ -60,7 +60,7 @@ import { recordAgentRun } from './idempotency.js';
 import { beginSelfGeneration, endSelfGeneration, isExternalGenerationActive } from './compatibility.js';
 import { resetTurn, recordAgents, formatTurnHint } from './callStats.js';
 
-import { formatMergeVariableData, executeMergeVariable, writeMergeArray } from '../modes/mergeVariable.js';
+import { formatMergeVariableData, executeMergeVariable, writeMergeArray, bindVariableToSwipe } from '../modes/mergeVariable.js';
 import {
     executeSidecarAgent,
     buildSidecarDisplayData,
@@ -210,15 +210,43 @@ function onGenerationStarted() {
 async function onGenerationAfterCommands(generationType, _options, dryRun) {
     if (dryRun || isAgentRunInProgress) return;
 
-    pendingSnapshot = buildActivationSnapshot(generationType);
+    pendingSnapshot = buildActivationSnapshot(generationType, _options);
     const activeAgents = getSnapshotAgents(pendingSnapshot);
     const genType = normalizeGenType(generationType);
+
+    // Are there any pre-gen sidecar (LLM) agents this turn? If so, set up a
+    // cancellable run around them so the user can abort a slow planner (e.g. a
+    // Director on a heavy model) the same way they'd stop a generation. Static
+    // pre-gen prompts and sidecar-context injection below make no LLM calls and
+    // don't need the run scaffolding.
+    const hasPreGenLLM = activeAgents.some(a =>
+        (a.phase === 'pre' || a.phase === 'both') && a.sidecarCall?.enabled,
+    );
 
     // --- Pre-gen sidecar agents (LLM calls before main generation) ---
     // Run first so their output is injected ahead of static prompts. Errors
     // are caught inside processPreGenAgents and never block main generation.
+    // The pending user message (captured on the snapshot) is threaded through
+    // so rich-context planners see what the user just typed.
     const contextText = buildPreGenContext();
-    await processPreGenAgents(activeAgents, genType, contextText);
+
+    if (hasPreGenLLM) {
+        activeRunController = new AbortController();
+        generationStopRequested = false;
+        setRunActive(true);
+        beginSelfGeneration();
+        try {
+            await processPreGenAgents(activeAgents, genType, contextText, pendingSnapshot.pendingUserText, runOpts());
+        } catch (err) {
+            if (!isAbortError(err)) console.error(`${LOG_PREFIX} pre-gen pass failed:`, err);
+        } finally {
+            endSelfGeneration();
+            activeRunController = null;
+            setRunActive(false);
+        }
+    } else {
+        await processPreGenAgents(activeAgents, genType, contextText, pendingSnapshot.pendingUserText);
+    }
 
     // --- Static pre-gen prompts (no LLM; skip sidecars, they already ran) ---
     const preAgents = activeAgents.filter(a =>
@@ -701,6 +729,76 @@ async function onMessageEdited(messageIndex) {
 }
 
 // ============================================================================
+// PRE-GEN DISPLAY ATTACH (CHARACTER_MESSAGE_RENDERED)
+// ============================================================================
+
+/**
+ * CHARACTER_MESSAGE_RENDERED — attach pre-gen agent display data to the bot
+ * message that just rendered.
+ *
+ * Pre-gen agents (e.g. a Director) produce their output BEFORE the bot message
+ * exists, so they store it to a chat variable but can't build per-message
+ * display data the way post-gen sidecars do. Now that the message is here, for
+ * each active pre-gen agent that has display enabled and a stored plan, build
+ * the display data (reads the merge variable → writes message.extra.saAgentData)
+ * and refresh so the HUD block appears under the reply.
+ *
+ * This is the SuperAgents analogue of Director's attachPendingOutline().
+ *
+ * @param {number} messageIndex
+ */
+async function onCharacterMessageRendered(messageIndex) {
+    const idx = Number(messageIndex);
+    const message = chat[idx];
+    if (!message || message.is_user || message.is_system) return;
+
+    // Use the turn's snapshot if present (the agents that actually fired this
+    // turn), else fall back to all enabled agents.
+    const agents = pendingSnapshot
+        ? getSnapshotAgents(pendingSnapshot)
+        : getEnabledAgents();
+
+    const preGenDisplayAgents = agents.filter(a =>
+        (a.phase === 'pre' || a.phase === 'both') &&
+        a.sidecarCall?.enabled &&
+        a.sidecarCall?.display?.enabled &&
+        a.mergeVariable?.enabled &&
+        a.mergeVariable.variableName,
+    );
+    if (preGenDisplayAgents.length === 0) return;
+
+    const currentSwipeId = message.swipe_id ?? 0;
+    let built = false;
+    for (const agent of preGenDisplayAgents) {
+        // Pin the agent's stored output to this message's active swipe so it
+        // survives swipe navigation (pre-gen couldn't — the message didn't
+        // exist yet). This MUST run on every render, even when post-gen already
+        // built the display block: it is the ONLY place a pre-gen agent's plan
+        // gets recorded per-swipe. Skipping it (the old presence guard did)
+        // leaves swipe history empty, so swiping back later rebuilds from the
+        // global var and shows the most-recent swipe's plan on an older swipe.
+        bindVariableToSwipe(message, agent.mergeVariable.variableName);
+
+        // Build the block only if it's missing or belongs to a different swipe.
+        // Post-gen may have already built a correct one for the current swipe;
+        // a leftover entry from another swipe is rebuilt against the pinned plan.
+        const existing = message.extra?.saAgentData?.[agent.id];
+        if (!existing || existing._swipeId !== currentSwipeId) {
+            buildSidecarDisplayData(agent, message, idx);
+            if (message.extra?.saAgentData?.[agent.id]) built = true;
+        }
+    }
+
+    // Always persist: bindVariableToSwipe mutated per-swipe storage even when
+    // no block was (re)built. Only refresh the DOM when a block actually changed.
+    saveChatDebounced();
+    if (built) {
+        refreshMessage(idx);
+        debug(`${LOG_PREFIX} attached pre-gen display to message ${idx}`);
+    }
+}
+
+// ============================================================================
 // SWIPE NAVIGATION HANDLER
 // ============================================================================
 
@@ -721,28 +819,45 @@ function onSwipeNavigation(messageIndex) {
 
     const currentSwipeId = message.swipe_id ?? 0;
 
-    // Restore merge variable data from per-swipe storage. Writing []
-    // (when this swipe has no stored items) clears the variable so the LLM
-    // gets formatEmpty next turn instead of stale data from another swipe.
-    const swipes = message.extra?.saAgentSwipes;
+    // Per-swipe storage lives at the message top level (NOT under extra): ST
+    // clones/restores extra per swipe, which would shadow this with a stale clone.
+    const swipes = message.saAgentSwipes
+        ?? message.extra?.saAgentSwipes;   // back-compat: read legacy location
+
+    // Restore merge variable data for THIS swipe. Only touch vars that actually
+    // have a record for this swipe; the stored value (which may be []) clears
+    // stale data from another swipe so next turn's LLM gets formatEmpty. A var
+    // with NO record for this swipe is left as-is rather than blanked — and,
+    // crucially, its display is NOT rebuilt below.
+    const restored = new Set();
     if (swipes) {
         for (const [varName, swipeData] of Object.entries(swipes)) {
-            writeMergeArray(varName, swipeData[currentSwipeId] ?? []);
+            if (Object.prototype.hasOwnProperty.call(swipeData, currentSwipeId)) {
+                writeMergeArray(varName, swipeData[currentSwipeId] ?? []);
+                restored.add(varName);
+            }
         }
     }
 
-    // Rebuild sidecar display from restored merge variable data
+    // Rebuild sidecar display per swipe — but ONLY for agents whose variable we
+    // just restored from a per-swipe record. Rebuilding an agent with no record
+    // would read the global var (the most-recent swipe's value) and stamp it
+    // onto an older swipe — the exact mismatch this handler is meant to prevent.
+    // With no record, the saAgentData ST already restored for this swipe is
+    // correct, so leave it untouched.
     const sidecarAgents = getEnabledAgents().filter(a =>
         a.sidecarCall?.enabled && a.sidecarCall?.display?.enabled,
     );
     for (const agent of sidecarAgents) {
+        const varName = agent.mergeVariable?.variableName;
+        if (!varName || !restored.has(varName)) continue;
         if (message.extra?.saAgentData?.[agent.id]) {
             delete message.extra.saAgentData[agent.id];
         }
         buildSidecarDisplayData(agent, message, idx);
     }
 
-    debug(`${LOG_PREFIX} swipe ${currentSwipeId}: restored merge vars + rebuilt display`);
+    debug(`${LOG_PREFIX} swipe ${currentSwipeId}: restored ${restored.size} var(s) + rebuilt display`);
 }
 
 // ============================================================================
@@ -886,6 +1001,13 @@ export function initLifecycle() {
     }
     if (event_types.MESSAGE_SWIPED) {
         eventSource.on(event_types.MESSAGE_SWIPED, onSwipeNavigation);
+    }
+
+    // Attach pre-gen agent display (e.g. Director plan) to the bot message once
+    // it renders. Registered before initRenderer so saAgentData is written
+    // before the renderer's own CHARACTER_MESSAGE_RENDERED safety-net reads it.
+    if (event_types.CHARACTER_MESSAGE_RENDERED) {
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
     }
 
     debug(`${LOG_PREFIX} lifecycle initialized`);

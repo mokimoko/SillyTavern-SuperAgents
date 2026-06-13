@@ -110,6 +110,28 @@ function persistCollapsed(v) {
     saveSettingsDebounced();
 }
 
+// ── Per-character card collapse state ───────────────────────────────────────
+// Character stat cards default to COLLAPSED; the user opens the ones they care
+// about and that choice survives re-renders (every gen rebuilds the card DOM)
+// and reloads. Stored as a name→bool "expanded" map so only the cards the user
+// explicitly opened are remembered; everything else falls back to collapsed.
+function getCharExpandStore() {
+    const root = extension_settings[MODULE_NAME] ?? (extension_settings[MODULE_NAME] = {});
+    if (!root.stateCardCharExpanded || typeof root.stateCardCharExpanded !== 'object') {
+        root.stateCardCharExpanded = {};
+    }
+    return root.stateCardCharExpanded;
+}
+/** True if this character's card was last left expanded (default false). */
+function isCharExpanded(name) {
+    return !!getCharExpandStore()[name];
+}
+/** Persist a character card's expanded/collapsed state. */
+function persistCharExpanded(name, expanded) {
+    getCharExpandStore()[name] = !!expanded;
+    saveSettingsDebounced();
+}
+
 // ============================================================================
 // CHARACTER COLORS — deterministic from name hash
 // ============================================================================
@@ -176,6 +198,9 @@ export function initStateCard() {
         handle: '.sa-sc-header',
         defaultAnchor: 'center-right',
         snapToEdges: true,
+        resizable: true,
+        minW: 240,
+        minH: 220,
     });
 
     // Close button hides the panel (and remembers the choice, which also
@@ -466,6 +491,9 @@ function renderCards(data, schema) {
             html += buildCard({
                 type: 'character', iconHtml: avatarHtml, label: name, data: charData,
                 textFieldDefs: schema.characterTextFields || [], meterDefs: schema.meters || [],
+                // Default collapsed; restore the user's last open/closed choice.
+                collapsed: !isCharExpanded(name),
+                cardName: name,
             });
         }
     }
@@ -482,9 +510,14 @@ function renderCards(data, schema) {
     if (html) lastGoodHtml = html;
 
     // Character cards collapse on header click (world events + user are pinned).
+    // Persist the new state by character name so it survives the next re-render.
     body.querySelectorAll('.sa-sc-card[data-type="character"] .sa-sc-card-header').forEach(header => {
         header.addEventListener('click', () => {
-            header.closest('.sa-sc-card')?.classList.toggle('sa-sc-collapsed');
+            const card = header.closest('.sa-sc-card');
+            if (!card) return;
+            const nowCollapsed = card.classList.toggle('sa-sc-collapsed');
+            const name = card.getAttribute('data-char-name');
+            if (name) persistCharExpanded(name, !nowCollapsed);
         });
     });
 }
@@ -514,7 +547,7 @@ function buildWorldEventsCard(events, config) {
 // CARD BUILDER
 // ============================================================================
 
-function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs }) {
+function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs, collapsed = false, cardName = null }) {
     const textFields = [];
     const meterFields = [];
     const listFields = [];
@@ -592,8 +625,11 @@ function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs
     const isPinned = type !== 'character';
     const collapseIcon = isPinned ? '' : '<span class="sa-sc-collapse-icon">▾</span>';
     const pinnedClass = isPinned ? ' sa-sc-pinned' : '';
+    // Character cards may start collapsed (persisted per name). Pinned cards never collapse.
+    const collapsedClass = (!isPinned && collapsed) ? ' sa-sc-collapsed' : '';
+    const nameAttr = cardName ? ` data-char-name="${esc(cardName)}"` : '';
 
-    return `<div class="sa-sc-card${pinnedClass}" data-type="${type}">
+    return `<div class="sa-sc-card${pinnedClass}${collapsedClass}" data-type="${type}"${nameAttr}>
         <div class="sa-sc-card-header">
             ${iconContent}
             <span class="sa-sc-card-label">${esc(label)}</span>

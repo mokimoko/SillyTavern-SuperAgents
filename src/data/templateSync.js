@@ -47,6 +47,7 @@ const TEMPLATE_FILES = [
     'secret-keeper.json',
     'dead-dove-escalation.json',
     'intimacy-kink-randomiser.json',
+    'director.json',
 ];
 
 /**

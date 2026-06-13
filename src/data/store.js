@@ -44,6 +44,9 @@ let globalSettings = {
     respectMutex: true,             // honor GENERATION_MUTEX_CAPTURED from other extensions
     agentCallTimeoutMs: 90000,      // per-call wall-clock ceiling; a stalled stream
                                     // can't wedge the run forever (0 = no timeout)
+    useNativeStopButton: true,      // reuse ST's native ✕ (#mes_stop) + hide send
+                                    // button while an agent run is active. false =
+                                    // use the separate #sa_stop button instead.
 };
 
 // ----------------------------------------------------------------------

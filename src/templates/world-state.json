@@ -5,9 +5,9 @@
     "icon": "fa-solid fa-globe",
     "category": "tracker",
     "tags": ["world", "location", "weather", "time", "environment", "continuity"],
-    "version": 4,
+    "version": 5,
     "author": "",
-    "prompt": "### World State — Post-Generation Tracker\nAnalyze the scene that just played out and determine the current world state.\n\nOutput exactly one tag:\n\n[WORLD|Location|Date|Time|Weather|Temperature]\n\nField guide:\n- Location: Where the scene is happening. Be specific and use the proper name — \"The Rusty Flagon\" not \"a tavern\", \"Katsura River Bridge\" not \"outside\".\n- Date: In-world date, using whatever calendar the setting uses. If no calendar exists yet, use a natural format.\n- Time: Formatted as HH:MM AM/PM — e.g. 09:00 PM, 02:15 PM, 06:30 AM.\n- Weather: Pick ONE from this list:\n  Clear, Sunny, Partly Cloudy, Overcast, Cloudy, Light Rain, Rain, Drizzle, Heavy Rain, Downpour, Thunderstorm, Storm, Snow, Light Snow, Heavy Snow, Blizzard, Fog, Mist, Haze, Windy, Breezy, Clear Night, Moonlit Night, Starry, Hail, Sleet\n- Temperature: Pick ONE — Freezing, Cold, Cool, Mild, Warm, Hot, Scorching.\n\nRules:\n- Output ONLY the [WORLD|...|...|...|...|...] tag. Nothing else — no prose, no explanation, no commentary.\n- PRESERVE CONTINUITY. Only modify what the narrative changes.\n- ADVANCE TIME logically. Walking across a city = time passes. A long conversation = time passes. A scene break may skip hours. Time should never stay identical between messages unless the scene is very brief.\n- INFER SENSIBLE DEFAULTS from genre, setting, and context when the narrative hasn't specified something.\n- Base your analysis on what actually happened in the scene — do not invent details not supported by the text.",
+    "prompt": "### World State — Post-Generation Tracker\n\nROLE: Determine the current world state after each scene. Output ONLY the tag. No prose, no commentary, no explanation.\n\nOUTPUT FORMAT (exactly one tag):\n[WORLD|Location|Date|Time|Weather|Temperature]\n\nCONTINUITY (apply first):\n- The current world state is provided below. Copy each field forward unchanged unless the scene moves it.\n- Advance time logically. Walking across a city advances time. A long conversation advances time. A scene break may skip hours. Time must never be identical between messages unless the scene was very brief.\n- Infer sensible defaults from genre and setting when the scene leaves a field unstated.\n\nFIELDS:\n- Location: specific proper name. \"The Rusty Flagon\" not \"a tavern\". \"Katsura River Bridge\" not \"outside\".\n- Date: in-world calendar. Natural format if the setting has no calendar.\n- Time: HH:MM AM/PM. e.g. 09:00 PM, 02:15 PM, 06:30 AM.\n- Weather: pick ONE: Clear, Sunny, Partly Cloudy, Overcast, Cloudy, Light Rain, Rain, Drizzle, Heavy Rain, Downpour, Thunderstorm, Storm, Snow, Light Snow, Heavy Snow, Blizzard, Fog, Mist, Haze, Windy, Breezy, Clear Night, Moonlit Night, Starry, Hail, Sleet.\n- Temperature: pick ONE: Freezing, Cold, Cool, Mild, Warm, Hot, Scorching.\n\nCONSTRAINTS:\n- Output ONLY the [WORLD|...|...|...|...|...] tag.\n- Base every field on evidence in the scene. Invent nothing.",
     "phase": "post",
     "injection": {
         "position": 1,
@@ -54,7 +54,7 @@
         "mode": "snapshot",
         "stripFromResponse": false,
         "injectFormatted": true,
-        "formatHeader": "Current world state (preserve continuity — only change what the narrative changes):",
+        "formatHeader": "CURRENT WORLD STATE — copy these fields forward; change only what the scene moves:",
         "formatItem": "Location: {{location}} | Date: {{date}} | Time: {{time}} | Weather: {{weather}} | Temperature: {{temperature}}",
         "formatEmpty": "No world state established yet. Infer sensible defaults from the setting."
     },

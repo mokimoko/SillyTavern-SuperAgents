@@ -5,9 +5,9 @@
     "icon": "fa-solid fa-mobile-screen-button",
     "category": "custom",
     "tags": ["phone", "texting", "messenger", "sms", "diegetic", "communication"],
-    "version": 2,
+    "version": 3,
     "author": "",
-    "prompt": "### Phone / Text Message Evaluator\nYou are simulating {{char}}'s text messaging behavior on a phone that belongs to {{user}}.\n\nBased on the current scene, decide if {{char}} would send a text message to {{user}} right now.\n\nConsider:\n- Is {{char}} off-screen, away, or not physically present in the current scene?\n- Did something just happen that {{char}} would react to via text?\n- Is there unresolved tension, a question, or news to share?\n- Would {{char}} realistically use a phone? (Consider the setting and time period)\n- {{char}}'s texting frequency: {{talkativeness_description}}\n\nIf {{char}} would NOT text right now, respond with exactly:\n[NO_TEXT]\n\nIf {{char}} WOULD text, write the message as {{char}} would actually text it:\n- Brief, casual — the way real people text\n- Match {{char}}'s personality and speech patterns\n- Use emoji/slang/abbreviations only if {{char}} would\n- 1-3 short messages max (people don't send essays via text)\n\nFormat each text message as:\n[TEXT|{{char}}|message content here]\n\nMultiple messages in a row:\n[TEXT|{{char}}|hey]\n[TEXT|{{char}}|you busy?]",
+    "prompt": "### Phone / Text Message Evaluator\n\nROLE: Simulate {{char}}'s texting behavior on a phone belonging to {{user}}. Decide if {{char}} would text {{user}} right now.\n\nWOULD {{char}} TEXT? Consider:\n- Is {{char}} off-screen, away, or not physically present in the scene?\n- Did something just happen {{char}} would react to by text?\n- Is there unresolved tension, a question, or news to share?\n- Would {{char}} realistically use a phone in this setting and time period?\n- Texting frequency: {{talkativeness_description}}\n\nIF NO: respond with exactly [NO_TEXT].\n\nIF YES — write as {{char}} actually texts:\n- Brief, casual, the way real people text.\n- Match {{char}}'s personality and speech patterns.\n- Emoji, slang, abbreviations only if {{char}} would use them.\n- 1–3 short messages max. No essays.\n\nFORMAT each message:\n[TEXT|{{char}}|message content here]\n\nMultiple in a row:\n[TEXT|{{char}}|hey]\n[TEXT|{{char}}|you busy?]",
     "phase": "post",
     "injection": {
         "position": 1,
@@ -79,6 +79,6 @@
             "regular":  { "range": [0.5, 0.8], "probability": 20, "label": "Texts fairly often — check-ins, reactions, casual messages" },
             "constant": { "range": [0.8, 1.0], "probability": 40, "label": "Texts frequently, sometimes unprompted — shares thoughts, reacts to everything" }
         },
-        "replyPrompt": "You are {{char}}, replying to a text message from {{user}}.\n\nStay in character. Reply the way {{char}} would actually text:\n- Brief and casual — real texting style\n- Match {{char}}'s personality, speech patterns, and emotional state\n- Consider what's happening in the roleplay (context provided below)\n- 1-3 short messages max\n\nRecent roleplay context:\n{{recent_chat_context}}\n\nText conversation so far:\n{{text_thread}}\n\n{{user}} just texted: {{user_message}}\n\nYou MUST reply. Do not refuse or output [NO_TEXT] — the user is waiting for a response.\n\nReply as {{char}}. Format each message as:\n[TEXT|{{char}}|your reply here]"
+        "replyPrompt": "ROLE: You are {{char}}, replying to a text from {{user}}.\n\nReply as {{char}} actually texts:\n- Brief, casual, real texting style.\n- Match {{char}}'s personality, speech patterns, and emotional state.\n- Account for what is happening in the roleplay (context below).\n- 1–3 short messages max.\n\nRecent roleplay context:\n{{recent_chat_context}}\n\nText conversation so far:\n{{text_thread}}\n\n{{user}} just texted: {{user_message}}\n\nYou MUST reply. Do not refuse or output [NO_TEXT] — {{user}} is waiting.\n\nFORMAT each message:\n[TEXT|{{char}}|your reply here]"
     }
 }

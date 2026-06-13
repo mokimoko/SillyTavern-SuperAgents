@@ -60,6 +60,10 @@ function buildEditorHTML(agent, profiles) {
     const pp = agent.postProcess;
     const cond = agent.conditions;
     const inj = agent.injection;
+    const rc = agent.sidecarCall?.richContext ?? {
+        enabled: false, character: false, persona: false, worldInfo: false,
+        summary: false, authorsNote: false, pendingUser: false, historyCount: 0,
+    };
 
     return `
     <div class="sae-head">
@@ -163,6 +167,44 @@ function buildEditorHTML(agent, profiles) {
                     <span class="sam-switch-track"></span>
                 </label>
             </div>
+            <div class="sae-field">
+                <div class="sae-label">Injection template</div>
+                <div class="sae-desc">Wraps this agent's output before it enters the main prompt. Use <code>{{output}}</code> for the text. Empty = inject raw. (e.g. a Director plan wrapped in &lt;director&gt;…&lt;/director&gt; so the writer treats it as direction, not dialogue.)</div>
+                <textarea id="sae-inj-template" class="sae-textarea" rows="3" placeholder="<director>\n{{output}}\n</director>">${esc(inj.template || '')}</textarea>
+            </div>
+        </div>
+
+        <div id="sae-richctx-section">
+            <div class="sam-divider-label"><i class="fa-solid fa-book-open"></i> Rich Context</div>
+            <p class="sae-hint">Give this agent the same inputs the main chat sees. Requires the agent to make its own LLM call (sidecar/pre-gen). All off = the agent only gets the plain recent history it would otherwise receive.</p>
+            <div id="sae-richctx-warn" class="sae-hint" style="color:var(--warning,#e0a030);${agent.sidecarCall?.enabled ? 'display:none' : ''}"><i class="fa-solid fa-triangle-exclamation"></i> This agent has no sidecar/pre-gen LLM call configured, so rich context won't be used. Director and tracker templates set this up; custom agents need a sidecar call (authored via template/JSON import).</div>
+            <div class="sam-row">
+                <div class="sam-row-info">
+                    <div class="sam-row-title">Enable rich context</div>
+                    <div class="sam-row-desc">Master switch for the sections below.</div>
+                </div>
+                <label class="sam-switch">
+                    <input type="checkbox" id="sae-rc-enabled" ${rc.enabled ? 'checked' : ''}>
+                    <span class="sam-switch-track"></span>
+                </label>
+            </div>
+            <div id="sae-richctx-flags" class="${rc.enabled ? '' : 'sae-hidden'}">
+                <div class="sae-check-row">
+                    <label class="sae-check"><input type="checkbox" id="sae-rc-character" ${rc.character ? 'checked' : ''}> Character card</label>
+                    <label class="sae-check"><input type="checkbox" id="sae-rc-persona" ${rc.persona ? 'checked' : ''}> Player persona</label>
+                    <label class="sae-check"><input type="checkbox" id="sae-rc-worldinfo" ${rc.worldInfo ? 'checked' : ''}> World Info / lore</label>
+                </div>
+                <div class="sae-check-row">
+                    <label class="sae-check"><input type="checkbox" id="sae-rc-summary" ${rc.summary ? 'checked' : ''}> Running summary</label>
+                    <label class="sae-check"><input type="checkbox" id="sae-rc-authorsnote" ${rc.authorsNote ? 'checked' : ''}> Author's Note</label>
+                    <label class="sae-check"><input type="checkbox" id="sae-rc-pendinguser" ${rc.pendingUser ? 'checked' : ''}> Pending user message</label>
+                </div>
+                <div class="sae-field">
+                    <div class="sae-label">History messages</div>
+                    <div class="sae-desc">How many recent messages to include as a labelled block (0 = none). The pending user message is added separately above.</div>
+                    <input type="number" id="sae-rc-history" class="sae-input" min="0" max="100" value="${rc.historyCount}">
+                </div>
+            </div>
         </div>
 
         <div id="sae-post-section">
@@ -262,6 +304,24 @@ function readFormToAgent(existingAgent) {
             role: parseInt($('#sae-inj-role').val()),
             order: parseInt($('#sae-inj-order').val()) || 100,
             scan: $('#sae-inj-scan').is(':checked'),
+            template: $('#sae-inj-template').val() || '',
+        },
+        // Merge rich-context flags into sidecarCall, preserving the rest of the
+        // sidecar config (enabled, maxTokens, responseKey, display, etc.) which
+        // this form doesn't expose.
+        sidecarCall: {
+            ...existingAgent.sidecarCall,
+            richContext: {
+                ...(existingAgent.sidecarCall?.richContext ?? {}),
+                enabled: $('#sae-rc-enabled').is(':checked'),
+                character: $('#sae-rc-character').is(':checked'),
+                persona: $('#sae-rc-persona').is(':checked'),
+                worldInfo: $('#sae-rc-worldinfo').is(':checked'),
+                summary: $('#sae-rc-summary').is(':checked'),
+                authorsNote: $('#sae-rc-authorsnote').is(':checked'),
+                pendingUser: $('#sae-rc-pendinguser').is(':checked'),
+                historyCount: parseInt($('#sae-rc-history').val()) || 0,
+            },
         },
         postProcess: {
             ...existingAgent.postProcess,
@@ -306,6 +366,9 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
     $('#sae-phase').on('change', updateSectionVisibility);
     $('#sae-rewrite-enabled').on('change', function () {
         $('#sae-rewrite-settings').toggleClass('sae-hidden', !this.checked);
+    });
+    $('#sae-rc-enabled').on('change', function () {
+        $('#sae-richctx-flags').toggleClass('sae-hidden', !this.checked);
     });
     $('#sae-probability').on('input', function () {
         $('#sae-probability-val').text(this.value + '%');

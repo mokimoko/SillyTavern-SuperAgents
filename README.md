@@ -21,6 +21,16 @@ profile collapse into a single call.
   that survives swipes.
 - **Pre-gen agents** — analyze recent history *before* the main generation and
   inject the result into the upcoming prompt.
+- **Rich context** — any sidecar/pre-gen agent can opt into the same inputs the
+  main chat sees: character card, player persona, active World Info, the running
+  summary, the author's note, and the *pending* user message (read from the
+  textarea before it's committed to chat). Per-agent toggles in the editor.
+- **Director** — a built-in pre-gen agent that uses rich context to outline what
+  should happen next turn, injects the plan wrapped in `<director>` tags, and
+  displays it as a HUD block under the reply. The Director extension's idea,
+  rebuilt on the shared agent pipeline (batching, persistence, per-swipe state).
+- **Injection templates** — pre-gen output can be wrapped before it enters the
+  prompt (`{{output}}` placeholder), so a plan reads as direction, not dialogue.
 - **Batched sidecars** — agents sharing a connection profile are combined into
   one JSON-envelope call, capped to avoid backend truncation, with per-key
   salvage so one malformed key doesn't drop the whole batch.
@@ -28,7 +38,7 @@ profile collapse into a single call.
 - **Phone agent** — diegetic texting via a floating messenger panel.
 - **Groups** — sequential or parallel execution ordering across agents.
 - **Renderers** — World State, Continuity Check, Narrative Engine, Direction
-  Menu, and Parallel Off-Screen HUDs.
+  Menu, Parallel Off-Screen, and Director-plan HUDs.
 - **Cost hint** — a per-turn line showing agents-run vs actual calls, so the
   batching saving is visible (toggle: `showCostHint`).
 - **Compatibility guard + macros** — coexists with other generation-driving
@@ -95,6 +105,7 @@ Set via `SuperAgents.settings.set({ ... })`:
 | `batchByProfile` | `true` | group sidecars by profile into one envelope |
 | `batchMaxTokens` | `16384` | cap on the batched envelope |
 | `respectMutex` | `true` | honor other extensions' generation mutex |
+| `useNativeStopButton` | `true` | reuse ST's native ✕ to cancel a run + hide the send button while it runs; `false` uses a separate `#sa_stop` button |
 
 ## Cost hint (dev console)
 

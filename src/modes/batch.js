@@ -21,6 +21,7 @@
  */
 
 import { substituteParams, setExtensionPrompt } from '../../../../../../script.js';
+import { chat } from '../../../../../../script.js';
 import { debug } from '../../index.js';
 import { callAgentLLM, isAbortError } from '../core/llm.js';
 import { recordAgentRun } from '../core/idempotency.js';
@@ -32,6 +33,8 @@ import {
     executeSidecarAgent,
     executePreGenSidecarAgent,
     buildSidecarDisplayData,
+    buildAgentRichContext,
+    buildHistoryContext,
     groupSidecarsByProfile,
 } from './sidecar.js';
 import { getGlobalSettings } from '../data/store.js';
@@ -40,9 +43,10 @@ import { recordAgents } from '../core/callStats.js';
 const LOG_PREFIX = '[SuperAgents/batch]';
 const PROMPT_KEY_PREFIX = 'sa_agent_';
 
-// Envelope output ceiling. The per-agent maxTokens sum is clamped to this so a
-// large batch doesn't ask for an envelope the backend silently truncates (a
-// truncated envelope fails JSON.parse and drops every agent's data that turn).
+// Fallback envelope output ceiling. The per-agent maxTokens sum is clamped to
+// this so a large batch doesn't ask for an envelope the backend silently
+// truncates (a truncated envelope fails JSON.parse and drops every agent's data
+// that turn). Used only when globalSettings.batchMaxTokens isn't a sane number.
 const BATCH_MAXTOKENS_CEILING = 8192;
 
 /**
@@ -63,15 +67,21 @@ function timeoutOpts() {
 // ============================================================================
 
 /**
- * Sum the batch's per-agent maxTokens, clamped to a ceiling.
+ * Sum the batch's per-agent maxTokens, clamped to the configured ceiling
+ * (globalSettings.batchMaxTokens), falling back to BATCH_MAXTOKENS_CEILING when
+ * that setting isn't a sane positive number.
  * @param {object[]} agents
  * @returns {number}
  */
 function batchMaxTokens(agents) {
+    const configured = Number(getGlobalSettings().batchMaxTokens);
+    const ceiling = Number.isFinite(configured) && configured > 0
+        ? configured
+        : BATCH_MAXTOKENS_CEILING;
     const sum = agents.reduce(
         (n, a) => n + (a.sidecarCall?.maxTokens || a.maxTokens || 2048), 0,
     );
-    return Math.min(sum, BATCH_MAXTOKENS_CEILING);
+    return Math.min(sum, ceiling);
 }
 
 /**
@@ -211,9 +221,10 @@ function salvageKey(text, key) {
  * @param {string} sceneText
  * @param {object} message
  * @param {string} generationType
+ * @param {number} [messageIndex] — context point for the optional history block
  * @returns {string}
  */
-function buildBatchedPrompt(agents, sceneText, message, generationType) {
+function buildBatchedPrompt(agents, sceneText, message, generationType, messageIndex = chat.length) {
     const keys = agents.map(a => a.sidecarCall?.responseKey || a.id);
 
     const taskBlocks = agents.map(agent => {
@@ -228,6 +239,21 @@ function buildBatchedPrompt(agents, sceneText, message, generationType) {
         return `=== Task: ${key} ===\n${prompt}`;
     }).join('\n\n');
 
+    // Shared history block: if ANY batched agent opted into history, include one
+    // <chat_history> block sized to the largest requested window. Mirrors the
+    // solo path (sidecar.js), which the batch path previously skipped — so a
+    // batched tracker now gets the same recent-scene context a solo one does.
+    let historyBlock = '';
+    const histCount = agents
+        .filter(a => a.sidecarCall?.includeHistory)
+        .reduce((max, a) => Math.max(max, a.sidecarCall.historyMessageCount || 20), 0);
+    if (histCount > 0) {
+        const historyText = buildHistoryContext(messageIndex, histCount);
+        if (historyText) {
+            historyBlock = `\nRecent conversation history (check the latest scene against these established facts):\n<chat_history>\n${historyText}\n</chat_history>\n`;
+        }
+    }
+
     return `You are running ${agents.length} analysis tasks on the scene below.
 Return a single JSON object with exactly these keys: ${keys.map(k => `"${k}"`).join(', ')}.
 Each key contains the structured output for that task (as described in each task's instructions).
@@ -237,7 +263,7 @@ ${taskBlocks}
 
 Character name: ${message.name || 'Assistant'}
 Generation type: ${generationType}
-
+${historyBlock}
 <scene>
 ${sceneText}
 </scene>`;
@@ -274,7 +300,7 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
         toastr.info('Analyzing (batched)...', batchNames, { timeOut: 0, extendedTimeOut: 0 });
     }
 
-    const systemPrompt = buildBatchedPrompt(batch, sceneText, message, generationType);
+    const systemPrompt = buildBatchedPrompt(batch, sceneText, message, generationType, messageIndex);
 
     let response;
     try {
@@ -360,15 +386,21 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
  * is a text string (the agent's output), injected into the upcoming main
  * generation rather than stored as structured data.
  *
+ * Async because rich-context agents pull World Info (a dry-run WI scan).
+ * Per-agent rich context is folded into that agent's task block so each task
+ * carries only the context it asked for. The pending user message is appended
+ * once at the end (it's the same for every task in the batch).
+ *
  * @param {object[]} agents
  * @param {string} contextText — formatted recent chat history
  * @param {string} generationType
- * @returns {string}
+ * @param {string} [pendingUserText] — the user's not-yet-committed message
+ * @returns {Promise<string>}
  */
-function buildBatchedPreGenPrompt(agents, contextText, generationType) {
+async function buildBatchedPreGenPrompt(agents, contextText, generationType, pendingUserText = '') {
     const keys = agents.map(a => a.sidecarCall?.responseKey || a.id);
 
-    const taskBlocks = agents.map(agent => {
+    const taskBlocks = await Promise.all(agents.map(async (agent) => {
         const key = agent.sidecarCall?.responseKey || agent.id;
         let prompt = substituteParams(agent.prompt).trim();
 
@@ -377,21 +409,34 @@ function buildBatchedPreGenPrompt(agents, contextText, generationType) {
             if (formatted) prompt += '\n\n' + formatted;
         }
 
+        // Per-agent rich context — only the sections this agent enabled. The
+        // pending message is handled batch-wide below, so suppress it here to
+        // avoid duplicating it in every task block.
+        const richContext = await buildAgentRichContext(agent, chat.length - 1, '');
+        if (richContext) prompt += '\n\n' + richContext;
+
         return `=== Task: ${key} ===\n${prompt}`;
-    }).join('\n\n');
+    }));
+
+    // Does any agent in the batch want the pending message? If so, append it
+    // once at envelope scope.
+    const wantsPending = agents.some(a => a.sidecarCall?.richContext?.enabled && a.sidecarCall.richContext.pendingUser);
+    const pendingBlock = (wantsPending && pendingUserText.trim())
+        ? `\n\n### Pending user message\n${substituteParams(pendingUserText).trim()}`
+        : '';
 
     return `You are running ${agents.length} analysis tasks on the recent conversation below.
 Return a single JSON object with exactly these keys: ${keys.map(k => `"${k}"`).join(', ')}.
 Each key's value is a string containing the complete output text for that task.
 Output ONLY valid JSON — no commentary, no markdown fences, no explanation.
 
-${taskBlocks}
+${taskBlocks.join('\n\n')}
 
 Generation type: ${generationType}
 
 <chat_history>
 ${contextText}
-</chat_history>`;
+</chat_history>${pendingBlock}`;
 }
 
 /**
@@ -403,12 +448,14 @@ ${contextText}
  * @param {object[]} batch
  * @param {string} contextText — formatted recent chat history
  * @param {string} generationType
+ * @param {string} [pendingUserText] — the user's not-yet-committed message
+ * @param {object} [opts] — { signal, timeoutMs } for cancel/timeout
  * @returns {Promise<Array<{agent: object, response: string}>>}
  */
-export async function executePreGenSidecarBatch(batch, contextText, generationType) {
+export async function executePreGenSidecarBatch(batch, contextText, generationType, pendingUserText = '', opts = {}) {
     if (batch.length === 0) return [];
     if (batch.length === 1) {
-        const result = await executePreGenSidecarAgent(batch[0], contextText, generationType);
+        const result = await executePreGenSidecarAgent(batch[0], contextText, generationType, pendingUserText, opts);
         return [{ agent: batch[0], response: result.response }];
     }
 
@@ -422,7 +469,11 @@ export async function executePreGenSidecarBatch(batch, contextText, generationTy
         toastr.info('Analyzing context (batched)...', batchNames, { timeOut: 0, extendedTimeOut: 0 });
     }
 
-    const systemPrompt = buildBatchedPreGenPrompt(batch, contextText, generationType);
+    const systemPrompt = await buildBatchedPreGenPrompt(batch, contextText, generationType, pendingUserText);
+
+    // Cancel/timeout: prefer the caller's signal+timeout (the pre-gen run
+    // controller), falling back to the configured wall-clock timeout alone.
+    const callOpts = (opts && (opts.signal || opts.timeoutMs !== undefined)) ? opts : timeoutOpts();
 
     let response;
     try {
@@ -432,15 +483,17 @@ export async function executePreGenSidecarBatch(batch, contextText, generationTy
             profileRef: profileId,
             maxTokens,
             callerName: `pre-gen-batch:${batchNames}`,
-            ...timeoutOpts(),
+            ...callOpts,
         });
     } catch (err) {
         if (isAbortError(err)) {
             if (showNotifications) {
                 toastr.clear();
-                toastr.info('Timed out', 'Pre-Gen Batch', { timeOut: 4000 });
+                const msg = err.reason === 'timeout' ? 'Timed out' : 'Stopped';
+                toastr.info(msg, 'Pre-Gen Batch', { timeOut: 4000 });
             }
-            return batch.map(a => ({ agent: a, response: '' }));
+            // Propagate so the run scaffolding unwinds (user pressed stop).
+            throw err;
         }
         console.error(`${LOG_PREFIX} pre-gen batch call failed:`, err);
         response = '';
@@ -481,6 +534,55 @@ export async function executePreGenSidecarBatch(batch, contextText, generationTy
 // ============================================================================
 
 /**
+ * Apply an agent's injection wrapper template to its output. {{output}} is
+ * replaced with the text; if the template has no placeholder the text is
+ * appended. Empty template = raw output (current behavior).
+ *
+ * @param {object} agent
+ * @param {string} output
+ * @returns {string}
+ */
+function wrapInjection(agent, output) {
+    const tpl = String(agent?.injection?.template ?? '').trim();
+    if (!tpl) return output;
+    return tpl.includes('{{output}}')
+        ? tpl.replaceAll('{{output}}', output)
+        : `${tpl}\n${output}`;
+}
+
+/**
+ * Persist a pre-gen agent's output to its merge variable (snapshot mode) so it
+ * shows up as a HUD block under the upcoming message and survives swipes —
+ * the Director-plan display path. Only runs when the agent has a mergeVariable
+ * configured; the raw output string is stored as the (first) field's value.
+ * No-op otherwise.
+ *
+ * Pre-gen runs before the bot message exists, so we only write the chat
+ * variable here (the part injection and the display rebuild both read). The
+ * per-swipe binding to the actual message happens later, at
+ * CHARACTER_MESSAGE_RENDERED (lifecycle.onCharacterMessageRendered →
+ * bindVariableToSwipe), once a real message is available.
+ *
+ * @param {object} agent
+ * @param {string} output
+ */
+function persistPreGenOutput(agent, output) {
+    const mv = agent.mergeVariable;
+    if (!mv?.enabled || !mv.variableName) return;
+    try {
+        // Throwaway holder: storeBatchedSidecarResult also sets per-swipe data,
+        // but at pre-gen there's no real message yet, so that write is discarded
+        // here and redone against the rendered message later. The chat-variable
+        // write (what injection + display read) is what matters now.
+        const holder = { extra: {} };
+        storeBatchedSidecarResult(agent, output, holder, chat.length);
+        debug(`${LOG_PREFIX} persisted pre-gen output for "${agent.name}" → "${mv.variableName}"`);
+    } catch (err) {
+        debug(`${LOG_PREFIX} persist pre-gen output failed for "${agent.name}":`, err?.message);
+    }
+}
+
+/**
  * Run all pre-gen sidecar agents before the main generation and inject each
  * result into the upcoming prompt via setExtensionPrompt.
  *
@@ -490,8 +592,10 @@ export async function executePreGenSidecarBatch(batch, contextText, generationTy
  * @param {object[]} activeAgents — all active agents for this turn
  * @param {string} generationType — normalized
  * @param {string} contextText — formatted recent chat history (built by caller)
+ * @param {string} [pendingUserText] — the user's not-yet-committed message
+ * @param {object} [opts] — { signal, timeoutMs } for cancel/timeout of the LLM calls
  */
-export async function processPreGenAgents(activeAgents, generationType, contextText) {
+export async function processPreGenAgents(activeAgents, generationType, contextText, pendingUserText = '', opts = {}) {
     const preGenSidecars = activeAgents.filter(a =>
         (a.phase === 'pre' || a.phase === 'both') && a.sidecarCall?.enabled,
     );
@@ -502,9 +606,12 @@ export async function processPreGenAgents(activeAgents, generationType, contextT
 
     const batches = groupSidecarsByProfile(preGenSidecars);
     const batchPromises = [...batches.values()].map(batch =>
-        executePreGenSidecarBatch(batch, contextText, generationType)
+        executePreGenSidecarBatch(batch, contextText, generationType, pendingUserText, opts)
             .catch(err => {
-                console.error(`${LOG_PREFIX} pre-gen batch failed:`, err);
+                // Abort (user stop / timeout): the signal already halted the
+                // call; nothing to inject. Ordinary failures: log and move on so
+                // one bad batch can't block main generation.
+                if (!isAbortError(err)) console.error(`${LOG_PREFIX} pre-gen batch failed:`, err);
                 return batch.map(a => ({ agent: a, response: '' }));
             }),
     );
@@ -515,10 +622,16 @@ export async function processPreGenAgents(activeAgents, generationType, contextT
         if (settled.status !== 'fulfilled') continue;
         for (const { agent, response } of settled.value) {
             if (!response?.trim()) continue;
+
+            // Persist for display (Director plan HUD) before stripping/wrapping —
+            // the displayed plan should match the raw model output.
+            persistPreGenOutput(agent, response.trim());
+
+            const wrapped = wrapInjection(agent, response);
             const key = PROMPT_KEY_PREFIX + agent.id;
             setExtensionPrompt(
                 key,
-                response,
+                wrapped,
                 agent.injection.position,
                 agent.injection.depth,
                 agent.injection.scan,

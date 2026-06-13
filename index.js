@@ -139,10 +139,12 @@ import { renderContinuityCheck } from './src/render/hooks/continuityCheck.js';
 import { renderNarrativeEngine } from './src/render/hooks/narrativeEngine.js';
 import { renderParallelOffscreen } from './src/render/hooks/parallelOffscreen.js';
 import { renderDirectionMenu, initDirectionMenuDelegation } from './src/render/hooks/directionMenuRenderer.js';
+import { renderDirectorPlan } from './src/render/hooks/directorPlan.js';
 
 // UI layer: unified management modal (Step 9)
 import { openModal, closeModal, isModalOpen, registerPanelControl } from './src/ui/modal.js';
 import { initRunIndicator } from './src/ui/runIndicator.js';
+import { initNativeStopButton } from './src/ui/nativeStopButton.js';
 import { initDiffButtons } from './src/ui/diffButton.js';
 import {
     initStateCard,
@@ -437,6 +439,7 @@ jQuery(async () => {
         registerRenderHook('ne-engine-data', renderNarrativeEngine);
         registerRenderHook('parallel-hud-data', renderParallelOffscreen);
         registerRenderHook('dm-menu-data', renderDirectionMenu);
+        registerRenderHook('director-plan-data', renderDirectorPlan);
         // Direction Menu uses delegated click handling on #chat; install it up
         // front (idempotent + self-retries if #chat isn't in the DOM yet).
         initDirectionMenuDelegation();
@@ -445,10 +448,18 @@ jQuery(async () => {
         // UI: add the wand-menu launcher for the unified modal.
         setupExtensionsMenuButton();
 
-        // UI: in-input stop button — lets the user cancel an in-flight agent
-        // run (post-gen rewrite/sidecar or a manual run) the same way ST's own
-        // stop aborts a generation.
-        initRunIndicator();
+        // UI: in-input stop affordance — lets the user cancel an in-flight
+        // agent run (pre-gen planner, post-gen rewrite/sidecar, or a manual run)
+        // the same way ST's own stop aborts a generation. Two styles:
+        //   - native (default): reuse ST's own ✕ (#mes_stop) and hide the send
+        //     button while a run is active, like a normal generation.
+        //   - separate: a dedicated #sa_stop button beside ST's stop.
+        // Toggle via globalSettings.useNativeStopButton.
+        if (getGlobalSettings().useNativeStopButton) {
+            initNativeStopButton();
+        } else {
+            initRunIndicator();
+        }
 
         // UI: ReCast-style diff viewer — a per-message button that opens a
         // read-only inline diff of a rewrite agent's change, with revert.
