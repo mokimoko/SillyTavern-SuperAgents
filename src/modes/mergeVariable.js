@@ -54,6 +54,47 @@ export function writeMergeArray(varName, arr) {
 }
 
 // ============================================================================
+// PER-TURN MEMORY BASELINE (swipe / regenerate correctness)
+// ============================================================================
+
+/**
+ * Freeze the value a turn feeds back into itself. A fresh turn captures the
+ * current live value — the previous turn's committed output, already synced to
+ * whatever swipe was active — as this turn's baseline. Every swipe/regenerate
+ * of the same turn then restores it, so each re-roll injects the SAME previous
+ * value instead of the discarded attempt's output.
+ *
+ * Baseline lives in chat_metadata (NOT on the message) so it survives
+ * regenerate popping the last message. Stored as the raw JSON string (matching
+ * chat_metadata.variables), or null when the var was empty at capture time.
+ * @param {string} varName
+ */
+export function captureTurnBaseline(varName) {
+    if (!varName) return;
+    if (!chat_metadata.saAgentBaseline) chat_metadata.saAgentBaseline = {};
+    chat_metadata.saAgentBaseline[varName] = chat_metadata?.variables?.[varName] ?? null;
+    saveChatDebounced();
+}
+
+/**
+ * Restore a var to this turn's frozen baseline before a re-roll's pre-gen reads
+ * it. No-op if nothing was frozen (leave the live value as-is); a null baseline
+ * means "was empty," so the live var is cleared back to empty.
+ * @param {string} varName
+ */
+export function restoreTurnBaseline(varName) {
+    if (!varName) return;
+    const base = chat_metadata?.saAgentBaseline?.[varName];
+    if (base === undefined) return;
+    if (base === null) {
+        if (chat_metadata.variables) delete chat_metadata.variables[varName];
+        return;
+    }
+    if (!chat_metadata.variables) chat_metadata.variables = {};
+    chat_metadata.variables[varName] = base;
+}
+
+// ============================================================================
 // FORMAT FOR LLM INJECTION
 // ============================================================================
 

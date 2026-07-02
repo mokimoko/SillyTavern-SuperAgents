@@ -42,11 +42,13 @@ import {
     instantiateTemplate,
 } from '../data/store.js';
 import { AGENT_CATEGORIES } from '../data/normalize.js';
+import { resolveAgentIcon, resolveGroupIcon } from './iconResolver.js';
 import { listBuiltInTemplates } from '../data/templateSync.js';
 import { importAgents, exportAllAgents, exportAgent } from '../data/importExport.js';
 import { runAgentOnMessage } from '../core/lifecycle.js';
 import { renderAgentEditor } from './editor.js';
 import { renderGroupEditor } from './groupEditor.js';
+import { initCardTooltips } from './cardTooltip.js';
 
 const LOG_PREFIX = '[SuperAgents/modal]';
 
@@ -177,6 +179,9 @@ function ensureModalDOM() {
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape' && isOpen) closeModal();
     });
+
+    // Reveal full text of truncated card names / descriptions on hover.
+    initCardTooltips(modal);
 }
 
 // ============================================================================
@@ -304,10 +309,11 @@ function renderGroupsTab(container) {
 
 function renderAgentCard(agent) {
     const cat = AGENT_CATEGORIES[agent.category] || AGENT_CATEGORIES.custom;
+    const icon = resolveAgentIcon(agent);
     const phase = { pre: 'Pre', post: 'Post', both: 'Both' }[agent.phase] || agent.phase || '—';
     return `
     <div class="sam-card" data-agent-id="${agent.id}">
-        <div class="sam-card-icon"><i class="fa-solid ${cat.icon}"></i></div>
+        <div class="sam-card-icon"><i class="fa-solid ${icon}"></i></div>
         <div class="sam-card-info">
             <div class="sam-card-name">${esc(agent.name || 'Unnamed')}</div>
             <div class="sam-card-desc">${esc(agent.description || 'No description')}</div>
@@ -332,9 +338,10 @@ function renderAgentCard(agent) {
 function renderGroupCard(group) {
     const n = group.agentIds?.length || 0;
     const mode = group.executionMode === 'sequential' ? 'Sequential' : 'Parallel';
+    const icon = resolveGroupIcon(group);
     return `
     <div class="sam-card" data-group-id="${group.id}">
-        <div class="sam-card-icon"><i class="fa-solid fa-layer-group"></i></div>
+        <div class="sam-card-icon"><i class="fa-solid ${icon}"></i></div>
         <div class="sam-card-info">
             <div class="sam-card-name">${esc(group.name || 'Unnamed Group')}</div>
             <div class="sam-card-desc">${esc(group.description || `${n} agent${n !== 1 ? 's' : ''}`)}</div>

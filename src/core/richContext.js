@@ -225,24 +225,45 @@ async function getActiveWorldInfo(ctx, mesNum, maxContext) {
 // ============================================================================
 
 /**
- * Recent chat history as labelled lines, newest-last, tracker blocks stripped.
- * Unlike modes/sidecar.js buildHistoryContext this honors a context cap and
- * the same block-stripping the WI scan uses.
+ * Recent chat history as labelled lines, newest-last, with agent/tracker
+ * blocks stripped and a context cap applied. This is the ONE history builder
+ * in SuperAgents — modes/sidecar.js buildHistoryContext delegates here so the
+ * stripping + capping logic lives in a single place (audit fix #10).
  *
  * @param {object} ctx
- * @param {number} mesNum   highest message index to include
- * @param {number} count    how many recent messages
+ * @param {number} mesNum    highest message index to include (inclusive)
+ * @param {number} count     how many recent messages
+ * @param {object} [opts]
+ * @param {'bracket'|'plain'} [opts.speakerStyle='plain']
+ *        'plain'   → `Name: text`        (rich-context section style)
+ *        'bracket' → `[Name]: text`      (sidecar/<chat_history> style)
  * @returns {string}
  */
-function getHistory(ctx, mesNum, count) {
+export function buildHistoryLines(ctx, mesNum, count, opts = {}) {
     if (!count || count <= 0) return '';
+    const bracket = opts.speakerStyle === 'bracket';
     const end = Math.min(Number(mesNum) + 1, chat.length);
+    const label = (c) => {
+        const name = c.is_user ? '{{user}}' : (c.name || 'Assistant');
+        return bracket ? `[${name}]` : name;
+    };
     const slice = chat
         .filter((c, index) => !c.is_system && index < end)
         .slice(-count)
-        .map(c => `${c.is_user ? '{{user}}' : (c.name || 'Assistant')}: ${String(c.mes || '').replace(BLOCK_RE, '').trim()}`)
+        .map(c => `${label(c)}: ${String(c.mes || '').replace(BLOCK_RE, '').trim()}`)
         .filter(line => line.split(': ').slice(1).join(': ').trim());
     return sub(ctx, slice.join('\n\n')).trim();
+}
+
+/**
+ * Internal rich-context history (plain `Name: text` section style).
+ * @param {object} ctx
+ * @param {number} mesNum
+ * @param {number} count
+ * @returns {string}
+ */
+function getHistory(ctx, mesNum, count) {
+    return buildHistoryLines(ctx, mesNum, count, { speakerStyle: 'plain' });
 }
 
 // ============================================================================

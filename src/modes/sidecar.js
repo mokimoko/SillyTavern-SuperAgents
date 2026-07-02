@@ -19,10 +19,11 @@ import {
     chat,
     substituteParams,
 } from '../../../../../../script.js';
+import { getContext } from '../../../../../extensions.js';
 import { debug } from '../../index.js';
 import { callAgentLLM, isAbortError } from '../core/llm.js';
 import { recordAgentRun } from '../core/idempotency.js';
-import { buildRichContext } from '../core/richContext.js';
+import { buildRichContext, buildHistoryLines } from '../core/richContext.js';
 import {
     readMergeArray,
     formatMergeVariableData,
@@ -38,21 +39,19 @@ const LOG_PREFIX = '[SuperAgents/sidecar]';
 
 /**
  * Build a text representation of recent chat messages for agent context.
- * @param {number} beforeIndex — message index to look back from
+ *
+ * Delegates to richContext.buildHistoryLines (audit fix #10) so block-stripping
+ * and capping live in one place. Uses bracket speaker style ([Name]: text) to
+ * preserve the historical <chat_history> shape. `beforeIndex` is exclusive (we
+ * look back from it but don't include it), matching the prior contract, so we
+ * pass mesNum = beforeIndex - 1.
+ *
+ * @param {number} beforeIndex — message index to look back from (exclusive)
  * @param {number} [messageCount=20] — how many recent messages to include
  * @returns {string}
  */
 export function buildHistoryContext(beforeIndex, messageCount = 20) {
-    const lines = [];
-    const end = Math.min(beforeIndex, chat.length);
-    const start = Math.max(0, end - messageCount);
-    for (let i = start; i < end; i++) {
-        const msg = chat[i];
-        if (!msg) continue;
-        const speaker = msg.is_user ? '{{user}}' : (msg.name || 'Assistant');
-        lines.push(`[${speaker}]: ${msg.mes}`);
-    }
-    return substituteParams(lines.join('\n\n'));
+    return buildHistoryLines(getContext(), Number(beforeIndex) - 1, messageCount, { speakerStyle: 'bracket' });
 }
 
 /**

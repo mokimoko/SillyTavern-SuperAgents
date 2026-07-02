@@ -23,11 +23,16 @@ import { getContext } from '../../../../../extensions.js';
 import { debug } from '../../index.js';
 import { createDefaultAgent, getAgentById, saveAgent } from '../data/store.js';
 import { AGENT_CATEGORIES } from '../data/normalize.js';
+import { createIconPicker } from './iconPicker.js';
 
 const LOG_PREFIX = '[SuperAgents/editor]';
 
 // Escape key handler reference, so we can detach it on close.
 let escHandler = null;
+
+// Live icon-picker instance for the open editor, so readFormToAgent (a
+// standalone function) can read the chosen class without a closure.
+let iconPicker = null;
 
 // ============================================================================
 // PROFILE HELPERS
@@ -64,6 +69,10 @@ function buildEditorHTML(agent, profiles) {
         enabled: false, character: false, persona: false, worldInfo: false,
         summary: false, authorsNote: false, pendingUser: false, historyCount: 0,
     };
+    const mv = agent.mergeVariable ?? {};
+    // "Advanced" = template-authored structured extraction. Simple carry-output
+    // toggles step aside for these so a save can't clobber their config.
+    const mvAdvanced = (mv.fieldNames?.length > 1) || !!mv.extractPattern;
 
     return `
     <div class="sae-head">
@@ -91,6 +100,11 @@ function buildEditorHTML(agent, profiles) {
                 <div class="sae-label">Author</div>
                 <input type="text" id="sae-author" class="sae-input" value="${esc(agent.author)}" placeholder="Optional">
             </div>
+        </div>
+        <div class="sae-field">
+            <div class="sae-label">Icon</div>
+            <div class="sae-desc">Shown in the manager and the hover panel. Overrides the category icon. Leave on the category default if unsure.</div>
+            <div id="sae-icon-mount"></div>
         </div>
         <div class="sae-field">
             <div class="sae-label">Tags</div>
@@ -124,6 +138,60 @@ function buildEditorHTML(agent, profiles) {
                 <div class="sae-label">Max Tokens</div>
                 <input type="number" id="sae-max-tokens" class="sae-input" min="64" max="32000" value="${agent.maxTokens}">
             </div>
+        </div>
+
+        <div id="sae-sidecar-section">
+            <div class="sam-divider-label"><i class="fa-solid fa-satellite-dish"></i> LLM Call (Sidecar)</div>
+            <p class="sae-hint">Let this agent make its own LLM call, separate from the main generation. Required for rich context and for anything that needs the model's own output (trackers, planners).</p>
+            <div class="sam-row">
+                <div class="sam-row-info">
+                    <div class="sam-row-title">Make its own LLM call</div>
+                    <div class="sam-row-desc" id="sae-sidecar-desc">Runs before generation and injects its output into the reply.</div>
+                </div>
+                <label class="sam-switch">
+                    <input type="checkbox" id="sae-sidecar-enabled" ${agent.sidecarCall?.enabled ? 'checked' : ''}>
+                    <span class="sam-switch-track"></span>
+                </label>
+            </div>
+            ${!mvAdvanced ? `
+            <div id="sae-memory-block">
+                <div class="sam-divider-label"><i class="fa-solid fa-brain"></i> Memory / Carry Output</div>
+                <p class="sae-hint">Remember this agent's last output and feed it back next turn — for trackers that build on what they said before. No display or extraction pattern needed.</p>
+                <div class="sam-row">
+                    <div class="sam-row-info">
+                        <div class="sam-row-title">Remember this agent's output</div>
+                        <div class="sam-row-desc">Store the whole output and hand it back to this agent on the next turn.</div>
+                    </div>
+                    <label class="sam-switch">
+                        <input type="checkbox" id="sae-mv-enabled" ${mv.enabled ? 'checked' : ''}>
+                        <span class="sam-switch-track"></span>
+                    </label>
+                </div>
+                <div id="sae-memory-fields" class="${mv.enabled ? '' : 'sae-hidden'}">
+                    <div class="sae-field">
+                        <div class="sae-label">Variable name</div>
+                        <div class="sae-desc">A name to store the output under.</div>
+                        <input type="text" id="sae-mv-varname" class="sae-input" value="${esc(mv.variableName || '')}" placeholder="wants_needs">
+                    </div>
+                    <div class="sam-row">
+                        <div class="sam-row-info">
+                            <div class="sam-row-title">Feed previous output back in</div>
+                            <div class="sam-row-desc">Include last turn's stored output in this agent's prompt for continuity.</div>
+                        </div>
+                        <label class="sam-switch">
+                            <input type="checkbox" id="sae-mv-inject" ${mv.injectFormatted !== false ? 'checked' : ''}>
+                            <span class="sam-switch-track"></span>
+                        </label>
+                    </div>
+                    <div class="sae-field">
+                        <div class="sae-label">Label for the fed-back block (optional)</div>
+                        <div class="sae-desc">Shown above the previous output, e.g. "Previously established Wants &amp; Needs:".</div>
+                        <input type="text" id="sae-mv-header" class="sae-input" value="${esc(mv.formatHeader || '')}" placeholder="Previously established:">
+                    </div>
+                </div>
+            </div>` : `
+            <div id="sae-memory-advanced-note" class="sae-hint"><i class="fa-solid fa-lock"></i> This agent uses structured extraction (authored via template). Edit its JSON to change memory settings.</div>`}
+            <div id="sae-memory-post-note" class="sae-hint"><i class="fa-solid fa-hourglass-half"></i> Structured extraction is required for post-gen memory — simple carry-output is pre-gen only for now.</div>
         </div>
 
         <div id="sae-injection-section">
@@ -273,8 +341,24 @@ function buildEditorHTML(agent, profiles) {
 
 function updateSectionVisibility() {
     const phase = $('#sae-phase').val();
-    $('#sae-injection-section').toggle(phase === 'pre' || phase === 'both');
+    const includesPre = phase === 'pre' || phase === 'both';
+    $('#sae-injection-section').toggle(includesPre);
     $('#sae-post-section').toggle(phase === 'post' || phase === 'both');
+
+    // Simple carry-output memory only works on the pre-gen leg today (the
+    // engine's no-regex raw-blob store exists only there). Post-only gets a
+    // "coming later" note instead of toggles that would silently store nothing.
+    $('#sae-memory-block').toggle(includesPre);
+    $('#sae-memory-advanced-note').toggle(includesPre);
+    $('#sae-memory-post-note').toggle(phase === 'post');
+
+    // Phase-aware helper under the sidecar master toggle.
+    const desc = phase === 'post'
+        ? 'Runs after the reply and stores its output as state for later turns.'
+        : phase === 'both'
+            ? 'Runs before and after — two LLM calls per turn.'
+            : 'Runs before generation and injects its output into the reply.';
+    $('#sae-sidecar-desc').text(desc);
 }
 
 function readFormToAgent(existingAgent) {
@@ -286,10 +370,11 @@ function readFormToAgent(existingAgent) {
     if ($('#sae-gen-continue').is(':checked')) genTypes.push('continue');
     if ($('#sae-gen-impersonate').is(':checked')) genTypes.push('impersonate');
 
-    return {
+    const result = {
         ...existingAgent,
         name: ($('#sae-name').val() || '').trim(),
         description: ($('#sae-desc').val() || '').trim(),
+        icon: iconPicker ? iconPicker.getValue() : (existingAgent.icon || ''),
         category: $('#sae-category').val(),
         author: ($('#sae-author').val() || '').trim(),
         tags,
@@ -306,11 +391,12 @@ function readFormToAgent(existingAgent) {
             scan: $('#sae-inj-scan').is(':checked'),
             template: $('#sae-inj-template').val() || '',
         },
-        // Merge rich-context flags into sidecarCall, preserving the rest of the
-        // sidecar config (enabled, maxTokens, responseKey, display, etc.) which
-        // this form doesn't expose.
+        // Write the master call toggle + rich-context flags, preserving the
+        // rest of the sidecar config (maxTokens, responseKey, display, etc.)
+        // which this form doesn't expose.
         sidecarCall: {
             ...existingAgent.sidecarCall,
+            enabled: $('#sae-sidecar-enabled').is(':checked'),
             richContext: {
                 ...(existingAgent.sidecarCall?.richContext ?? {}),
                 enabled: $('#sae-rc-enabled').is(':checked'),
@@ -336,6 +422,32 @@ function readFormToAgent(existingAgent) {
             generationTypes: genTypes,
         },
     };
+
+    // Simple carry-output memory. Only write mergeVariable when the simple
+    // controls are actually present (pre-gen leg + agent not already
+    // structured). Otherwise the top-level spread preserves template-authored
+    // mergeVariable untouched — this is the seam that lets post/both slot in
+    // later without rework. Never write extractPattern here (leave it empty).
+    const mvPhase = $('#sae-phase').val();
+    const mvIncludesPre = mvPhase === 'pre' || mvPhase === 'both';
+    const emv = existingAgent.mergeVariable ?? {};
+    const mvAdvanced = (emv.fieldNames?.length > 1) || !!emv.extractPattern;
+    if (mvIncludesPre && !mvAdvanced && $('#sae-mv-enabled').length) {
+        result.mergeVariable = {
+            ...existingAgent.mergeVariable,
+            enabled: $('#sae-mv-enabled').is(':checked'),
+            variableName: ($('#sae-mv-varname').val() || '').trim(),
+            injectFormatted: $('#sae-mv-inject').is(':checked'),
+            formatHeader: $('#sae-mv-header').val() || '',
+            // Pin simple mode to single-field snapshot, no extraction regex.
+            mode: 'snapshot',
+            fieldNames: (emv.fieldNames?.length ? emv.fieldNames : ['text']),
+            formatItem: (emv.formatItem || '{{text}}'),
+            formatEmpty: (emv.formatEmpty || 'No prior data.'),
+        };
+    }
+
+    return result;
 }
 
 // ============================================================================
@@ -358,8 +470,14 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
 
     updateSectionVisibility();
 
+    // Mount the searchable icon picker into its placeholder.
+    iconPicker = createIconPicker({ value: agent.icon || '' });
+    const iconMount = container.querySelector('#sae-icon-mount');
+    if (iconMount) iconMount.appendChild(iconPicker.el);
+
     const cleanup = () => {
         if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
+        iconPicker = null;
     };
     const cancel = () => { cleanup(); cb.onCancel?.(); };
 
@@ -369,6 +487,13 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
     });
     $('#sae-rc-enabled').on('change', function () {
         $('#sae-richctx-flags').toggleClass('sae-hidden', !this.checked);
+    });
+    $('#sae-sidecar-enabled').on('change', function () {
+        // The rich-context warning is moot once the agent has its own call.
+        $('#sae-richctx-warn').toggle(!this.checked);
+    });
+    $('#sae-mv-enabled').on('change', function () {
+        $('#sae-memory-fields').toggleClass('sae-hidden', !this.checked);
     });
     $('#sae-probability').on('input', function () {
         $('#sae-probability-val').text(this.value + '%');

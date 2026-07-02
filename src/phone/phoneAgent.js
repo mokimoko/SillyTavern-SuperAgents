@@ -56,8 +56,12 @@ const PROMPT_KEY = 'sa_agent_phone_ctx';
 const TEXT_TAG_REGEX = /\[TEXT\|([^|]+)\|([^\]]+)\]/g;
 const NO_TEXT_REGEX = /\[NO_TEXT\]/;
 
-/** Debounce: don't auto-evaluate again within this window. */
-let lastEvalTime = 0;
+/**
+ * Per-character auto-evaluation cooldown. Keyed by character name so one
+ * character texting doesn't lock out the others in a group chat (audit fix #2).
+ * @type {Map<string, number>}
+ */
+const lastEvalTime = new Map();
 const EVAL_COOLDOWN_MS = 5000;
 
 /** Reply generation in flight? (evaluation is serialized by the lifecycle.) */
@@ -70,12 +74,43 @@ const textListeners = [];
 // PHONE AGENT DETECTION
 // ============================================================================
 
+/** Tracks whether we've already warned about >1 enabled phone agent (warn-once). */
+let warnedMultiplePhoneAgents = false;
+
 /**
- * The first enabled agent carrying a phoneConfig, or null.
+ * The single enabled phone agent (the phone "system"), or null.
+ *
+ * SuperAgents models the phone as ONE agent whose threads are keyed by
+ * character name — NOT one agent per character. Per-character behavior comes
+ * from each card's talkativeness value, not from separate agents. If a second
+ * phone agent is enabled, that's almost certainly a misconfiguration: we still
+ * deterministically pick the first (sorted by injection order via
+ * getEnabledAgents) but warn once so it fails loud instead of silently routing
+ * replies/injection through whichever happened to sort first (audit fix #1).
+ *
  * @returns {object|null}
  */
 export function getPhoneAgent() {
-    return getEnabledAgents().find(a => a.phoneConfig != null) ?? null;
+    const phoneAgents = getEnabledAgents().filter(a => a.phoneConfig != null);
+    if (phoneAgents.length > 1 && !warnedMultiplePhoneAgents) {
+        warnedMultiplePhoneAgents = true;
+        const names = phoneAgents.map(a => a.name).join(', ');
+        console.warn(
+            `${LOG_PREFIX} ${phoneAgents.length} phone agents are enabled (${names}). ` +
+            `The phone is a single shared system keyed by character; only "${phoneAgents[0].name}" ` +
+            `will drive replies and context injection. Disable the others, or fold per-character ` +
+            `behavior into talkativeness on each card.`,
+        );
+        toastr.warning(
+            `Multiple phone agents enabled — only "${phoneAgents[0].name}" is active. See console.`,
+            'SuperAgents Phone',
+            { timeOut: 8000 },
+        );
+    } else if (phoneAgents.length <= 1) {
+        // Reset so a later genuine reconfiguration can warn again.
+        warnedMultiplePhoneAgents = false;
+    }
+    return phoneAgents[0] ?? null;
 }
 
 /** @returns {boolean} whether a phone agent is installed + enabled. */
@@ -357,6 +392,15 @@ export async function executePhoneEvaluation(agent, message, messageIndex, force
 
     // ── Trigger gating (skipped when forced) ──
     if (!forceEvaluate) {
+        // Per-character cooldown FIRST (audit fix #3): checking it before the
+        // probability roll means we don't "burn" a successful ambient roll on a
+        // turn we were going to skip anyway, which previously made the effective
+        // text rate lower than the configured probability. Keyed by character so
+        // one chatty NPC doesn't throttle the others in a group (audit fix #2).
+        const now = Date.now();
+        const last = lastEvalTime.get(charName) ?? 0;
+        if (now - last < EVAL_COOLDOWN_MS) return { textsGenerated: 0 };
+
         const triggered = checkTriggers(agent, message.mes ?? '');
         if (!triggered) {
             const talkativeness = getCharacterTalkativeness(charName);
@@ -367,9 +411,8 @@ export async function executePhoneEvaluation(agent, message, messageIndex, force
             debug(`${LOG_PREFIX} keyword/pattern trigger matched for ${charName}`);
         }
 
-        const now = Date.now();
-        if (now - lastEvalTime < EVAL_COOLDOWN_MS) return { textsGenerated: 0 };
-        lastEvalTime = now;
+        // Passed the gate — stamp the cooldown for this character.
+        lastEvalTime.set(charName, now);
     }
 
     // ── Build evaluation prompt ──
@@ -518,10 +561,19 @@ export async function generateAndStoreReply(charKey, userMessage) {
 
         if (!response) return [];
 
+        // [NO_TEXT] is authoritative: if the model declined, honor it before
+        // any tag parsing or fallback-wrap (audit fix #11). Matches the order
+        // executePhoneEvaluation uses, so a stray [TEXT|...] alongside a
+        // [NO_TEXT] can't sneak a message through on the reply path.
+        if (NO_TEXT_REGEX.test(response)) {
+            debug(`${LOG_PREFIX} ${charKey}: reply declined ([NO_TEXT])`);
+            return [];
+        }
+
         let texts = parseTextTags(response);
 
         // Fallback: no tags but real content → wrap the whole thing as one text.
-        if (texts.length === 0 && !NO_TEXT_REGEX.test(response)) {
+        if (texts.length === 0) {
             const cleaned = response.replace(/^```[\s\S]*?```$/gm, '').trim();
             if (cleaned) texts = [{ from: 'char', name: charKey, content: cleaned }];
         }
@@ -561,16 +613,39 @@ function buildContextInjection(charKey, maxTexts = 8) {
     return `[Recent text messages between {{user}} and ${charKey}:]\n${lines.join('\n')}`;
 }
 
-/** Resolve the current character's display name, or null. */
+/**
+ * Last group member ST drafted to speak (GROUP_MEMBER_DRAFTED), or null.
+ * In a group, ST sets characterId to the speaker right before each member's
+ * generation — but it's cleared to undefined between members and at the end of
+ * the loop. This gives syncInjection a reliable fallback for "who is about to
+ * speak" so we inject the correct character's thread per turn (audit fix #1).
+ * Cleared on CHAT_CHANGED.
+ * @type {string|null}
+ */
+let lastDraftedCharName = null;
+
+/**
+ * Resolve the character whose thread should be injected this turn: the live
+ * speaker (ctx.characters[ctx.characterId]) when available, else the most
+ * recently drafted group member. Returns null if neither resolves.
+ * @returns {string|null}
+ */
 function resolveCurrentCharName() {
     const ctx = getContext();
     const charObj = ctx.characters?.[ctx.characterId];
-    return charObj?.name ?? charObj?.data?.name ?? null;
+    const live = charObj?.name ?? charObj?.data?.name ?? null;
+    return live ?? lastDraftedCharName;
 }
 
-/** Remove the phone context prompt from the injection registry. */
+/**
+ * Remove the phone context prompt from the injection registry.
+ *
+ * Just delete the key — no redundant setExtensionPrompt('') first (audit fix
+ * #4). Writing an empty entry and immediately deleting it created a real
+ * registry row for one tick that anything reading between the two calls could
+ * trip over; the delete alone is sufficient and atomic.
+ */
 function clearInjection() {
-    setExtensionPrompt(PROMPT_KEY, '', 1, 0);
     if (extension_prompts[PROMPT_KEY]) delete extension_prompts[PROMPT_KEY];
 }
 
@@ -636,7 +711,27 @@ export function initPhoneAgent() {
     initialized = true;
 
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, () => syncInjection());
-    eventSource.on(event_types.CHAT_CHANGED, () => clearInjection());
+    eventSource.on(event_types.CHAT_CHANGED, () => {
+        lastDraftedCharName = null;
+        lastEvalTime.clear();
+        clearInjection();
+    });
+
+    // Group chats: ST drafts each member (sets characterId + emits this) right
+    // before that member generates. Capture the drafted name so syncInjection
+    // injects the correct character's thread even across the moments ST clears
+    // characterId between members (audit fix #1).
+    if (event_types.GROUP_MEMBER_DRAFTED) {
+        eventSource.on(event_types.GROUP_MEMBER_DRAFTED, (chId) => {
+            try {
+                const ctx = getContext();
+                const charObj = ctx.characters?.[chId];
+                lastDraftedCharName = charObj?.name ?? charObj?.data?.name ?? null;
+            } catch {
+                lastDraftedCharName = null;
+            }
+        });
+    }
 
     debug(`${LOG_PREFIX} phone agent initialized (lifecycle-managed evaluation)`);
 }

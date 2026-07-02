@@ -143,6 +143,7 @@ import { renderDirectorPlan } from './src/render/hooks/directorPlan.js';
 
 // UI layer: unified management modal (Step 9)
 import { openModal, closeModal, isModalOpen, registerPanelControl } from './src/ui/modal.js';
+import { resolveAgentIcon, resolveGroupIcon } from './src/ui/iconResolver.js';
 import { initRunIndicator } from './src/ui/runIndicator.js';
 import { initNativeStopButton } from './src/ui/nativeStopButton.js';
 import { initDiffButtons } from './src/ui/diffButton.js';
@@ -336,6 +337,8 @@ function initNamespace() {
             closeModal,
             isModalOpen,
             registerPanelControl,
+            resolveAgentIcon,
+            resolveGroupIcon,
             initRunIndicator,
             initDiffButtons,
             stateCard: {

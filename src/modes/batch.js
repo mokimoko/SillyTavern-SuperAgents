@@ -37,7 +37,7 @@ import {
     buildHistoryContext,
     groupSidecarsByProfile,
 } from './sidecar.js';
-import { getGlobalSettings } from '../data/store.js';
+import { getGlobalSettings, getGroupById } from '../data/store.js';
 import { recordAgents } from '../core/callStats.js';
 
 const LOG_PREFIX = '[SuperAgents/batch]';
@@ -48,6 +48,12 @@ const PROMPT_KEY_PREFIX = 'sa_agent_';
 // truncates (a truncated envelope fails JSON.parse and drops every agent's data
 // that turn). Used only when globalSettings.batchMaxTokens isn't a sane number.
 const BATCH_MAXTOKENS_CEILING = 8192;
+
+// Fraction of the ceiling reserved for JSON envelope scaffolding (the keys,
+// braces, quotes, commas) so the agents' actual content budget doesn't get
+// crowded out by structure on a big batch. 8% empirically clears the overhead
+// for typical key counts without meaningfully shrinking content room.
+const ENVELOPE_OVERHEAD_FRACTION = 0.08;
 
 /**
  * Per-call timeout for batch / pre-gen LLM calls. There's no cancel controller
@@ -67,9 +73,28 @@ function timeoutOpts() {
 // ============================================================================
 
 /**
- * Sum the batch's per-agent maxTokens, clamped to the configured ceiling
- * (globalSettings.batchMaxTokens), falling back to BATCH_MAXTOKENS_CEILING when
- * that setting isn't a sane positive number.
+ * Compute the output-token budget for a batch envelope.
+ *
+ * The naive approach (return min(sum, ceiling)) silently STARVES big batches:
+ * five trackers wanting 2048 each (10240) get clamped to 8192, so each key
+ * effectively has LESS room than it asked for — making truncation, and the
+ * salvage path, MORE likely on exactly the batches that need protection
+ * (audit fix #12).
+ *
+ * This version:
+ *   - reserves a slice of the ceiling for JSON scaffolding (keys/braces/commas)
+ *     so structure doesn't eat content budget,
+ *   - when the requested sum exceeds the usable ceiling, WARNS so the clamp is
+ *     visible in logs (and tells you the per-key shortfall), rather than failing
+ *     opaquely a turn later in JSON.parse,
+ *   - returns the value actually requested from the backend.
+ *
+ * The single-number request cap can't give each key its own budget, but the
+ * warning is the actionable signal: it means "split this batch or raise
+ * batchMaxTokens." A future enhancement could downscale each agent's per-key
+ * target proportionally inside buildBatchedPrompt; for now we keep the call
+ * shape and surface the pressure.
+ *
  * @param {object[]} agents
  * @returns {number}
  */
@@ -78,10 +103,27 @@ function batchMaxTokens(agents) {
     const ceiling = Number.isFinite(configured) && configured > 0
         ? configured
         : BATCH_MAXTOKENS_CEILING;
+
+    // Usable content budget after reserving envelope scaffolding overhead.
+    const usable = Math.max(1, Math.floor(ceiling * (1 - ENVELOPE_OVERHEAD_FRACTION)));
+
     const sum = agents.reduce(
         (n, a) => n + (a.sidecarCall?.maxTokens || a.maxTokens || 2048), 0,
     );
-    return Math.min(sum, ceiling);
+
+    if (sum > usable) {
+        const perKeyWanted = Math.round(sum / agents.length);
+        const perKeyActual = Math.floor(usable / agents.length);
+        console.warn(
+            `${LOG_PREFIX} batch of ${agents.length} agent(s) wants ${sum} tokens but the ` +
+            `envelope is capped at ${usable} (ceiling ${ceiling} − overhead). Each key now ` +
+            `gets ~${perKeyActual} vs ~${perKeyWanted} requested — truncation/salvage is more ` +
+            `likely. Split this group across profiles or raise globalSettings.batchMaxTokens.`,
+        );
+        return usable;
+    }
+
+    return sum;
 }
 
 /**
@@ -583,11 +625,165 @@ function persistPreGenOutput(agent, output) {
 }
 
 /**
+ * Inject one pre-gen agent's output into the upcoming main generation: persist
+ * it for the HUD/display path, apply the injection wrapper, and register the
+ * extension prompt. Shared by the parallel and sequential group paths so the
+ * inject semantics live in one place.
+ *
+ * @param {object} agent
+ * @param {string} response — the agent's raw output text
+ */
+function injectPreGenResult(agent, response) {
+    const text = String(response ?? '').trim();
+    if (!text) return;
+
+    // Persist for display (Director plan HUD) before stripping/wrapping —
+    // the displayed plan should match the raw model output.
+    persistPreGenOutput(agent, text);
+
+    const wrapped = wrapInjection(agent, text);
+    const key = PROMPT_KEY_PREFIX + agent.id;
+    setExtensionPrompt(
+        key,
+        wrapped,
+        agent.injection.position,
+        agent.injection.depth,
+        agent.injection.scan,
+        agent.injection.role,
+    );
+    debug(`${LOG_PREFIX} injected pre-gen result for "${agent.name}" at depth ${agent.injection.depth}`);
+}
+
+/**
+ * Organize pre-gen agents into an ordered execution plan, mirroring the
+ * post-gen buildExecutionPlan in lifecycle.js (audit fix #7).
+ *
+ * Grouped agents inherit their group's executionMode + order; ungrouped agents
+ * fall into a virtual group that runs last in parallel. Disabled/missing groups
+ * demote their members to ungrouped. This is what lets a user put a
+ * "world-state" planner and a "director" planner in a sequential group and have
+ * the director actually run AFTER — and therefore see — the world-state plan.
+ *
+ * @param {object[]} agents — pre-phase sidecar agents
+ * @returns {Array<{id:string, order:number, executionMode:string, agents:object[]}>}
+ */
+function buildPreGenExecutionPlan(agents) {
+    const grouped = new Map();
+    const ungrouped = [];
+
+    for (const agent of agents) {
+        if (agent.groupId) {
+            if (!grouped.has(agent.groupId)) grouped.set(agent.groupId, []);
+            grouped.get(agent.groupId).push(agent);
+        } else {
+            ungrouped.push(agent);
+        }
+    }
+
+    const plan = [];
+    for (const [groupId, groupAgents] of grouped) {
+        const groupConfig = getGroupById(groupId);
+        if (!groupConfig || !groupConfig.enabled) {
+            ungrouped.push(...groupAgents);
+            continue;
+        }
+        plan.push({
+            id: groupId,
+            order: groupConfig.order ?? 100,
+            executionMode: groupConfig.executionMode || 'parallel',
+            agents: groupAgents,
+        });
+    }
+
+    if (ungrouped.length > 0) {
+        plan.push({
+            id: '__ungrouped__',
+            order: 9999,
+            executionMode: 'parallel',
+            agents: ungrouped,
+        });
+    }
+
+    plan.sort((a, b) => a.order - b.order);
+    return plan;
+}
+
+/**
+ * Run a parallel group of pre-gen agents: batch by connection profile, run the
+ * batches concurrently, inject every result. A failed batch never blocks the
+ * main generation.
+ *
+ * @param {object[]} groupAgents
+ * @param {string} generationType
+ * @param {string} contextText
+ * @param {string} pendingUserText
+ * @param {object} opts
+ */
+async function runPreGenParallelGroup(groupAgents, generationType, contextText, pendingUserText, opts) {
+    const batches = groupSidecarsByProfile(groupAgents);
+    const batchPromises = [...batches.values()].map(batch =>
+        executePreGenSidecarBatch(batch, contextText, generationType, pendingUserText, opts)
+            .catch(err => {
+                if (isAbortError(err)) throw err; // propagate stop/timeout
+                console.error(`${LOG_PREFIX} pre-gen batch failed:`, err);
+                return batch.map(a => ({ agent: a, response: '' }));
+            }),
+    );
+
+    const batchResults = await Promise.allSettled(batchPromises);
+    for (const settled of batchResults) {
+        if (settled.status === 'rejected') {
+            if (isAbortError(settled.reason)) throw settled.reason;
+            continue;
+        }
+        for (const { agent, response } of settled.value) {
+            injectPreGenResult(agent, response);
+        }
+    }
+}
+
+/**
+ * Run a sequential group of pre-gen agents: one at a time, in injection order,
+ * INJECTING each result before the next agent runs.
+ *
+ * The composition channel between agents is the MERGE VARIABLE, not the
+ * injected extension-prompt: injectPreGenResult → persistPreGenOutput writes
+ * the agent's output to its merge variable immediately, so a later agent in the
+ * group that reads that same variable (mergeVariable.injectFormatted, or a
+ * shared variableName) sees the earlier plan when it builds its own prompt. The
+ * setExtensionPrompt side only reaches the MAIN generation, not sibling
+ * sidecars — so cross-agent hand-off must go through the variable. That's why
+ * "world-state then director" composes: point the director at the world-state
+ * variable.
+ *
+ * Sequential groups don't profile-batch (batching is a parallel-only
+ * optimization); each agent is a solo pre-gen call.
+ *
+ * @param {object[]} groupAgents
+ * @param {string} generationType
+ * @param {string} contextText
+ * @param {string} pendingUserText
+ * @param {object} opts
+ */
+async function runPreGenSequentialGroup(groupAgents, generationType, contextText, pendingUserText, opts) {
+    const sorted = [...groupAgents].sort((a, b) => (a.injection?.order ?? 0) - (b.injection?.order ?? 0));
+    for (const agent of sorted) {
+        const result = await executePreGenSidecarAgent(agent, contextText, generationType, pendingUserText, opts);
+        injectPreGenResult(agent, result.response);
+    }
+}
+
+/**
  * Run all pre-gen sidecar agents before the main generation and inject each
  * result into the upcoming prompt via setExtensionPrompt.
  *
- * Groups by connection profile for batching (mirrors the post-gen pattern).
- * Batches run in parallel; a failed batch never blocks the main generation.
+ * Group-aware (audit fix #7): agents are organized into an execution plan that
+ * honors group executionMode + order. Sequential groups run their members one
+ * at a time, injecting between each so a later planner can read an earlier
+ * one's plan; parallel groups (and ungrouped agents) batch by profile and run
+ * concurrently. Groups run in `order`; ungrouped agents run last. A failed
+ * batch/agent never blocks the main generation; a user stop/timeout aborts the
+ * remaining plan.
  *
  * @param {object[]} activeAgents — all active agents for this turn
  * @param {string} generationType — normalized
@@ -602,42 +798,23 @@ export async function processPreGenAgents(activeAgents, generationType, contextT
     if (preGenSidecars.length === 0) return;
 
     recordAgents(preGenSidecars.length); // cost-hint accounting (pre-gen agents)
-    debug(`${LOG_PREFIX} running ${preGenSidecars.length} pre-gen sidecar(s)`);
 
-    const batches = groupSidecarsByProfile(preGenSidecars);
-    const batchPromises = [...batches.values()].map(batch =>
-        executePreGenSidecarBatch(batch, contextText, generationType, pendingUserText, opts)
-            .catch(err => {
-                // Abort (user stop / timeout): the signal already halted the
-                // call; nothing to inject. Ordinary failures: log and move on so
-                // one bad batch can't block main generation.
-                if (!isAbortError(err)) console.error(`${LOG_PREFIX} pre-gen batch failed:`, err);
-                return batch.map(a => ({ agent: a, response: '' }));
-            }),
-    );
+    const plan = buildPreGenExecutionPlan(preGenSidecars);
+    debug(`${LOG_PREFIX} running ${preGenSidecars.length} pre-gen sidecar(s) across ${plan.length} group(s)`);
 
-    const batchResults = await Promise.allSettled(batchPromises);
-
-    for (const settled of batchResults) {
-        if (settled.status !== 'fulfilled') continue;
-        for (const { agent, response } of settled.value) {
-            if (!response?.trim()) continue;
-
-            // Persist for display (Director plan HUD) before stripping/wrapping —
-            // the displayed plan should match the raw model output.
-            persistPreGenOutput(agent, response.trim());
-
-            const wrapped = wrapInjection(agent, response);
-            const key = PROMPT_KEY_PREFIX + agent.id;
-            setExtensionPrompt(
-                key,
-                wrapped,
-                agent.injection.position,
-                agent.injection.depth,
-                agent.injection.scan,
-                agent.injection.role,
-            );
-            debug(`${LOG_PREFIX} injected pre-gen result for "${agent.name}" at depth ${agent.injection.depth}`);
+    for (const group of plan) {
+        try {
+            if (group.executionMode === 'sequential') {
+                await runPreGenSequentialGroup(group.agents, generationType, contextText, pendingUserText, opts);
+            } else {
+                await runPreGenParallelGroup(group.agents, generationType, contextText, pendingUserText, opts);
+            }
+        } catch (err) {
+            // A user stop / timeout aborts the whole remaining plan (the run
+            // scaffolding in the lifecycle catches it). Ordinary failures are
+            // contained per-group so one bad group can't block main generation.
+            if (isAbortError(err)) throw err;
+            console.error(`${LOG_PREFIX} pre-gen group "${group.id}" failed:`, err);
         }
     }
 }

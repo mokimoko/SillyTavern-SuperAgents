@@ -113,6 +113,7 @@ export function createDefaultGroup() {
         id: generateId(),
         name: '',
         description: '',
+        icon: '',
         builtin: false,
         agentIds: [],
         executionMode: 'parallel',
@@ -374,6 +375,7 @@ export function normalizeGroup(raw = {}) {
         id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : d.id,
         name: String(raw.name ?? '').trim(),
         description: String(raw.description ?? '').trim(),
+        icon: typeof raw.icon === 'string' ? raw.icon.trim() : d.icon,
         builtin: Boolean(raw.builtin),
         agentIds: Array.isArray(raw.agentIds)
             ? raw.agentIds.map(id => String(id ?? '').trim()).filter(Boolean)

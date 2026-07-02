@@ -60,7 +60,7 @@ import { recordAgentRun } from './idempotency.js';
 import { beginSelfGeneration, endSelfGeneration, isExternalGenerationActive } from './compatibility.js';
 import { resetTurn, recordAgents, formatTurnHint } from './callStats.js';
 
-import { formatMergeVariableData, executeMergeVariable, writeMergeArray, bindVariableToSwipe } from '../modes/mergeVariable.js';
+import { formatMergeVariableData, executeMergeVariable, writeMergeArray, bindVariableToSwipe, captureTurnBaseline, restoreTurnBaseline } from '../modes/mergeVariable.js';
 import {
     executeSidecarAgent,
     buildSidecarDisplayData,
@@ -213,6 +213,30 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
     pendingSnapshot = buildActivationSnapshot(generationType, _options);
     const activeAgents = getSnapshotAgents(pendingSnapshot);
     const genType = normalizeGenType(generationType);
+
+    // Per-turn memory baseline. Freeze the value a memory agent feeds back into
+    // itself so a swipe/regenerate re-rolls against the PREVIOUS turn's value
+    // (as the first attempt did), not the discarded attempt's output. A fresh
+    // turn captures the current live value; a re-roll restores it before pre-gen
+    // reads. Uses the RAW generation type (normalizeGenType collapses regenerate
+    // → normal, which would lose the distinction). continue/impersonate/quiet
+    // are untouched — they don't re-roll the last turn.
+    const rawGenType = String(generationType ?? '').trim().toLowerCase();
+    const isReroll = rawGenType === 'swipe' || rawGenType === 'regenerate';
+    if (isReroll || rawGenType === 'normal' || rawGenType === '') {
+        const memVars = new Set(
+            activeAgents
+                .filter(a => (a.phase === 'pre' || a.phase === 'both')
+                    && a.mergeVariable?.enabled
+                    && a.mergeVariable.injectFormatted
+                    && a.mergeVariable.variableName)
+                .map(a => a.mergeVariable.variableName),
+        );
+        for (const varName of memVars) {
+            if (isReroll) restoreTurnBaseline(varName);
+            else captureTurnBaseline(varName);
+        }
+    }
 
     // Are there any pre-gen sidecar (LLM) agents this turn? If so, set up a
     // cancellable run around them so the user can abort a slow planner (e.g. a

@@ -50,13 +50,23 @@ export function normalizeGenType(generationType) {
  *   2. phone agents bypass the rest — their two-tier trigger (keyword +
  *      talkativeness) lives inside the phone module, not here
  *   3. probability gate (rolled once per turn via the snapshot)
- *   4. keyword / pattern match against the last message
+ *   4. keyword / pattern match against the last message (+ the pending user
+ *      message, see below)
+ *
+ * Keyword/pattern matching scans the last committed message AND the user's
+ * pending (not-yet-committed) message when one is supplied. At
+ * GENERATION_AFTER_COMMANDS, ST hasn't pushed the user's input into `chat`
+ * yet, so without this a pre-gen agent keyed on a user keyword ("when the user
+ * mentions X, plan Y") would NEVER match — it'd only ever see the previous
+ * assistant turn (audit fix #8). pendingUserText is '' for post-gen and for
+ * automatic/non-user triggers, so post-gen behavior is unchanged.
  *
  * @param {object} agent
  * @param {string} generationType — already normalized
+ * @param {string} [pendingUserText=''] — the user's not-yet-committed message
  * @returns {boolean}
  */
-export function shouldActivate(agent, generationType) {
+export function shouldActivate(agent, generationType, pendingUserText = '') {
     const cond = agent.conditions ?? {};
 
     // Generation type filter
@@ -80,12 +90,17 @@ export function shouldActivate(agent, generationType) {
     const hasPatterns = cond.triggerPatterns?.length > 0;
 
     if (hasKeywords || hasPatterns) {
+        // Scan the last committed message plus the pending user message (the
+        // latter is only populated for pre-gen / user-driven turns). Joined so a
+        // keyword in EITHER counts as a match.
         const lastMsg = chat[chat.length - 1]?.mes ?? '';
+        const pending = String(pendingUserText ?? '');
+        const haystack = pending ? `${lastMsg}\n${pending}` : lastMsg;
         let matched = false;
 
         // Plain string keywords (case-insensitive substring)
         if (hasKeywords) {
-            const lower = lastMsg.toLowerCase();
+            const lower = haystack.toLowerCase();
             if (cond.triggerKeywords.some(kw => lower.includes(kw.toLowerCase()))) {
                 matched = true;
             }
@@ -99,7 +114,7 @@ export function shouldActivate(agent, generationType) {
                     const regex = slashMatch
                         ? new RegExp(slashMatch[1], slashMatch[2])
                         : new RegExp(pattern, 'i');
-                    if (regex.test(lastMsg)) {
+                    if (regex.test(haystack)) {
                         matched = true;
                         break;
                     }
@@ -134,11 +149,15 @@ export function shouldActivate(agent, generationType) {
  */
 export function buildActivationSnapshot(generationType, options) {
     const genType = normalizeGenType(generationType);
-    const activeAgents = getEnabledAgents().filter(a => shouldActivate(a, genType));
+    // Read the pending user message once, up front, so keyword/pattern gates can
+    // see what the user just typed (it isn't in `chat` yet at pre-gen time —
+    // audit fix #8). '' for automatic triggers and post-gen.
+    const pendingUserText = readPendingUserMessage(options);
+    const activeAgents = getEnabledAgents().filter(a => shouldActivate(a, genType, pendingUserText));
     return {
         generationType: genType,
         activeAgentIds: activeAgents.map(a => a.id),
-        pendingUserText: readPendingUserMessage(options),
+        pendingUserText,
     };
 }
 
