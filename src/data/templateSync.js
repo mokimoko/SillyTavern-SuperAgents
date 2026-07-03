@@ -21,6 +21,7 @@
 import { _internal } from './store.js';
 import { normalizeMergeVariable } from './normalize.js';
 import { normalizeRegexScript } from '../render/regexProcessor.js';
+import { debug } from '../../index.js';
 
 const LOG_PREFIX = '[SuperAgents/templateSync]';
 
@@ -137,7 +138,7 @@ export async function syncFromTemplates() {
     try {
         templates = await fetchAllTemplates();
     } catch (err) {
-        console.warn(`${LOG_PREFIX} fetchAllTemplates failed:`, err);
+        debug(`${LOG_PREFIX} fetchAllTemplates failed:`, err);
         return [];
     }
 
@@ -162,7 +163,7 @@ export async function syncFromTemplates() {
 
     if (updated.length > 0) {
         _internal.persist();
-        console.log(`${LOG_PREFIX} synced ${updated.length} agent(s) to newer template version(s):`, updated);
+        debug(`${LOG_PREFIX} synced ${updated.length} agent(s) to newer template version(s):`, updated);
     }
 
     return updated;

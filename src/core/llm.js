@@ -33,6 +33,7 @@ import {
     restoreProfileLegacy,
 } from './profiles.js';
 import { recordCall } from './callStats.js';
+import { debug } from '../../index.js';
 
 const LOG_PREFIX = '[SuperAgents/llm]';
 
@@ -170,7 +171,7 @@ function parseReasoning(text, profileId, ctx) {
         if (!parsed?.reasoning) return text; // nothing to strip
         return parsed.content || text;
     } catch (err) {
-        console.warn(`${LOG_PREFIX} parseReasoning failed:`, err);
+        debug(`${LOG_PREFIX} parseReasoning failed:`, err);
         return text;
     }
 }
@@ -208,7 +209,7 @@ async function cmrsSendOnce(ctx, profileId, messages, maxTokens, stream, onChunk
             if (chunk?.text !== undefined) {
                 last = chunk.text;
                 if (typeof onChunk === 'function') {
-                    try { onChunk(last); } catch (err) { console.warn(`${LOG_PREFIX} onChunk threw:`, err); }
+                    try { onChunk(last); } catch (err) { debug(`${LOG_PREFIX} onChunk threw:`, err); }
                 }
             }
         }
@@ -304,7 +305,7 @@ export async function callAgentLLM({
                 // profile (only if it's actually different from the target)
                 const canRetryProfile = isAuthError(err1) && currentId && currentId !== targetId;
                 if (canRetryProfile) {
-                    console.warn(`${LOG_PREFIX} ${callerName}: CMRS auth error on "${targetId}", retrying with current profile`);
+                    debug(`${LOG_PREFIX} ${callerName}: CMRS auth error on "${targetId}", retrying with current profile`);
                     try {
                         const r = await attempt(currentId, stream, onChunk);
                         return parseReasoning(extractResponseText(r), currentId, ctx);
@@ -312,33 +313,33 @@ export async function callAgentLLM({
                         if (isAbortError(err2)) throw err2;
                         if (stream) {
                             try {
-                                console.warn(`${LOG_PREFIX} ${callerName}: CMRS retry failed, trying without streaming`);
+                                debug(`${LOG_PREFIX} ${callerName}: CMRS retry failed, trying without streaming`);
                                 const r = await attempt(currentId, false, null);
                                 return parseReasoning(extractResponseText(r), currentId, ctx);
                             } catch (err3) {
                                 if (isAbortError(err3)) throw err3;
-                                console.warn(`${LOG_PREFIX} ${callerName}: CMRS exhausted; falling back to quiet prompt`, err3);
+                                debug(`${LOG_PREFIX} ${callerName}: CMRS exhausted; falling back to quiet prompt`, err3);
                             }
                         } else {
-                            console.warn(`${LOG_PREFIX} ${callerName}: CMRS exhausted; falling back to quiet prompt`, err2);
+                            debug(`${LOG_PREFIX} ${callerName}: CMRS exhausted; falling back to quiet prompt`, err2);
                         }
                     }
                 } else if (stream) {
                     // Streaming-only failure → retry same profile without streaming
                     try {
-                        console.warn(`${LOG_PREFIX} ${callerName}: CMRS stream failed, retrying without streaming`);
+                        debug(`${LOG_PREFIX} ${callerName}: CMRS stream failed, retrying without streaming`);
                         const r = await attempt(targetId, false, null);
                         return parseReasoning(extractResponseText(r), targetId, ctx);
                     } catch (err2) {
                         if (isAbortError(err2)) throw err2;
-                        console.warn(`${LOG_PREFIX} ${callerName}: CMRS exhausted; falling back to quiet prompt`, err2);
+                        debug(`${LOG_PREFIX} ${callerName}: CMRS exhausted; falling back to quiet prompt`, err2);
                     }
                 } else {
-                    console.warn(`${LOG_PREFIX} ${callerName}: CMRS request failed; falling back to quiet prompt`, err1);
+                    debug(`${LOG_PREFIX} ${callerName}: CMRS request failed; falling back to quiet prompt`, err1);
                 }
             }
         } else {
-            console.warn(`${LOG_PREFIX} ${callerName}: no resolvable CMRS profile; using quiet prompt`);
+            debug(`${LOG_PREFIX} ${callerName}: no resolvable CMRS profile; using quiet prompt`);
         }
         // intentional fall-through to Path B
     }

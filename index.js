@@ -484,7 +484,7 @@ jQuery(async () => {
 
         const { agents: agentStore } = window.SuperAgents;
         const agentCount = agentStore.getAll().length;
-        console.log(LOG_PREFIX, `loaded v0.8.0 — ${agentCount} agent(s) on disk; lifecycle engine active (pre/post-gen, batching, rewrite, swipe, phone); compat guard + state macros active; slash commands (/sa-run, /sa-list, /sa-toggle, /sa-open); per-turn cost hint; unified modal (manage + library + groups live) + State Card + Phone floating panels; renderers: World State, Continuity Check, Narrative Engine, Direction Menu, Parallel Off-Screen`);
+        debug(`loaded v0.8.0 — ${agentCount} agent(s) on disk; lifecycle engine active (pre/post-gen, batching, rewrite, swipe, phone); compat guard + state macros active; slash commands (/sa-run, /sa-list, /sa-toggle, /sa-open); per-turn cost hint; unified modal (manage + library + groups live) + State Card + Phone floating panels; renderers: World State, Continuity Check, Narrative Engine, Direction Menu, Parallel Off-Screen`);
 
         // Surface a one-time migration result so the user knows their VM agents
         // came across (or that there was a name collision to resolve manually).
@@ -493,17 +493,17 @@ jQuery(async () => {
                 (migration.groups ? ` and ${migration.groups} group(s)` : '') +
                 ' from VerseManager.';
             toastr.success(msg, 'SuperAgents', { timeOut: 8000 });
-            console.log(LOG_PREFIX, msg);
+            debug(msg);
         }
 
         // Non-blocking: sync agents with any newer built-in templates.
         // Fails silently if template files aren't shipped yet.
         syncFromTemplates().then(updated => {
             if (updated.length > 0) {
-                console.log(LOG_PREFIX, `synced ${updated.length} agent(s) to newer template versions`);
+                debug(`synced ${updated.length} agent(s) to newer template versions`);
             }
         }).catch(err => {
-            console.warn(LOG_PREFIX, 'template sync failed:', err);
+            debug(`${LOG_PREFIX} template sync failed:`, err);
         });
     } catch (err) {
         console.error(LOG_PREFIX, 'init failed:', err);

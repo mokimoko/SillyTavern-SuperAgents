@@ -162,7 +162,7 @@ export function processAgentRegex(agent, message, messageIndex) {
 
             debug(`${LOG_PREFIX} "${agent.name}" script "${script.scriptName}": ${extractions.length} extraction(s)${script.stripFromMes === false ? ' (kept in mes)' : ''}`);
         } catch (err) {
-            console.warn(`${LOG_PREFIX} Error in script "${script.scriptName}" for agent "${agent.name}":`, err);
+            debug(`${LOG_PREFIX} Error in script "${script.scriptName}" for agent "${agent.name}":`, err);
         }
     }
 
@@ -198,7 +198,7 @@ function buildRegex(regexStr) {
     // Length cap (gameplan problem #5): reject absurdly long patterns before
     // they ever reach the engine. Shareable agent packs are untrusted input.
     if (regexStr.length > MAX_PATTERN_LENGTH) {
-        console.warn(`${LOG_PREFIX} regex rejected: pattern length ${regexStr.length} exceeds ${MAX_PATTERN_LENGTH}`);
+        debug(`${LOG_PREFIX} regex rejected: pattern length ${regexStr.length} exceeds ${MAX_PATTERN_LENGTH}`);
         return null;
     }
 
@@ -213,12 +213,12 @@ function buildRegex(regexStr) {
         // traceable. The match loop in collectMatches is time-budgeted, but a
         // single pathological exec() is synchronous and can still stall.
         if (NESTED_QUANTIFIER_RE.test(pattern)) {
-            console.warn(`${LOG_PREFIX} regex "${pattern}" has a nested-quantifier shape that can backtrack catastrophically; matching is time-budgeted but a single pathological match may still block.`);
+            debug(`${LOG_PREFIX} regex "${pattern}" has a nested-quantifier shape that can backtrack catastrophically; matching is time-budgeted but a single pathological match may still block.`);
         }
 
         return new RegExp(pattern, flags);
     } catch (err) {
-        console.warn(`${LOG_PREFIX} Invalid regex: "${regexStr}"`, err);
+        debug(`${LOG_PREFIX} Invalid regex: "${regexStr}"`, err);
         return null;
     }
 }
@@ -237,7 +237,7 @@ function collectMatches(regex, text) {
     // scanned by an untrusted pattern (gameplan problem #5).
     let haystack = text;
     if (text.length > MAX_INPUT_LENGTH) {
-        console.warn(`${LOG_PREFIX} input truncated to ${MAX_INPUT_LENGTH} chars for matching (was ${text.length})`);
+        debug(`${LOG_PREFIX} input truncated to ${MAX_INPUT_LENGTH} chars for matching (was ${text.length})`);
         haystack = text.slice(0, MAX_INPUT_LENGTH);
     }
 
@@ -255,7 +255,7 @@ function collectMatches(regex, text) {
 
         // Hard ceiling on match count (pathological global match explosion).
         if (matches.length >= MAX_MATCHES) {
-            console.warn(`${LOG_PREFIX} match cap (${MAX_MATCHES}) hit; stopping`);
+            debug(`${LOG_PREFIX} match cap (${MAX_MATCHES}) hit; stopping`);
             break;
         }
 
@@ -264,7 +264,7 @@ function collectMatches(regex, text) {
         // exec() (JS regex is synchronous) — the length cap + nested-quantifier
         // warning in buildRegex bound that residual risk.
         if (now() > deadline) {
-            console.warn(`${LOG_PREFIX} match time budget (${MATCH_TIME_BUDGET_MS}ms) exceeded; stopping after ${matches.length} match(es)`);
+            debug(`${LOG_PREFIX} match time budget (${MATCH_TIME_BUDGET_MS}ms) exceeded; stopping after ${matches.length} match(es)`);
             break;
         }
 

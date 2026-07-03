@@ -10,6 +10,7 @@
 
 import { chat_metadata, substituteParams } from '../../../../../../script.js';
 import { recordAgentRun } from '../core/idempotency.js';
+import { debug } from '../../index.js';
 
 const LOG_PREFIX = '[SuperAgents/postProcess]';
 
@@ -42,7 +43,7 @@ export function executeExtractAgent(agent, message, messageIndex) {
             return { changed: true };
         }
     } catch (err) {
-        console.warn(`${LOG_PREFIX} extract error in "${agent.name}":`, err);
+        debug(`${LOG_PREFIX} extract error in "${agent.name}":`, err);
     }
 
     return { changed: false };

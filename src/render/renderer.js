@@ -212,7 +212,7 @@ function runRenderHooks(container) {
             try {
                 renderFn(el);
             } catch (err) {
-                console.warn(`${LOG_PREFIX} render hook error for .${className}:`, err);
+                debug(`${LOG_PREFIX} render hook error for .${className}:`, err);
             }
         });
     }

@@ -22,6 +22,7 @@ import {
     online_status,
 } from '../../../../../../script.js';
 import { SlashCommandParser } from '../../../../../slash-commands/SlashCommandParser.js';
+import { debug } from '../../index.js';
 
 const LOG_PREFIX = '[SuperAgents/profiles]';
 
@@ -114,7 +115,7 @@ export function resolveTargetProfile(ctx, preferredRef = '') {
     if (preferredRef) {
         const id = resolveProfileId(ctx, preferredRef);
         if (id) return id;
-        console.warn(`${LOG_PREFIX} requested profile "${preferredRef}" not found; falling back to current`);
+        debug(`${LOG_PREFIX} requested profile "${preferredRef}" not found; falling back to current`);
     }
 
     return getCurrentProfileId(ctx) || '';
@@ -205,6 +206,6 @@ export async function restoreProfileLegacy(ctx, originalName) {
         await profileLoaded.catch(() => {});
         await waitUntil(() => online_status !== 'no_connection', 5000, 100).catch(() => {});
     } catch (err) {
-        console.warn(`${LOG_PREFIX} restore to "${originalName}" failed:`, err);
+        debug(`${LOG_PREFIX} restore to "${originalName}" failed:`, err);
     }
 }
