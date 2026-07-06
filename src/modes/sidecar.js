@@ -28,6 +28,7 @@ import {
     readMergeArray,
     formatMergeVariableData,
     storeSidecarResult,
+    collectRecentStates,
 } from './mergeVariable.js';
 import { getGlobalSettings } from '../data/store.js';
 
@@ -74,17 +75,56 @@ export function buildPreGenContext(messageCount = 15) {
  * history) and return it ready to append to the agent's system prompt. Returns
  * '' when the agent hasn't enabled it. Read-only; never throws.
  *
+ * Self-memory (### Your recent direction): when the agent opts in
+ * (flags.selfMemory + selfMemoryCount), this collects the agent's OWN last N
+ * outputs via collectRecentStates — the swipe-aware backward walk — for the
+ * agent's own mergeVariable, and hands them to buildRichContext to format. The
+ * collection lives HERE (not in richContext.js) because it needs the agent's
+ * varName and a chat walk; keeping it here means richContext.js gains no import
+ * toward chat-walk/lifecycle code (no circular-import risk).
+ *
+ * `opts.suppressSelfMemory` is the Reroll blindfold: a one-run flag that forces
+ * the self-memory count to 0 for this call only, so a retry ignores the
+ * remembered history without mutating any stored data.
+ *
  * @param {object} agent
  * @param {number} mesNum         context point (highest message index to read)
  * @param {string} pendingUserText  the not-yet-committed user message ('' post-gen)
  * @param {number} maxContext
+ * @param {object} [opts]
+ * @param {boolean} [opts.suppressSelfMemory=false]  blindfold self-memory this run.
  * @returns {Promise<string>}
  */
-export async function buildAgentRichContext(agent, mesNum, pendingUserText = '', maxContext = 8192) {
+export async function buildAgentRichContext(agent, mesNum, pendingUserText = '', maxContext = 8192, opts = {}) {
     const flags = agent?.sidecarCall?.richContext;
     if (!flags?.enabled) return '';
+
+    // Self-memory collection (opt-in). Blindfolded to 0 when reroll suppresses it.
+    let selfMemoryItems = [];
+    let selfMemoryFormatItem;
+    let selfMemoryFieldNames;
+    const mv = agent?.mergeVariable;
+    const wantCount = opts.suppressSelfMemory ? 0 : Math.max(0, Number(flags.selfMemoryCount) || 0);
+    if (flags.selfMemory && wantCount > 0 && mv?.variableName) {
+        try {
+            // Anchor at mesNum; collectRecentStates reads that message's active
+            // swipe (startSwipeId=null → derive from chat[mesNum].swipe_id) and
+            // walks back, reading each message's active swipe. Swipe-aware by
+            // construction — the same rule as the State Card trace.
+            selfMemoryItems = collectRecentStates(chat, mesNum, null, mv.variableName, wantCount);
+            selfMemoryFormatItem = mv.formatItem;
+            selfMemoryFieldNames = mv.fieldNames;
+        } catch (err) {
+            debug(`${LOG_PREFIX} self-memory collect failed for "${agent.name}":`, err?.message);
+            selfMemoryItems = [];
+        }
+    }
+
     try {
-        return await buildRichContext({ mesNum, flags, pendingUserText, maxContext });
+        return await buildRichContext({
+            mesNum, flags, pendingUserText, maxContext,
+            selfMemoryItems, selfMemoryFormatItem, selfMemoryFieldNames,
+        });
     } catch (err) {
         debug(`${LOG_PREFIX} rich context failed for "${agent.name}":`, err?.message);
         return '';
@@ -233,7 +273,18 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
     // Build optional history context
     let historyBlock = '';
     if (agent.sidecarCall?.includeHistory) {
-        const historyCount = agent.sidecarCall.historyMessageCount || 20;
+        // Genesis (first-run) widening: when this agent has no tracked state yet,
+        // its mergeVariable is empty and formatMergeVariableData injects the
+        // formatEmpty seed instruction. That first call is establishing a baseline
+        // from scratch (which may be a scene enabled many turns deep), so it needs
+        // a wider history window than the normal per-turn delta update. Same empty
+        // check formatMergeVariableData uses, so the two branches stay in lockstep.
+        const mvName = agent.mergeVariable?.enabled ? agent.mergeVariable.variableName : '';
+        const isGenesis = !!mvName && readMergeArray(mvName).length === 0;
+        const genesisCount = agent.sidecarCall.genesisHistoryCount;
+        const historyCount = (isGenesis && Number(genesisCount) > 0)
+            ? Number(genesisCount)
+            : (agent.sidecarCall.historyMessageCount || 20);
         const historyText = buildHistoryContext(messageIndex, historyCount);
         if (historyText) {
             historyBlock = `\nRecent conversation history (check the latest response against these established facts):\n<chat_history>\n${historyText}\n</chat_history>\n`;
@@ -349,7 +400,11 @@ export async function executePreGenSidecarAgent(agent, contextText, generationTy
     // Rich context (opt-in): the same inputs the main chat sees. Appended to
     // the system prompt so the planner directs from the real scene state, not
     // just the last N lines. mesNum = end of chat (pre-gen reads everything).
-    const richContext = await buildAgentRichContext(agent, chat.length - 1, pendingUserText);
+    // suppressSelfMemory (reroll blindfold) threads through from the caller.
+    const richContext = await buildAgentRichContext(
+        agent, chat.length - 1, pendingUserText, 8192,
+        { suppressSelfMemory: !!opts.suppressSelfMemory },
+    );
     if (richContext) {
         expandedPrompt += '\n\n' + richContext;
     }

@@ -23,6 +23,7 @@
  */
 
 import {
+    chat,
     chat_metadata,
     this_chid,
     eventSource,
@@ -35,11 +36,21 @@ import { MODULE_NAME, debug } from '../../index.js';
 import { getEnabledAgents } from '../data/store.js';
 import { makeDraggablePanel } from './draggablePanel.js';
 import { registerPanelControl } from './modal.js';
-import { onPostProcessComplete } from '../core/lifecycle.js';
+import { onPostProcessComplete, findLastAssistantIndex } from '../core/lifecycle.js';
+import { resolveStateTraceDetailed } from '../modes/mergeVariable.js';
 
 const LOG_PREFIX = '[SuperAgents/stateCard]';
 const PANEL_ID = 'state-card';
 const DEFAULT_VARIABLE = 'sa_state_card';
+
+// Staleness horizon (user's "both" answer). The backward trace reports how many
+// messages back it had to walk to find real state. Within this many messages we
+// still show it — so a single junk/empty generation (last good state is 1 hop
+// back) never blanks the panel. Beyond it, the last real state is too far back
+// to trust, so we show honest empty instead of a fossil. A swipe that lands on
+// an untracked branch is covered the same way: nearby prior state shows through,
+// distant/absent state reads empty.
+const STALENESS_HORIZON = 6;
 // Hardcoded (not `${MODULE_NAME}`): MODULE_NAME is still in its import TDZ when
 // this module evaluates due to the index.js↔ui circular import, so building the
 // href at top level would yield ".../undefined/...". templateSync.js hardcodes
@@ -54,13 +65,6 @@ const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/ui
 /** @type {ReturnType<typeof makeDraggablePanel>|null} */ let controller = null;
 let currentSchema = null;
 let currentVariable = DEFAULT_VARIABLE;
-
-// Cached HTML from the last successful render. Lets us preserve the display
-// across transient empty reads (e.g. when batch mode gets `state_card: {}`
-// back from the LLM and would otherwise clobber the panel with "State data
-// is empty"). Cleared on CHAT_CHANGED, on agent disable, and on parse failure
-// so the user always sees fresh state when context legitimately changes.
-let lastGoodHtml = null;
 
 // Debounce token for MESSAGE_RECEIVED / CHARACTER_MESSAGE_RENDERED triggers.
 // Multiple events fire in rapid succession; one trailing update() per burst.
@@ -245,11 +249,10 @@ export function initStateCard() {
     }
     eventSource.on(event_types.MESSAGE_SWIPED, () => scheduleRefresh(100));
 
-    // CHAT_CHANGED is the *real* invalidation: a new chat means the cached
-    // state belongs to the previous conversation. Drop the cache, then
-    // reconcile visibility against the new chat-active state.
+    // CHAT_CHANGED is the *real* invalidation: a new chat means any prior
+    // render belongs to the previous conversation. Reconcile visibility against
+    // the new chat-active state; update() will resolve fresh state via the trace.
     eventSource.on(event_types.CHAT_CHANGED, () => {
-        lastGoodHtml = null;
         setTimeout(reconcileVisibility, 200);
     });
 
@@ -343,16 +346,25 @@ function getStateCardAgent() {
 }
 
 /**
- * Read the raw state JSON string from the merge variable array.
+ * Read the raw state JSON string to display, resolved via the BACKWARD TRACE.
+ *
+ * The panel shows state for the message the user is looking at — the latest
+ * assistant message and its active swipe. resolveStateTrace walks backward from
+ * there to the most recent tracked snapshot, so a swipe that never tracked its
+ * own state shows the last real state before it (following the visible branch)
+ * rather than whatever happens to be sitting in the global merge var.
+ *
+ * Falls back to the raw global var only when there is no assistant message yet
+ * (e.g. a fresh chat mid-first-generation), so first-gen display still works.
+ *
  * The state-card agent stores a single snapshot item whose `json` field holds
- * the full blob; fall back to the first field if the schema names it differently.
+ * the full blob; fall back to the first non-underscore field if the schema
+ * names it differently.
  * @returns {string|null}
  */
 function readStateJson() {
     try {
-        const raw = chat_metadata?.variables?.[currentVariable];
-        if (!raw) return null;
-        const arr = JSON.parse(raw);
+        const arr = readResolvedStateArray();
         if (Array.isArray(arr) && arr.length > 0) {
             const first = arr[0];
             const blob = first.json ?? first[Object.keys(first).find(k => !k.startsWith('_'))];
@@ -364,6 +376,40 @@ function readStateJson() {
     }
 }
 
+/**
+ * Resolve the state items array for the currently-viewed message+swipe, with
+ * the staleness horizon applied.
+ *
+ * Anchors the backward trace on the last assistant message + its active swipe.
+ * The trace reports how far back it found state; within STALENESS_HORIZON we
+ * accept it (recent state shows through a transient empty gen or an untracked
+ * swipe), beyond it we treat as empty (too stale to trust). If there is no
+ * assistant message yet, read the raw global var so an in-progress first
+ * generation still populates the panel.
+ * @returns {object[]|null}
+ */
+function readResolvedStateArray() {
+    const lastIdx = findLastAssistantIndex();
+    if (lastIdx >= 0) {
+        const swipeId = chat[lastIdx]?.swipe_id ?? 0;
+        const { items, distance } = resolveStateTraceDetailed(chat, lastIdx, swipeId, currentVariable);
+        if (items !== null) {
+            // Beyond the horizon → the freshest real state is too far back; show
+            // empty rather than a fossil. Within it → accept (this is what holds
+            // the panel through a single junk gen or an untracked swipe).
+            if (distance > STALENESS_HORIZON) return null;
+            return items;
+        }
+        // items === null: nothing anywhere down the trace. Fall through to the
+        // raw var only as a last resort (covers the brief window between a fresh
+        // extraction landing in the var and it being pinned per-swipe).
+    }
+    const raw = chat_metadata?.variables?.[currentVariable];
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+}
+
 // ============================================================================
 // UPDATE — resolve agent, read state, re-render
 // ============================================================================
@@ -373,11 +419,11 @@ function readStateJson() {
  * but still cheap. Resolves the active state-card agent each call so enabling/
  * disabling or swapping agents is picked up without a reload.
  *
- * Preserves the previous render across transient empty reads. Three cases:
- *   1. No agent enabled       → always show the "no agent" notice (intent-clear).
- *   2. Variable empty/unset   → if we have cached HTML, keep it; otherwise notice.
- *   3. Parsed object is empty → same as 2; the LLM returned {} this turn but
- *                                old state is still meaningful for the user.
+ * The "hold vs. blank" decision now lives in the backward trace + staleness
+ * horizon (readResolvedStateArray), NOT in a cached-HTML crutch: recent state
+ * shows through a transient empty gen or an untracked swipe, distant/absent
+ * state reads as honest empty. So update() simply renders whatever the resolver
+ * returns for the message being viewed.
  */
 export function update() {
     if (!panelEl) return;
@@ -387,21 +433,13 @@ export function update() {
     currentVariable = agent?.mergeVariable?.variableName || DEFAULT_VARIABLE;
 
     if (!agent) {
-        // Explicit config state, not a transient — clear the cache so re-enabling
-        // doesn't blink stale data back in before the next extraction.
-        lastGoodHtml = null;
         renderNotice('No state-card agent enabled.', 'Enable one from the Library or Agents tab.');
         return;
     }
 
     const raw = readStateJson();
     if (!raw) {
-        // Variable not yet populated. First-time empty → show the prompt-to-generate
-        // notice. Subsequent empty → keep the last good render so a single bad
-        // extraction doesn't wipe the user's view.
-        if (!lastGoodHtml) {
-            renderNotice('No state data yet.', 'Generate a message to populate.');
-        }
+        renderNotice('No state data yet.', 'Generate a message to populate.');
         return;
     }
 
@@ -410,20 +448,12 @@ export function update() {
         parsed = JSON.parse(raw);
     } catch (err) {
         debug(`${LOG_PREFIX} state JSON parse failed:`, err);
-        if (!lastGoodHtml) {
-            renderNotice('State data could not be read.', 'The last extraction may have been malformed.');
-        }
+        renderNotice('State data could not be read.', 'The last extraction may have been malformed.');
         return;
     }
 
-    // The LLM occasionally returns an empty envelope value (e.g. `state_card: {}`
-    // in batch mode), which storeBatchedSidecarResult dutifully stores as
-    // `{json: "{}"}`. Treat that as a transient miss too — keep the last good
-    // display rather than wiping it to "State data is empty".
     if (!hasMeaningfulState(parsed)) {
-        if (!lastGoodHtml) {
-            renderNotice('No state data yet.', 'Generate a message to populate.');
-        }
+        renderNotice('No state data yet.', 'Generate a message to populate.');
         return;
     }
 
@@ -433,8 +463,9 @@ export function update() {
 /**
  * Treat a parsed state as "meaningful" if it carries at least one tracked
  * dimension (world events, user stats, characters, or a legacy v2 scene).
- * Empty objects from a failed extraction don't qualify, so we preserve the
- * prior render instead of clobbering it.
+ * Empty objects (e.g. a failed `{}` extraction) don't qualify — but note the
+ * trace already prefers a nearby prior good snapshot over such an empty, so
+ * this mostly guards the genuine start-of-chat / horizon-exceeded empties.
  */
 function hasMeaningfulState(data) {
     if (!data || typeof data !== 'object') return false;
@@ -507,7 +538,6 @@ function renderCards(data, schema) {
     }
 
     body.innerHTML = html || '<div class="sa-sc-empty">State data is empty.</div>';
-    if (html) lastGoodHtml = html;
 
     // Character cards collapse on header click (world events + user are pinned).
     // Persist the new state by character name so it survives the next re-render.
@@ -667,5 +697,4 @@ export function destroyStateCard() {
     controller = null;
     panelEl = null;
     currentSchema = null;
-    lastGoodHtml = null;
 }

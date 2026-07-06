@@ -230,6 +230,11 @@
 }
 .sam-icon-btn:hover { color: var(--sa-text-primary); background: var(--sa-surface-rail-hot); }
 .sam-icon-danger:hover { color: var(--sa-status-error); }
+/* Disabled icon button: present but inert (e.g. reroll with no plan yet). */
+.sam-icon-btn-disabled,
+.sam-icon-btn:disabled { opacity: 0.4; cursor: default; }
+.sam-icon-btn-disabled:hover,
+.sam-icon-btn:disabled:hover { color: var(--sa-text-muted); background: transparent; }
 
 /* ── Rows (settings) ───────────────────────────────────────── */
 .sam-row {
@@ -397,6 +402,16 @@
 .sae-check-row { display: flex; gap: 16px; flex-wrap: wrap; padding: 4px 0; }
 .sae-check { display: flex; align-items: center; gap: 6px; font-size: var(--sa-font-label); color: var(--sa-text-body); cursor: pointer; }
 .sae-check input { accent-color: var(--sa-accent); }
+/* Ineligible toggle (e.g. self-memory on an agent with no merge variable). */
+.sae-check-disabled { opacity: 0.5; cursor: default; }
+.sae-check-disabled input { cursor: default; }
+
+/* Advanced-extraction disclosure header: a clickable row that expands the
+   regex/field controls. Cursor + hover cue signal it's interactive; the
+   chevron icon rotates via class swap (fa-chevron-right / -down) in JS. */
+.sae-adv-toggle { cursor: pointer; user-select: none; }
+.sae-adv-toggle:hover .sam-row-title { color: var(--sa-accent-soft); }
+.sae-adv-toggle .sam-row-title i { transition: transform 0.12s ease; }
 
 .sae-hidden { display: none; }
 

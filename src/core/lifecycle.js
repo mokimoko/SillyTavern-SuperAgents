@@ -60,19 +60,21 @@ import { recordAgentRun } from './idempotency.js';
 import { beginSelfGeneration, endSelfGeneration, isExternalGenerationActive } from './compatibility.js';
 import { resetTurn, recordAgents, formatTurnHint } from './callStats.js';
 
-import { formatMergeVariableData, executeMergeVariable, writeMergeArray, bindVariableToSwipe, captureTurnBaseline, restoreTurnBaseline } from '../modes/mergeVariable.js';
+import { formatMergeVariableData, executeMergeVariable, writeMergeArray, bindVariableToSwipe, captureTurnBaseline, restoreTurnBaseline, resolveStateTrace } from '../modes/mergeVariable.js';
 import {
     executeSidecarAgent,
     buildSidecarDisplayData,
     buildPreGenContext,
     groupSidecarsByProfile,
 } from '../modes/sidecar.js';
-import { executeSidecarBatch, processPreGenAgents } from '../modes/batch.js';
+import { executeSidecarBatch, processPreGenAgents, rerollPreGenAgent } from '../modes/batch.js';
 import { executeRewriteAgent } from '../modes/rewrite.js';
 import { executeExtractAgent, executeAppendAgent } from '../modes/postProcess.js';
 import { processAgentRegex, clearAgentData } from '../render/regexProcessor.js';
 import { refreshMessage } from '../render/renderer.js';
 import { executePhoneEvaluation } from '../phone/phoneAgent.js';
+import { ownsCounterItself } from './everyN.js';
+import { runGuardManually } from '../modes/continuityGuardRunner.js';
 
 const LOG_PREFIX = '[SuperAgents/lifecycle]';
 const PROMPT_KEY_PREFIX = 'sa_agent_';
@@ -843,50 +845,161 @@ function onSwipeNavigation(messageIndex) {
 
     const currentSwipeId = message.swipe_id ?? 0;
 
-    // Per-swipe storage lives at the message top level (NOT under extra): ST
-    // clones/restores extra per swipe, which would shadow this with a stale clone.
-    const swipes = message.saAgentSwipes
-        ?? message.extra?.saAgentSwipes;   // back-compat: read legacy location
-
-    // Restore merge variable data for THIS swipe. Only touch vars that actually
-    // have a record for this swipe; the stored value (which may be []) clears
-    // stale data from another swipe so next turn's LLM gets formatEmpty. A var
-    // with NO record for this swipe is left as-is rather than blanked — and,
-    // crucially, its display is NOT rebuilt below.
-    const restored = new Set();
-    if (swipes) {
-        for (const [varName, swipeData] of Object.entries(swipes)) {
-            if (Object.prototype.hasOwnProperty.call(swipeData, currentSwipeId)) {
-                writeMergeArray(varName, swipeData[currentSwipeId] ?? []);
-                restored.add(varName);
-            }
-        }
+    // Restore merge variable data for THIS swipe via the BACKWARD TRACE.
+    //
+    // Old behavior only restored vars that had an own-record on this exact
+    // swipe, and left everything else holding the newest swipe's value — so
+    // navigating back to a swipe that never tracked state showed the wrong
+    // branch's data. The resolver instead walks backward to the most recent
+    // tracked snapshot (following the branch being viewed up-thread), so an
+    // untracked swipe inherits the last real state before it, and a genuinely
+    // stateless start-of-chat resolves to null → cleared to empty.
+    //
+    // We drive the walk from the set of merge vars owned by enabled agents (the
+    // current message may have NO saAgentSwipes at all — that's the bug case —
+    // so we can't derive the var list from this message's records alone).
+    const trackedVars = new Set(
+        getEnabledAgents()
+            .map(a => a.mergeVariable?.variableName)
+            .filter(Boolean),
+    );
+    // Back-compat: also cover any var that only exists in stored per-swipe
+    // history (e.g. an agent later disabled) so its display doesn't go stale.
+    const legacySwipes = message.saAgentSwipes ?? message.extra?.saAgentSwipes;
+    if (legacySwipes) {
+        for (const varName of Object.keys(legacySwipes)) trackedVars.add(varName);
     }
 
-    // Rebuild sidecar display per swipe — but ONLY for agents whose variable we
-    // just restored from a per-swipe record. Rebuilding an agent with no record
-    // would read the global var (the most-recent swipe's value) and stamp it
-    // onto an older swipe — the exact mismatch this handler is meant to prevent.
-    // With no record, the saAgentData ST already restored for this swipe is
-    // correct, so leave it untouched.
+    const resolved = new Set();
+    for (const varName of trackedVars) {
+        const items = resolveStateTrace(chat, idx, currentSwipeId, varName);
+        // null → nothing anywhere down the trace: clear to empty so next turn's
+        // LLM sees formatEmpty instead of another swipe's leftovers.
+        writeMergeArray(varName, items ?? []);
+        resolved.add(varName);
+    }
+
+    // Rebuild sidecar display for every state-bearing agent from the freshly
+    // resolved var. Safe now: the value written above is correct for THIS swipe
+    // (the resolver already followed the trace), so rebuilding can't stamp a
+    // newer swipe's data onto an older one the way the old global-var read could.
     const sidecarAgents = getEnabledAgents().filter(a =>
         a.sidecarCall?.enabled && a.sidecarCall?.display?.enabled,
     );
     for (const agent of sidecarAgents) {
         const varName = agent.mergeVariable?.variableName;
-        if (!varName || !restored.has(varName)) continue;
+        if (!varName || !resolved.has(varName)) continue;
         if (message.extra?.saAgentData?.[agent.id]) {
             delete message.extra.saAgentData[agent.id];
         }
         buildSidecarDisplayData(agent, message, idx);
     }
 
-    debug(`${LOG_PREFIX} swipe ${currentSwipeId}: restored ${restored.size} var(s) + rebuilt display`);
+    debug(`${LOG_PREFIX} swipe ${currentSwipeId}: trace-resolved ${resolved.size} var(s) + rebuilt display`);
 }
 
 // ============================================================================
 // PUBLIC API
 // ============================================================================
+
+/**
+ * Find the index of the most recent assistant (non-user, non-system) message.
+ * @returns {number} the chat index, or -1 if there is no such message.
+ */
+export function findLastAssistantIndex() {
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (chat[i] && !chat[i].is_user && !chat[i].is_system) return i;
+    }
+    return -1;
+}
+
+/**
+ * Manually run a single agent on the most recent assistant message. Shared by
+ * the management modal's per-agent run button and UIBedazzler's flyout play
+ * badge, so the "which message counts as last" rule lives in exactly one place.
+ *
+ * Surfaces its own toasts (no assistant message / failure) so callers don't
+ * have to. Returns the same result shape as runAgentOnMessage, plus a
+ * { skipped: true } marker when there was no assistant message to target.
+ *
+ * @param {string} agentId
+ * @returns {Promise<{changed:boolean, error?:string, skipped?:boolean}>}
+ */
+export async function runAgentOnLastMessage(agentId) {
+    const targetIdx = findLastAssistantIndex();
+    if (targetIdx < 0) {
+        toastr.warning('No assistant message to run the agent on.');
+        return { changed: false, skipped: true };
+    }
+    const result = await runAgentOnMessage(agentId, targetIdx);
+    if (result?.error) toastr.error(`Agent failed: ${result.error}`);
+    return result;
+}
+
+/**
+ * Reroll a pre-gen agent (e.g. the Director): re-run its pre-gen planner for
+ * the upcoming turn with self-memory BLINDFOLDED this once, so a plan the user
+ * disliked doesn't anchor the retry. Distinct from runAgentOnLastMessage —
+ * that's target selection (run on an existing reply, post-gen); this is memory
+ * suppression on the pre-gen planner. The blindfold changes only what this run
+ * reads; stored history is untouched.
+ *
+ * Shares the re-entrancy guard + run-active UI signalling with the manual run
+ * path so a reroll can't overlap another agent run. Surfaces its own toasts.
+ *
+ * @param {string} agentId
+ * @returns {Promise<{changed:boolean, error?:string, skipped?:boolean}>}
+ */
+export async function rerollAgentPreGen(agentId) {
+    if (isAgentRunInProgress) {
+        toastr.warning('Another agent is currently running.');
+        return { changed: false, skipped: true };
+    }
+
+    const agent = getAgentById(agentId);
+    if (!agent) {
+        toastr.error('Agent not found.');
+        return { changed: false };
+    }
+    if (!agent.sidecarCall?.enabled || (agent.phase !== 'pre' && agent.phase !== 'both')) {
+        toastr.info('Reroll applies to pre-gen planners only.', agent.name);
+        return { changed: false, skipped: true };
+    }
+
+    isAgentRunInProgress = true;
+    activeRunController = new AbortController();
+    generationStopRequested = false;
+    setRunActive(true);
+    beginSelfGeneration();
+    try {
+        const result = await rerollPreGenAgent(agent, runOpts());
+        if (result?.error) {
+            toastr.error(`Reroll failed: ${result.error}`);
+            return { changed: false, error: result.error };
+        }
+        // Refresh the display block for the last assistant message so the new
+        // plan shows immediately (the plan HUD reads the persisted variable).
+        const lastIdx = findLastAssistantIndex();
+        if (lastIdx >= 0) {
+            saveChatDebounced();
+            refreshMessage(lastIdx);
+        }
+        if (getGlobalSettings().showNotifications) {
+            toastr.info('Rerolled — memory suppressed for this pass.', agent.name, { timeOut: 3000 });
+        }
+        return { changed: true };
+    } catch (err) {
+        if (isAbortError(err)) return { changed: false, skipped: true };
+        console.error(`${LOG_PREFIX} reroll failed:`, err);
+        toastr.error(`Reroll failed: ${err?.message || err}`);
+        return { changed: false, error: String(err?.message || err) };
+    } finally {
+        isAgentRunInProgress = false;
+        activeRunController = null;
+        setRunActive(false);
+        endSelfGeneration();
+    }
+}
 
 /**
  * Manually run a single agent on a message (slash command / button).
@@ -919,6 +1032,30 @@ export async function runAgentOnMessage(agentId, messageIndex) {
     setRunActive(true);            // notify UI (and re-affirm the flag via setter)
     beginSelfGeneration();   // manual run drives its own LLM call — mark it ours
     try {
+        // Continuity Guard — its real work is post-gen detection, not any of the
+        // phone/sidecar/rewrite/postProcess modes below, so the generic dispatch
+        // would fall through to "no post-processing configured" and no-op. Route
+        // it to its own manual-run entry, which forces an open-pass flag on the
+        // targeted message. ownsCounterItself() identifies the guard structurally.
+        if (ownsCounterItself(agent)) {
+            const res = runGuardManually(messageIndex);
+            const notify = getGlobalSettings().showNotifications;
+            if (!res.ready) {
+                // Preconditions unmet: no enabled State Card agent, or
+                // sa_state_card holds no roster. Always surface this — it's a
+                // "why did nothing happen" answer, not chatter.
+                toastr.info('Guard needs an enabled State Card with tracked state.', agent.name);
+            } else if (res.hadFinding) {
+                // A real suspicion was flagged. The flag itself is the signal;
+                // a toast would be redundant, so stay quiet.
+            } else if (notify) {
+                // Clean forced sweep — nothing suspicious. Confirm the "all
+                // clear" only when the user has notifications enabled.
+                toastr.info('Checked — no continuity issues found.', agent.name, { timeOut: 3000 });
+            }
+            return { changed: res.flagged };
+        }
+
         // Phone agents — force an evaluation (skips trigger/probability gates)
         // so the play button always asks the character whether they'd text now.
         if (agent.phoneConfig != null) {

@@ -1,0 +1,83 @@
+{
+    "id": "tpl-art-prompt-generator",
+    "name": "Art Prompt Generator",
+    "description": "A post-generation sidecar that reads the scene just written and crafts a detailed text-to-image prompt for Stable Diffusion, Midjourney, DALL-E, or any diffusion model. Analyzes composition, lighting, mood, and subject matter, then outputs a ready-to-paste prompt with style tags. Shown as a collapsible block under the message and exposed as the {{agent_sa_art_prompt}} macro (formatted block) and {{agent_sa_art_prompt_value}} (bare prompt, paste-ready for /sd or any image-gen call) so it can feed directly into ST's image generation pipeline. Inspired by the Art Prompt Generator from sidecar-ai; rebuilt as a SuperAgents agent for batching, persistence, and rich context.",
+    "icon": "fa-solid fa-palette",
+    "category": "content",
+    "tags": ["art", "image", "prompt", "stable-diffusion", "midjourney", "post-gen", "visual"],
+    "version": 1,
+    "author": "",
+    "prompt": "### Art Prompt Generator — Post-Generation Scene-to-Image Prompt\n\nROLE: Read the scene that just occurred and produce ONE text-to-image prompt that would faithfully illustrate the most visually striking moment. You do NOT write prose, narration, or dialogue. You produce only the prompt block below.\n\nANALYZE:\n- The dominant visual image: what would a camera or painter capture at the climactic instant of this beat?\n- Composition: close-up, wide shot, overhead, dutch angle, over-the-shoulder — whatever fits the emotional weight.\n- Lighting and atmosphere: golden hour, harsh fluorescent, candlelight, neon, overcast — read the setting.\n- Color palette: derive it from the mood. Warm intimacy, cold dread, saturated joy, muted grief.\n- Medium/style: match the story's tone. Photorealistic for grounded drama, painterly for fantasy, graphic for action, etc.\n\nOUTPUT THIS BLOCK EXACTLY, and nothing else:\n\n[ARTPROMPT|short scene label, 5-8 words|style/medium descriptor]\nfull detailed image-generation prompt, 40-80 words, comma-separated tags and descriptors as used by Stable Diffusion / Midjourney — include subject, action, setting, lighting, color, composition, quality tags\n[/ARTPROMPT]\n\nFIELD GUIDE:\n- First field (after the first pipe): scene label — a concise human-readable name for the moment, e.g. \"Elena kneeling in the rain\" or \"the throne room standoff\".\n- Second field (after the second pipe): style — the artistic medium and approach, e.g. \"digital painting, cinematic lighting, fantasy\" or \"35mm film photography, shallow DOF, warm tones\".\n- Body (between the tags): the full prompt — write it as a real image-gen prompt with comma-separated descriptors. Include subject, pose/action, environment, lighting, mood, camera angle, and quality modifiers. Do NOT wrap in quotes.\n\nRULES:\n- Output ONLY the [ARTPROMPT] block. No preamble, no headers, no commentary.\n- Do not use a pipe character (|) anywhere except as the two field separators in the header line.\n- Make the prompt self-contained — someone who hasn't read the story should be able to paste it into an image generator and get a coherent result.\n- Favor the single most evocative visual moment. If the scene is a conversation, find the body language or the environment that carries the emotion.\n- Do NOT include character names in the body prompt — describe appearance instead. Names can appear in the label field.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 85,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 400,
+        "responseKey": "art_prompt",
+        "includeHistory": true,
+        "historyMessageCount": 4,
+        "richContext": {
+            "enabled": true,
+            "character": true,
+            "persona": false,
+            "worldInfo": false,
+            "summary": true,
+            "authorsNote": false,
+            "pendingUser": false,
+            "historyCount": 4
+        },
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "art-prompt-data",
+            "dataMap": {
+                "label": "data-label",
+                "style": "data-style"
+            },
+            "contentField": "prompt"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_art_prompt",
+        "extractPattern": "\\[ARTPROMPT\\|([^|]+)\\|([^\\]]+)\\]\\n([\\s\\S]*?)\\[\\/ARTPROMPT\\]",
+        "fieldNames": ["label", "style", "prompt"],
+        "keyFields": ["label"],
+        "stripFromResponse": true,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "🎨 {{label}} — {{style}}\n{{prompt}}",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 400,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-art-prompt-generator"
+}

@@ -1,0 +1,84 @@
+{
+    "id": "tpl-actor-interview",
+    "name": "Actor Interview",
+    "description": "A post-generation sidecar that breaks the fourth wall: the cast of the scene that just played steps out of character and gives candid behind-the-scenes reactions, like the DVD-extra interviews where actors talk about a role. Runs as a separate LLM call — reads who was in the beat, then writes a short, genuine take from each performer (surprise at a character choice, what was hard, what landed). Shown as a collapsible \"Behind the Scenes\" panel under the message and exposed as the {{agent_sa_actor_interview}} macro. Inspired by the Actor Interview from sidecar-ai; rebuilt as a SuperAgents agent so it batches, persists, and uses the shared rich-context pipeline.",
+    "icon": "fa-solid fa-clapperboard",
+    "category": "content",
+    "tags": ["actor", "interview", "behind-the-scenes", "meta", "fourth-wall", "post-gen", "flavor"],
+    "version": 1,
+    "author": "",
+    "prompt": "### Actor Interview — Post-Generation Behind-the-Scenes\n\nROLE: The scene just wrapped. Now the performers step off set and give candid, behind-the-scenes reactions to the beat they just played — the way actors talk about a role in a DVD extra or a press junket. You do NOT continue the story, write narration, or speak as the characters in-fiction. You write the ACTORS, out of character, reflecting on the work.\n\nWHO SPEAKS:\n- One short reaction from each MAJOR performer in the scene that just played (typically 2, sometimes 3). Include the character the user plays if they were present.\n- If only one character was really in the beat, one reaction is fine. Don't invent actors for people who weren't there.\n\nWHAT A GOOD TAKE SOUNDS LIKE:\n- Genuine and casual — a real person talking about their craft, not a character in a scene.\n- Reacts to THIS beat specifically: a choice that surprised them, a moment that was hard to play, what they enjoyed, a bit of chemistry with a scene partner.\n- Can gently break the illusion (\"I wasn't sure the silence would land, but...\") without being smug or winking too hard.\n- 2-3 lines each. No monologues.\n\nOUTPUT THIS BLOCK EXACTLY, and nothing else:\n\n[ACTORINTERVIEW|short scene descriptor, 3-6 words|the mood on set, 2-4 words]\nCharacter Name :: their candid 2-3 line reaction as the actor\nAnother Character :: their candid 2-3 line reaction as the actor\n[/ACTORINTERVIEW]\n\nFIELD GUIDE:\n- First header field (after the first pipe): scene descriptor — a short human-readable name for the beat, e.g. \"the rooftop confession\" or \"the fight that wasn't\".\n- Second header field (after the second pipe): the mood on set — a couple words on the offstage vibe, e.g. \"quietly emotional\", \"loose and funny\", \"tense but focused\".\n- Body: ONE actor per line. Format each line as `Character Name :: reaction`. Use the character's name as the performer label. The reaction is them speaking as the actor, out of character.\n\nRULES:\n- Output ONLY the [ACTORINTERVIEW] block. No preamble, no headers, no commentary.\n- Use the `::` separator between name and reaction on every body line. Do NOT use `::` anywhere else.\n- Do not use a pipe character (|) anywhere except as the two field separators in the header line.\n- Keep each reaction to 2-3 lines. Genuine over clever. Don't repeat the previous turn's takes — react to the beat that just happened."
+    ,
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 90,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 450,
+        "responseKey": "actor_interview",
+        "includeHistory": true,
+        "historyMessageCount": 4,
+        "richContext": {
+            "enabled": true,
+            "character": true,
+            "persona": true,
+            "worldInfo": false,
+            "summary": true,
+            "authorsNote": false,
+            "pendingUser": false,
+            "historyCount": 4
+        },
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "actor-interview-data",
+            "dataMap": {
+                "scene": "data-scene",
+                "mood": "data-mood"
+            },
+            "contentField": "cast"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_actor_interview",
+        "extractPattern": "\\[ACTORINTERVIEW\\|([^|]+)\\|([^\\]]+)\\]\\n([\\s\\S]*?)\\[\\/ACTORINTERVIEW\\]",
+        "fieldNames": ["scene", "mood", "cast"],
+        "keyFields": ["scene"],
+        "stripFromResponse": true,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "🎬 Behind the Scenes — {{scene}} ({{mood}})\n{{cast}}",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 450,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-actor-interview"
+}

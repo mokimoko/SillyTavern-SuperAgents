@@ -1,0 +1,83 @@
+{
+    "id": "tpl-soundtrack-suggester",
+    "name": "Soundtrack Suggester",
+    "description": "A post-generation sidecar that reads the mood of the scene that just played and suggests a piece of music to score it. Runs as a separate LLM call — analyzes tone, tension, and pacing, then names a fitting track plus a short vibe descriptor (genre, instrumentation, tempo) so it works whether or not you want a real song to play. Shown as an editable block under the message and exposed as the {{agent_sa_soundtrack}} macro. Inspired by the Soundtrack Suggester from sidecar-ai; rebuilt as a SuperAgents agent so it batches, persists, and uses the shared rich-context pipeline.",
+    "icon": "fa-solid fa-music",
+    "category": "content",
+    "tags": ["soundtrack", "music", "mood", "post-gen", "flavor", "atmosphere"],
+    "version": 1,
+    "author": "",
+    "prompt": "### Soundtrack Suggester — Post-Generation Scene Scorer\n\nROLE: Read the scene that just occurred and score it. Suggest ONE piece of music that fits its mood, then describe the sonic vibe. You do NOT write prose, narration, or anything the characters say or do.\n\nSCORE AGAINST:\n- The dominant emotional tone of the moment — not the whole story, just the beat that just landed.\n- Tension and pacing: is this a slow burn, a lull, a spike, an afterglow, a gut-punch?\n- Setting and texture: intimate and close, vast and lonely, chaotic, ceremonial, mundane.\n- Any shift — if the scene turned, score where it ended, not where it began.\n\nOUTPUT THIS BLOCK EXACTLY, and nothing else:\n\n[SOUNDTRACK|Artist — Song Title|genre, instrumentation, tempo]\nwhy it fits this beat — one short line\n[/SOUNDTRACK]\n\nFIELD GUIDE:\n- First field (after the first pipe): the track — a real, nameable piece: a song, score cue, or well-known instrumental. Match feeling over lyrics. Instrumental or score is often the safer fit for a scene.\n- Second field (after the second pipe): the vibe — describe the sound itself so it's useful even without the named track, e.g. \"sparse piano, minor key, slow\" or \"driving synth, propulsive, bright\".\n- Body line (between the tags): why it fits — ONE line tying it to the specific emotional texture of what just happened, not a generic mood.\n\nRULES:\n- Output ONLY the [SOUNDTRACK] block. No preamble, no headers, no commentary.\n- Do not use a pipe character (|) anywhere except as the two field separators in the header line.\n- Do not repeat the previous turn's suggestion unless the mood genuinely hasn't moved. Let the score follow the scene.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 80,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 400,
+        "responseKey": "soundtrack",
+        "includeHistory": true,
+        "historyMessageCount": 4,
+        "richContext": {
+            "enabled": true,
+            "character": true,
+            "persona": false,
+            "worldInfo": false,
+            "summary": true,
+            "authorsNote": false,
+            "pendingUser": false,
+            "historyCount": 4
+        },
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "soundtrack-suggester-data",
+            "dataMap": {
+                "track": "data-track",
+                "vibe": "data-vibe"
+            },
+            "contentField": "why"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_soundtrack",
+        "extractPattern": "\\[SOUNDTRACK\\|([^|]+)\\|([^\\]]+)\\]\\n([\\s\\S]*?)\\[\\/SOUNDTRACK\\]",
+        "fieldNames": ["track", "vibe", "why"],
+        "keyFields": ["track"],
+        "stripFromResponse": true,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "♪ {{track}} — {{vibe}}\n{{why}}",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 400,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-soundtrack-suggester"
+}

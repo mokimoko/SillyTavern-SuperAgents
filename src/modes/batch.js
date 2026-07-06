@@ -35,8 +35,10 @@ import {
     buildSidecarDisplayData,
     buildAgentRichContext,
     buildHistoryContext,
+    buildPreGenContext,
     groupSidecarsByProfile,
 } from './sidecar.js';
+import { readPendingUserMessage } from '../core/richContext.js';
 import { getGlobalSettings, getGroupById } from '../data/store.js';
 import { recordAgents } from '../core/callStats.js';
 
@@ -652,6 +654,51 @@ function injectPreGenResult(agent, response) {
         agent.injection.role,
     );
     debug(`${LOG_PREFIX} injected pre-gen result for "${agent.name}" at depth ${agent.injection.depth}`);
+}
+
+/**
+ * Reroll a single pre-gen agent: run its normal pre-gen path again, but with
+ * self-memory BLINDFOLDED for this one pass, then inject + persist the result
+ * exactly as a normal pre-gen run would (via injectPreGenResult) so the fresh
+ * plan actually steers the upcoming main generation and its display block
+ * refreshes.
+ *
+ * This is deliberately distinct from lifecycle.runAgentOnLastMessage ("run on
+ * last") — that answers WHICH message to act on and runs a sidecar post-gen
+ * against an existing reply. Reroll answers "remember myself this run — no",
+ * re-running the PRE-gen planner for the next turn with the memory suppressed,
+ * so a plan the user disliked doesn't anchor the retry. It routes through the
+ * same executePreGenSidecarAgent → injectPreGenResult pipeline the normal turn
+ * uses; only the { suppressSelfMemory: true } flag differs.
+ *
+ * Reroll never mutates stored history — the blindfold only changes what THIS
+ * run reads. (Throwing the remembered history away for good is Flush's job.)
+ *
+ * @param {object} agent — the pre-gen sidecar agent to reroll
+ * @param {object} [opts] — { signal, timeoutMs } for cancel/timeout
+ * @returns {Promise<{response: string, error?: string}>}
+ */
+export async function rerollPreGenAgent(agent, opts = {}) {
+    if (!agent?.sidecarCall?.enabled || (agent.phase !== 'pre' && agent.phase !== 'both')) {
+        return { response: '', error: 'not a pre-gen agent' };
+    }
+
+    // Build the same context the normal pre-gen path feeds the agent: recent
+    // history + the user's pending (not-yet-committed) message. Mirrors what
+    // processPreGenAgents passes down, so a reroll sees the same scene.
+    const contextText = buildPreGenContext();
+    const pendingUserText = readPendingUserMessage();
+
+    const result = await executePreGenSidecarAgent(
+        agent, contextText, 'normal', pendingUserText,
+        { ...opts, suppressSelfMemory: true },
+    );
+
+    if (result?.error) return result;
+
+    // Inject + persist + refresh display, identical to a normal pre-gen run.
+    injectPreGenResult(agent, result.response);
+    return result;
 }
 
 /**

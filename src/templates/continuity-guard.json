@@ -1,0 +1,68 @@
+{
+    "id": "tpl-continuity-guard",
+    "name": "Continuity Guard",
+    "description": "State-dependent continuity guard. Cheaply and deterministically flags likely continuity breaks (a character voiced who isn't in the tracked roster, or someone acting against their tracked condition) against the State Card, dropping a subtle clickable flag under the message. Only when you click does it run one combined LLM call that confirms the break and surgically rewrites the message to fix it — reusing the diff/revert machinery. REQUIRES an enabled State Card agent; no-ops without one.",
+    "icon": "fa-solid fa-shield-halved",
+    "category": "content",
+    "tags": ["continuity", "consistency", "state", "guard", "roster", "repair", "deterministic", "requires-state-card"],
+    "version": 1,
+    "author": "",
+    "prompt": "",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 210,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": false,
+        "maxTokens": 8192
+    },
+    "mergeVariable": {
+        "enabled": false,
+        "variableName": "",
+        "extractPattern": "",
+        "fieldNames": [],
+        "keyFields": [],
+        "mode": "snapshot",
+        "stripFromResponse": false,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "continuityGuard": {
+        "enabled": true,
+        "everyN": 5,
+        "requiresStateCard": true,
+        "detectVariable": "sa_state_card",
+        "repairContextVariable": "sa_narrative_engine",
+        "notes": "Detection reads sa_state_card only (the reliable discrete roster + conditions). The click-driven repair LLM call additionally receives sa_narrative_engine for spatial/dress/condition context. everyN is the open-pass sweep interval; a deterministic hit resets the counter."
+    },
+    "connectionProfile": "",
+    "maxTokens": 8192,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-continuity-guard"
+}

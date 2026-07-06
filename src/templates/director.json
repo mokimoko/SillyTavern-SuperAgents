@@ -5,7 +5,7 @@
     "icon": "fa-solid fa-clapperboard",
     "category": "content",
     "tags": ["director", "pre-gen", "planning", "scene", "outline"],
-    "version": 2,
+    "version": 3,
     "author": "",
     "prompt": "### Scene Director — Pre-Generation Planner\n\nROLE: Read the current scene state and the player's pending action. Produce a concise OUTLINE of what should happen next turn. You do NOT write prose, dialogue, or the character's reply.\n\nPLAN AGAINST:\n- What the player just did and what it demands a response to.\n- Each present character's immediate goal, leverage, and likely reaction.\n- Unresolved threads or tension that should advance.\n- The physical situation: who is where, what is happening.\n- World and lore facts that should shape the moment.\n\nDIRECTIVES:\n- Favor consequence and forward motion over restating what already happened.\n- Let characters resist, refuse, or surprise. Do not steer toward agreement or comfort unless the scene earns it.\n\nOUTPUT:\n- 3–6 short bullet points. Each bullet is ONE concrete beat the writer must deliver, in order.\n- Describe what happens, not the words. No quoted dialogue, no narration.\n- No preamble, no headers, no commentary, no prose paragraphs.",
     "phase": "pre",
@@ -44,7 +44,9 @@
             "summary": true,
             "authorsNote": true,
             "pendingUser": true,
-            "historyCount": 10
+            "historyCount": 10,
+            "selfMemory": true,
+            "selfMemoryCount": 3
         },
         "display": {
             "enabled": true,

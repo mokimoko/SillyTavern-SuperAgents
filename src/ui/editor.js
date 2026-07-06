@@ -68,11 +68,26 @@ function buildEditorHTML(agent, profiles) {
     const rc = agent.sidecarCall?.richContext ?? {
         enabled: false, character: false, persona: false, worldInfo: false,
         summary: false, authorsNote: false, pendingUser: false, historyCount: 0,
+        selfMemory: false, selfMemoryCount: 0,
     };
     const mv = agent.mergeVariable ?? {};
-    // "Advanced" = template-authored structured extraction. Simple carry-output
-    // toggles step aside for these so a save can't clobber their config.
-    const mvAdvanced = (mv.fieldNames?.length > 1) || !!mv.extractPattern;
+    // Self-memory only functions when the agent runs a sidecar AND persists its
+    // output to a merge variable (that variable's per-swipe history is what
+    // self-memory reads back). Without both, the checkbox is a dead control, so
+    // the editor greys it out rather than pretending it does something.
+    const selfMemEligible = !!(agent.sidecarCall?.enabled && mv.variableName);
+
+    // The Continuity Guard is structurally unique: no prompt, no sidecar, no
+    // merge variable. Detected structurally so a rename can't break it. When
+    // true, the Prompt section is replaced with a short explainer + N field.
+    const isGuard = agent.sourceTemplateId === 'tpl-continuity-guard'
+        || agent.continuityGuard?.enabled === true;
+    // Current N for whichever field renders (top-level first, then legacy block).
+    const everyNValue = (typeof agent.everyN === 'number' && agent.everyN > 0)
+        ? agent.everyN
+        : (typeof agent.continuityGuard?.everyN === 'number' && agent.continuityGuard.everyN > 0
+            ? agent.continuityGuard.everyN
+            : (isGuard ? 5 : 1));
 
     return `
     <div class="sae-head">
@@ -111,9 +126,19 @@ function buildEditorHTML(agent, profiles) {
             <input type="text" id="sae-tags" class="sae-input" value="${esc((agent.tags || []).join(', '))}" placeholder="prose, editing, quality (comma-separated)">
         </div>
 
+        ${isGuard ? `
+        <div class="sam-divider-label"><i class="fa-solid fa-shield-halved"></i> Continuity Guard</div>
+        <p class="sae-hint">This agent has no prompt. It watches your State Card and deterministically flags likely continuity breaks — a character speaking who isn't in the tracked roster, or someone acting against a tracked condition — by dropping a subtle clickable flag under the message. The expensive confirm-and-repair LLM call runs only when you click that flag. It requires an enabled State Card agent and no-ops without one.</p>
+        <div class="sae-field">
+            <div class="sae-label">Sweep every N messages</div>
+            <div class="sae-desc">Even on quiet stretches with no detected break, force an open review at least this often. A real deterministic hit flags immediately and resets the count. Default 5.</div>
+            <input type="number" id="sae-everyn" class="sae-input" min="1" step="1" value="${everyNValue}" style="max-width:120px">
+        </div>
+        ` : `
         <div class="sam-divider-label"><i class="fa-solid fa-terminal"></i> Prompt</div>
         <p class="sae-hint">The system prompt sent to the LLM. Supports SillyTavern macros ({{char}}, {{user}}, etc.).</p>
         <textarea id="sae-prompt" class="sae-textarea" rows="10" placeholder="You are a skilled editor...">${esc(agent.prompt)}</textarea>
+        `}
 
         <div class="sam-divider-label"><i class="fa-solid fa-gears"></i> Execution</div>
         <div class="sae-field">
@@ -125,6 +150,13 @@ function buildEditorHTML(agent, profiles) {
                 <option value="both" ${agent.phase === 'both' ? 'selected' : ''}>Both — inject pre + process post</option>
             </select>
         </div>
+        ${isGuard ? '' : `
+        <div class="sae-field">
+            <div class="sae-label">Run every N messages</div>
+            <div class="sae-desc">Throttle how often this agent actually fires. 1 = every message (default). 3 = only every 3rd new message, skipping the two in between — useful for expensive agents you want active but not on every turn. Counts new messages only (not swipes or regenerations).</div>
+            <input type="number" id="sae-everyn" class="sae-input" min="1" step="1" value="${everyNValue}" style="max-width:120px">
+        </div>
+        `}
         <div class="sae-row">
             <div class="sae-field sae-grow">
                 <div class="sae-label">Connection Profile</div>
@@ -153,14 +185,13 @@ function buildEditorHTML(agent, profiles) {
                     <span class="sam-switch-track"></span>
                 </label>
             </div>
-            ${!mvAdvanced ? `
             <div id="sae-memory-block">
                 <div class="sam-divider-label"><i class="fa-solid fa-brain"></i> Memory / Carry Output</div>
-                <p class="sae-hint">Remember this agent's last output and feed it back next turn — for trackers that build on what they said before. No display or extraction pattern needed.</p>
+                <p class="sae-hint">Remember this agent's output and feed it back next turn — for trackers that build on what they said before.</p>
                 <div class="sam-row">
                     <div class="sam-row-info">
                         <div class="sam-row-title">Remember this agent's output</div>
-                        <div class="sam-row-desc">Store the whole output and hand it back to this agent on the next turn.</div>
+                        <div class="sam-row-desc">Store the output and hand it back to this agent on the next turn.</div>
                     </div>
                     <label class="sam-switch">
                         <input type="checkbox" id="sae-mv-enabled" ${mv.enabled ? 'checked' : ''}>
@@ -183,15 +214,66 @@ function buildEditorHTML(agent, profiles) {
                             <span class="sam-switch-track"></span>
                         </label>
                     </div>
+                    <div id="sae-carryout-conflict-note" class="sae-hint sae-hidden"><i class="fa-solid fa-circle-info"></i> Disabled because "Self-memory" (under Rich Context) is on. Both feed this agent its own output from the same source, so only one can be active. Turn off self-memory there to feed the output back this way instead.</div>
                     <div class="sae-field">
                         <div class="sae-label">Label for the fed-back block (optional)</div>
                         <div class="sae-desc">Shown above the previous output, e.g. "Previously established Wants &amp; Needs:".</div>
                         <input type="text" id="sae-mv-header" class="sae-input" value="${esc(mv.formatHeader || '')}" placeholder="Previously established:">
                     </div>
+                    <div class="sae-field">
+                        <div class="sae-label">How each remembered item is shown</div>
+                        <div class="sae-desc">The line format for each stored item when fed back. Use <code>{{fieldname}}</code> placeholders (e.g. <code>Location: {{location}} | Time: {{time}}</code>). Leave as <code>{{text}}</code> for plain single-value memory.</div>
+                        <input type="text" id="sae-mv-formatitem" class="sae-input" value="${esc(mv.formatItem || '')}" placeholder="{{text}}">
+                    </div>
+                    <div class="sae-field">
+                        <div class="sae-label">Shown when nothing is remembered yet</div>
+                        <div class="sae-desc">Text fed back on the first turn, before this agent has produced anything.</div>
+                        <input type="text" id="sae-mv-formatempty" class="sae-input" value="${esc(mv.formatEmpty || '')}" placeholder="No prior data.">
+                    </div>
+                    <div class="sam-row">
+                        <div class="sam-row-info">
+                            <div class="sam-row-title">Remove the raw tag from the message</div>
+                            <div class="sam-row-desc">Strip the extracted tag out of the visible reply after reading it. Leave off unless the agent writes a tag into the message itself.</div>
+                        </div>
+                        <label class="sam-switch">
+                            <input type="checkbox" id="sae-mv-strip" ${mv.stripFromResponse ? 'checked' : ''}>
+                            <span class="sam-switch-track"></span>
+                        </label>
+                    </div>
+                    <div class="sam-row sae-adv-toggle" id="sae-mv-adv-toggle">
+                        <div class="sam-row-info">
+                            <div class="sam-row-title"><i class="fa-solid fa-chevron-right" id="sae-mv-adv-chevron"></i> Advanced extraction</div>
+                            <div class="sam-row-desc">How data is pulled out of this agent's answer. If the tracker stops updating, the cause is usually here — or re-add the agent from the library to restore the original.</div>
+                        </div>
+                    </div>
+                    <div id="sae-memory-advanced" class="sae-hidden">
+                        <div class="sae-field">
+                            <div class="sae-label">Storage mode</div>
+                            <div class="sae-desc">Snapshot replaces the stored state each turn (trackers). Accumulate builds a list over time, updating items by key (running logs).</div>
+                            <select id="sae-mv-mode" class="sae-select">
+                                <option value="snapshot" ${mv.mode !== 'accumulate' ? 'selected' : ''}>Snapshot — replace each turn</option>
+                                <option value="accumulate" ${mv.mode === 'accumulate' ? 'selected' : ''}>Accumulate — build a list over time</option>
+                            </select>
+                        </div>
+                        <div class="sae-field">
+                            <div class="sae-label">Extraction pattern (regex)</div>
+                            <div class="sae-desc">A regular expression whose capture groups fill the fields below, in order. Leave empty for plain whole-output memory. Invalid or non-matching patterns simply store nothing — they don't break anything.</div>
+                            <input type="text" id="sae-mv-pattern" class="sae-input" value="${esc(mv.extractPattern || '')}" placeholder="\\[TAG\\|([^|]+)\\|([^\\]]+)\\]">
+                        </div>
+                        <div class="sae-field">
+                            <div class="sae-label">Field names</div>
+                            <div class="sae-desc">Comma-separated names for the capture groups, in order (e.g. <code>location, time</code>). These are the names you use in the format line above.</div>
+                            <input type="text" id="sae-mv-fields" class="sae-input" value="${esc((mv.fieldNames || []).join(', '))}" placeholder="text">
+                        </div>
+                        <div class="sae-field">
+                            <div class="sae-label">Key fields</div>
+                            <div class="sae-desc">Which field(s) identify a unique item, for Accumulate mode's update/merge. Ignored in Snapshot mode. Comma-separated.</div>
+                            <input type="text" id="sae-mv-keyfields" class="sae-input" value="${esc((mv.keyFields || []).join(', '))}" placeholder="text">
+                        </div>
+                    </div>
+                    <div id="sae-memory-post-note" class="sae-hint"><i class="fa-solid fa-hourglass-half"></i> Without an extraction pattern, memory carries this agent's whole output and works on the pre-gen leg only. Post-gen trackers need an extraction pattern (set one under Advanced).</div>
                 </div>
-            </div>` : `
-            <div id="sae-memory-advanced-note" class="sae-hint"><i class="fa-solid fa-lock"></i> This agent uses structured extraction (authored via template). Edit its JSON to change memory settings.</div>`}
-            <div id="sae-memory-post-note" class="sae-hint"><i class="fa-solid fa-hourglass-half"></i> Structured extraction is required for post-gen memory — simple carry-output is pre-gen only for now.</div>
+            </div>
         </div>
 
         <div id="sae-injection-section">
@@ -272,6 +354,17 @@ function buildEditorHTML(agent, profiles) {
                     <div class="sae-desc">How many recent messages to include as a labelled block (0 = none). The pending user message is added separately above.</div>
                     <input type="number" id="sae-rc-history" class="sae-input" min="0" max="100" value="${rc.historyCount}">
                 </div>
+                <div class="sae-check-row">
+                    <label class="sae-check ${selfMemEligible ? '' : 'sae-check-disabled'}"><input type="checkbox" id="sae-rc-selfmemory" ${rc.selfMemory ? 'checked' : ''} ${selfMemEligible ? '' : 'disabled'}> Self-memory (own recent output)</label>
+                </div>
+                <div id="sae-selfmem-conflict-note" class="sae-hint sae-hidden"><i class="fa-solid fa-circle-info"></i> Turned off because "Feed previous output back in" (under Memory / Carry Output) is on. Both feed this agent its own output from the same source, so only one can be active. Turn off carry-output there to use self-memory instead.</div>
+                <div class="sae-field">
+                    <div class="sae-label">Self-memory turns</div>
+                    <div class="sae-desc">${selfMemEligible
+                        ? `Show this agent its own last N outputs (from the active swipe of each turn), so it can build on them instead of repeating itself. 0 = none. Requires Self-memory checked. Reads from per-swipe snapshots, so it follows the swipe you're viewing.`
+                        : `Unavailable for this agent. Self-memory needs the sidecar call enabled and a merge variable to store output in — this agent has neither, so there's nothing to remember.`}</div>
+                    <input type="number" id="sae-rc-selfmemory-count" class="sae-input" min="0" max="20" value="${rc.selfMemoryCount ?? 0}" ${selfMemEligible ? '' : 'disabled'}>
+                </div>
             </div>
         </div>
 
@@ -342,15 +435,21 @@ function buildEditorHTML(agent, profiles) {
 function updateSectionVisibility() {
     const phase = $('#sae-phase').val();
     const includesPre = phase === 'pre' || phase === 'both';
+    const includesPost = phase === 'post' || phase === 'both';
     $('#sae-injection-section').toggle(includesPre);
-    $('#sae-post-section').toggle(phase === 'post' || phase === 'both');
+    $('#sae-post-section').toggle(includesPost);
 
-    // Simple carry-output memory only works on the pre-gen leg today (the
-    // engine's no-regex raw-blob store exists only there). Post-only gets a
-    // "coming later" note instead of toggles that would silently store nothing.
-    $('#sae-memory-block').toggle(includesPre);
-    $('#sae-memory-advanced-note').toggle(includesPre);
-    $('#sae-memory-post-note').toggle(phase === 'post');
+    // Memory is shown for any phase now: pre-gen uses whole-output carry, and
+    // post-gen trackers use extraction-pattern memory. The block stays visible
+    // throughout; only the caveat note below is phase/pattern-aware.
+    $('#sae-memory-block').show();
+
+    // The "pre-gen only" caveat applies only to WHOLE-OUTPUT memory (no
+    // extraction pattern). With a pattern set, memory works post-gen too, so the
+    // note is irrelevant. Show it only when the agent runs post AND has no
+    // pattern — i.e. the one combination where memory silently wouldn't fire.
+    const hasPattern = !!($('#sae-mv-pattern').val() || '').trim();
+    $('#sae-memory-post-note').toggle(includesPost && !hasPattern);
 
     // Phase-aware helper under the sidecar master toggle.
     const desc = phase === 'post'
@@ -359,6 +458,76 @@ function updateSectionVisibility() {
             ? 'Runs before and after — two LLM calls per turn.'
             : 'Runs before generation and injects its output into the reply.';
     $('#sae-sidecar-desc').text(desc);
+}
+
+/**
+ * Mutual exclusion between carry-output feedback (#sae-mv-inject) and
+ * self-memory (#sae-rc-selfmemory). Both feed the agent its own output from the
+ * same per-swipe history and overlap on the newest item, so only one may be on
+ * (carry-output wins — see normalizeAgent). This keeps the UI state honest and
+ * visible: whichever conflicting control is active, the other is unchecked,
+ * disabled, and shows a one-line note explaining why.
+ *
+ * Called on load and whenever either toggle changes. On load, an agent saved
+ * before this guard could have BOTH checked; carry-output wins, so self-memory
+ * is forced off here too (the save/normalize guards then persist that).
+ *
+ * `changed` names the control the user just toggled ('carry' | 'self' | null),
+ * so turning one ON deterministically wins the tie rather than depending on
+ * scan order. A null (load-time) call defers to carry-output.
+ * @param {'carry'|'self'|null} [changed=null]
+ */
+function syncMemoryExclusion(changed = null) {
+    const $inject = $('#sae-mv-inject');
+    const $self = $('#sae-rc-selfmemory');
+    if (!$inject.length || !$self.length) return;
+
+    // Self-memory is only ever eligible when its own prerequisites hold; if the
+    // checkbox was rendered disabled (no sidecar / no varname), leave that as-is
+    // and only manage the conflict layer on top.
+    const selfPrereqDisabled = $self.prop('disabled') && !$self.data('sae-conflict-locked');
+
+    // Resolve the conflict. If the user just turned self-memory ON, it wins this
+    // interaction; otherwise carry-output wins (including the load-time default).
+    // Carry-output only actually feeds when the Memory block itself is enabled,
+    // so a checked "feed back" toggle under a disabled block does NOT conflict.
+    let carryOn = $inject.is(':checked') && $('#sae-mv-enabled').is(':checked');
+    let selfOn = $self.is(':checked');
+
+    if (carryOn && selfOn) {
+        if (changed === 'self') {
+            carryOn = false;
+            $inject.prop('checked', false);
+        } else {
+            selfOn = false;
+            $self.prop('checked', false);
+        }
+    }
+
+    // Apply disabled + note state based on which (if either) is active.
+    // Carry-output disables self-memory:
+    if (carryOn) {
+        $self.prop('checked', false).prop('disabled', true).data('sae-conflict-locked', true);
+        $('#sae-rc-selfmemory-count').prop('disabled', true);
+        $('#sae-selfmem-conflict-note').removeClass('sae-hidden');
+    } else {
+        // Release the conflict lock (but respect the underlying prereq-disable).
+        if ($self.data('sae-conflict-locked')) {
+            $self.data('sae-conflict-locked', false);
+            $self.prop('disabled', selfPrereqDisabled);
+            $('#sae-rc-selfmemory-count').prop('disabled', selfPrereqDisabled);
+        }
+        $('#sae-selfmem-conflict-note').addClass('sae-hidden');
+    }
+
+    // Self-memory disables carry-output:
+    if (selfOn) {
+        $inject.prop('checked', false).prop('disabled', true);
+        $('#sae-carryout-conflict-note').removeClass('sae-hidden');
+    } else {
+        $inject.prop('disabled', false);
+        $('#sae-carryout-conflict-note').addClass('sae-hidden');
+    }
 }
 
 function readFormToAgent(existingAgent) {
@@ -382,6 +551,15 @@ function readFormToAgent(existingAgent) {
         phase: $('#sae-phase').val(),
         connectionProfile: $('#sae-profile').val() || '',
         maxTokens: parseInt($('#sae-max-tokens').val()) || 8192,
+        // General "run every N messages" throttle. 1 (or blank/invalid) = every
+        // message = throttle off. Read from whichever N input the form rendered
+        // (the general Execution field, or the Continuity Guard's own field).
+        everyN: (() => {
+            const el = document.getElementById('sae-everyn');
+            if (!el) return existingAgent.everyN ?? 1;
+            const v = parseInt(el.value, 10);
+            return (Number.isFinite(v) && v > 0) ? v : 1;
+        })(),
         injection: {
             ...existingAgent.injection,
             position: parseInt($('#sae-inj-position').val()),
@@ -407,6 +585,8 @@ function readFormToAgent(existingAgent) {
                 authorsNote: $('#sae-rc-authorsnote').is(':checked'),
                 pendingUser: $('#sae-rc-pendinguser').is(':checked'),
                 historyCount: parseInt($('#sae-rc-history').val()) || 0,
+                selfMemory: $('#sae-rc-selfmemory').is(':checked'),
+                selfMemoryCount: parseInt($('#sae-rc-selfmemory-count').val()) || 0,
             },
         },
         postProcess: {
@@ -423,28 +603,71 @@ function readFormToAgent(existingAgent) {
         },
     };
 
-    // Simple carry-output memory. Only write mergeVariable when the simple
-    // controls are actually present (pre-gen leg + agent not already
-    // structured). Otherwise the top-level spread preserves template-authored
-    // mergeVariable untouched — this is the seam that lets post/both slot in
-    // later without rework. Never write extractPattern here (leave it empty).
-    const mvPhase = $('#sae-phase').val();
-    const mvIncludesPre = mvPhase === 'pre' || mvPhase === 'both';
+    // Memory / carry-output. The controls now render for every phase and for
+    // both simple and structured agents, so we write mergeVariable whenever the
+    // controls are present. Everything the form exposes (format lines, strip,
+    // and the Advanced extraction fields) round-trips here. Fields the form does
+    // NOT expose (resolveField, resolveAction, injectFormatted's siblings) are
+    // preserved via the spread of existingAgent.mergeVariable.
     const emv = existingAgent.mergeVariable ?? {};
-    const mvAdvanced = (emv.fieldNames?.length > 1) || !!emv.extractPattern;
-    if (mvIncludesPre && !mvAdvanced && $('#sae-mv-enabled').length) {
+    if ($('#sae-mv-enabled').length) {
+        // Parse comma lists. Guard fieldNames/keyFields against becoming empty:
+        // an empty fieldNames array would break extraction (the engine indexes
+        // capture groups by it), so fall back to the existing value, then to
+        // ['text']. A blank box therefore preserves rather than destroys.
+        const parseList = (sel) => ($(sel).val() || '')
+            .split(',').map(s => s.trim()).filter(Boolean);
+        const fieldsInput = parseList('#sae-mv-fields');
+        const keyFieldsInput = parseList('#sae-mv-keyfields');
+        const fieldNames = fieldsInput.length ? fieldsInput
+            : (emv.fieldNames?.length ? emv.fieldNames : ['text']);
+        // Key fields may legitimately be empty for snapshot mode; only fall back
+        // when the user left it blank AND we have a prior value to keep.
+        const keyFields = keyFieldsInput.length ? keyFieldsInput
+            : (emv.keyFields?.length ? emv.keyFields : fieldNames.slice(0, 1));
+
         result.mergeVariable = {
             ...existingAgent.mergeVariable,
             enabled: $('#sae-mv-enabled').is(':checked'),
             variableName: ($('#sae-mv-varname').val() || '').trim(),
             injectFormatted: $('#sae-mv-inject').is(':checked'),
             formatHeader: $('#sae-mv-header').val() || '',
-            // Pin simple mode to single-field snapshot, no extraction regex.
-            mode: 'snapshot',
-            fieldNames: (emv.fieldNames?.length ? emv.fieldNames : ['text']),
-            formatItem: (emv.formatItem || '{{text}}'),
-            formatEmpty: (emv.formatEmpty || 'No prior data.'),
+            // Preserve an intentionally-empty field rather than inventing a
+            // default: fall back to the prior value when the box is blank. This
+            // keeps an untouched save byte-identical for agents that legitimately
+            // leave these empty (e.g. Director, which never injects formatted
+            // memory so formatEmpty stays ""). The one exception is below: a
+            // NEW agent that turns injection ON with no format line at all would
+            // feed back blank lines, so seed {{text}} in exactly that case.
+            formatItem: (() => {
+                const typed = ($('#sae-mv-formatitem').val() || '').trim();
+                if (typed) return typed;
+                if (emv.formatItem) return emv.formatItem;
+                // Only seed a usable default when memory is actually fed back
+                // and nothing prior exists — otherwise preserve empty.
+                return $('#sae-mv-inject').is(':checked') ? '{{text}}' : '';
+            })(),
+            formatEmpty: (($('#sae-mv-formatempty').val() || '').trim()
+                || emv.formatEmpty || ''),
+            stripFromResponse: $('#sae-mv-strip').is(':checked'),
+            mode: ($('#sae-mv-mode').val() === 'accumulate') ? 'accumulate' : 'snapshot',
+            extractPattern: ($('#sae-mv-pattern').val() || '').trim(),
+            fieldNames,
+            keyFields,
         };
+    }
+
+    // ── Mutual exclusion: carry-output feedback vs self-memory ──
+    // These feed the agent its own output from the SAME source and overlap on
+    // the newest item, so they can't both be on (see normalizeAgent for the
+    // full rationale). Carry-output wins. Enforced here at read time — not just
+    // via the UI wiring — so a stale/raced DOM can never persist both. Mirrors
+    // the normalize backstop exactly.
+    const carryOutputActive = result.mergeVariable?.enabled
+        && result.mergeVariable?.injectFormatted
+        && !!result.mergeVariable?.variableName;
+    if (carryOutputActive && result.sidecarCall?.richContext?.selfMemory) {
+        result.sidecarCall.richContext.selfMemory = false;
     }
 
     return result;
@@ -469,6 +692,9 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
     container.innerHTML = buildEditorHTML(agent, profiles);
 
     updateSectionVisibility();
+    // Establish the carry-output ↔ self-memory exclusion for the loaded state.
+    // A pre-guard agent with both on resolves to carry-output winning here.
+    syncMemoryExclusion();
 
     // Mount the searchable icon picker into its placeholder.
     iconPicker = createIconPicker({ value: agent.icon || '' });
@@ -494,7 +720,26 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
     });
     $('#sae-mv-enabled').on('change', function () {
         $('#sae-memory-fields').toggleClass('sae-hidden', !this.checked);
+        // Enabling/disabling the memory block changes whether carry-output is
+        // active, which drives the self-memory exclusion. Re-sync.
+        syncMemoryExclusion();
     });
+    // Carry-output ↔ self-memory mutual exclusion. Each toggle re-runs the sync
+    // naming itself as the just-changed control so turning one ON wins the tie.
+    $('#sae-mv-inject').on('change', () => syncMemoryExclusion('carry'));
+    $('#sae-rc-selfmemory').on('change', () => syncMemoryExclusion('self'));
+    // Advanced extraction disclosure: collapsed by default for every agent.
+    // Rotate the chevron and reveal/hide the extraction fields on click.
+    $('#sae-mv-adv-toggle').on('click', function () {
+        const adv = $('#sae-memory-advanced');
+        const nowHidden = adv.toggleClass('sae-hidden').hasClass('sae-hidden');
+        $('#sae-mv-adv-chevron')
+            .toggleClass('fa-chevron-right', nowHidden)
+            .toggleClass('fa-chevron-down', !nowHidden);
+    });
+    // The post-gen caveat note depends on whether an extraction pattern exists;
+    // re-run the phase/pattern visibility check as the pattern box changes.
+    $('#sae-mv-pattern').on('input', updateSectionVisibility);
     $('#sae-probability').on('input', function () {
         $('#sae-probability-val').text(this.value + '%');
     });

@@ -170,6 +170,182 @@ export function bindVariableToSwipe(message, varName) {
 }
 
 // ============================================================================
+// BACKWARD STATE TRACE (swipe-awareness read path)
+// ============================================================================
+
+/**
+ * Resolve the state that should be shown/injected for a given message + swipe
+ * by walking BACKWARD through the chat to the most recent tracked snapshot.
+ *
+ * The rule (user's mental model): show the state for the message you're looking
+ * at; if that swipe never tracked its own state, walk back to the last message/
+ * swipe that did, following the branch you're actually viewing up-thread.
+ *
+ *   1. If the current message+swipe has its OWN per-swipe record → return it.
+ *      An empty array ([]) is a real "tracked, deliberately empty" answer and
+ *      STOPS the walk — it is distinct from an absent key ("not tracked here").
+ *   2. No own record → step to the previous message, using THAT message's
+ *      currently-active swipe_id (follow the visible branch), and repeat.
+ *   3. User/system messages carry no state → transparent, keep walking past them.
+ *   4. Reached the top of chat with nothing found → return null (honest empty;
+ *      callers render "no state yet" rather than showing a stale value).
+ *
+ * Absence vs empty is trustworthy because storePerSwipe only writes a key when
+ * an extraction actually happened (see storePerSwipe / storeSidecarResult).
+ *
+ * Iterative (not recursive) so a long chat can't blow the stack.
+ *
+ * @param {object[]} chat - the live chat array (chat[n])
+ * @param {number} messageIndex - where to start the walk
+ * @param {number} swipeId - the active swipe at the start message
+ * @param {string} varName - merge variable name (e.g. 'sa_state_card')
+ * @returns {object[]|null} the resolved items array, or null if none exists
+ *          anywhere down the trace.
+ */
+export function resolveStateTrace(chat, messageIndex, swipeId, varName) {
+    return resolveStateTraceDetailed(chat, messageIndex, swipeId, varName).items;
+}
+
+/**
+ * Same walk as resolveStateTrace, but also reports HOW FAR BACK the state was
+ * found — the "staleness distance." distance 0 means the starting message+swipe
+ * had its own record; a larger number is how many messages back the walk had to
+ * reach. Callers (e.g. the State Card panel) use this to apply a staleness
+ * horizon: hold recent state through a transient empty gen, but show honest
+ * empty once the last real state is too far back to trust.
+ *
+ * @param {object[]} chat
+ * @param {number} messageIndex
+ * @param {number} swipeId
+ * @param {string} varName
+ * @returns {{ items: object[]|null, distance: number, foundIndex: number }}
+ *          items:      resolved array, or null if nothing anywhere down-trace.
+ *          distance:   message hops from the start to where state was found
+ *                      (0 = own record; Infinity when items is null).
+ *          foundIndex: chat index the state came from (-1 when null).
+ */
+export function resolveStateTraceDetailed(chat, messageIndex, swipeId, varName) {
+    const MISS = { items: null, distance: Infinity, foundIndex: -1 };
+    if (!Array.isArray(chat) || !varName) return MISS;
+
+    const startIdx = Number(messageIndex);
+    let idx = startIdx;
+    let swipe = Number(swipeId) || 0;
+
+    // Bound the walk to the chat length as a belt-and-suspenders guard against
+    // any pathological cycle (indices only ever decrease, so this can't loop,
+    // but the explicit ceiling documents the intent).
+    let steps = chat.length + 1;
+
+    while (idx >= 0 && steps-- > 0) {
+        const message = chat[idx];
+        if (!message) return MISS;
+
+        // User/system turns never carry state — walk past them transparently,
+        // following their own active swipe (almost always 0).
+        if (message.is_user || message.is_system) {
+            idx -= 1;
+            swipe = idx >= 0 ? (chat[idx]?.swipe_id ?? 0) : 0;
+            continue;
+        }
+
+        const rec = message.saAgentSwipes?.[varName];
+        if (rec && Object.prototype.hasOwnProperty.call(rec, swipe)) {
+            // Own record for this swipe — this is the answer, even if [].
+            return {
+                items: rec[swipe] ?? [],
+                distance: Math.max(0, startIdx - idx),
+                foundIndex: idx,
+            };
+        }
+
+        // No record on this swipe → step back to the previous message's
+        // currently-active swipe (follow the branch being viewed up-thread).
+        idx -= 1;
+        swipe = idx >= 0 ? (chat[idx]?.swipe_id ?? 0) : 0;
+    }
+
+    return MISS;
+}
+
+/**
+ * COLLECT-N sibling of resolveStateTrace: walk BACKWARD from a start point and
+ * gather up to `maxCount` tracked states, each read from its own message's
+ * currently-active swipe. This is the read path behind agent "self-memory" —
+ * a planner (e.g. the Director) seeing its own last few outputs so it can
+ * advance the scene instead of restating.
+ *
+ * It reuses resolveStateTrace's walk discipline VERBATIM in spirit — same
+ * swipe-awareness rule (read each message's active swipe, follow the visible
+ * branch up-thread), same transparent skip of user/system turns, same
+ * iterative/bounded stack safety. TWO DELIBERATE DIVERGENCES from the single-
+ * answer walk, both because "recent memory" wants a list, not one resolved
+ * value:
+ *   1. It does NOT stop at the first hit — it pushes each hit and keeps walking
+ *      until it has `maxCount` items or runs out of chat.
+ *   2. A tracked-empty record ([]) does NOT stop the walk and is NOT collected.
+ *      For the single-answer trace, [] is a real "deliberately empty" answer and
+ *      halts the walk; for a memory list an empty plan adds nothing to show and
+ *      shouldn't consume a slot or cut off older non-empty plans behind it. So
+ *      empties are skipped transparently (walk continues past them).
+ *
+ * The start swipe is read from the start message itself when `startSwipeId` is
+ * not supplied, so callers that only know an anchor INDEX (e.g. "end of chat"
+ * at pre-gen time) don't need to resolve the active swipe themselves.
+ *
+ * @param {object[]} chat - the live chat array
+ * @param {number} startIndex - where to begin the backward walk
+ * @param {number|null} [startSwipeId] - active swipe at the start message;
+ *        null/undefined → read chat[startIndex].swipe_id.
+ * @param {string} varName - merge variable name (e.g. 'sa_director_plan')
+ * @param {number} maxCount - how many states to collect (>=1)
+ * @returns {object[][]} newest-first array of item-arrays (each a stored
+ *          snapshot from one message's active swipe). Empty array if none found.
+ */
+export function collectRecentStates(chat, startIndex, startSwipeId, varName, maxCount) {
+    const out = [];
+    const cap = Math.max(0, Number(maxCount) || 0);
+    if (!Array.isArray(chat) || !varName || cap === 0) return out;
+
+    let idx = Number(startIndex);
+    let swipe = (startSwipeId === null || startSwipeId === undefined)
+        ? (chat[idx]?.swipe_id ?? 0)
+        : (Number(startSwipeId) || 0);
+
+    // Same belt-and-suspenders ceiling as resolveStateTraceDetailed: indices
+    // only ever decrease, so this can't loop, but the bound documents intent.
+    let steps = chat.length + 1;
+
+    while (idx >= 0 && steps-- > 0 && out.length < cap) {
+        const message = chat[idx];
+        if (!message) break;
+
+        // User/system turns never carry state — transparent, keep walking.
+        if (message.is_user || message.is_system) {
+            idx -= 1;
+            swipe = idx >= 0 ? (chat[idx]?.swipe_id ?? 0) : 0;
+            continue;
+        }
+
+        const rec = message.saAgentSwipes?.[varName];
+        if (rec && Object.prototype.hasOwnProperty.call(rec, swipe)) {
+            const items = rec[swipe] ?? [];
+            // DIVERGENCE #2: skip tracked-empty rather than stopping on it; an
+            // empty plan is nothing to show and must not cut off older plans.
+            if (Array.isArray(items) && items.length > 0) {
+                out.push(items);
+            }
+        }
+
+        // Step back to the previous message's active swipe (visible branch).
+        idx -= 1;
+        swipe = idx >= 0 ? (chat[idx]?.swipe_id ?? 0) : 0;
+    }
+
+    return out; // newest-first (start message's neighborhood first)
+}
+
+// ============================================================================
 // REGEX BUILDER
 // ============================================================================
 

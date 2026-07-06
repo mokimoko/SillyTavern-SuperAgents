@@ -2,12 +2,17 @@
  * Narrative Engine Renderer
  *
  * Transforms .ne-engine-data containers (built by buildSidecarDisplayData
- * from the Narrative Engine agent's sidecar output) into styled collapsible
- * displays showing continuity tracking fields.
+ * from the Narrative Engine agent's sidecar output) into a styled collapsible
+ * panel showing continuity-tracking fields.
  *
  * Registered as a render hook in index.js (SuperAgents). renderer.js calls
  * renderNarrativeEngine on every .ne-engine-data element it injects.
- * Ported verbatim from VM's renderers/narrativeEngine.js.
+ *
+ * Aesthetic: aligned to the SuperAgents family (sharp edges, monospace label,
+ * muted rgba palette, 2px accent border, collapsed by default). Accent is a
+ * muted pewter-teal — a cooled, desaturated nod to the Engine's original teal
+ * so it keeps its identity while sitting in the family's quiet register.
+ * Structurally a labeled field tracker: one row per populated continuity field.
  */
 
 // ============================================================================
@@ -26,14 +31,15 @@ const FIELDS = [
 const MONO = "ui-monospace,'Cascadia Code','Source Code Pro',Menlo,Consolas,monospace";
 const SANS = "system-ui,-apple-system,'Segoe UI',sans-serif";
 
+// Muted pewter-teal — cooled/desaturated nod to the Engine's original teal.
+const ACCENT = '120,155,150';
+
 // ============================================================================
 // MAIN RENDER FUNCTION
 // ============================================================================
 
 /**
  * Transform a .ne-engine-data element into the styled Engine display.
- * Called by the render hook system in renderer.js.
- *
  * The element's textContent contains the raw JSON string from the
  * mergeVariable's "json" field.
  *
@@ -49,10 +55,9 @@ export function renderNarrativeEngine(el) {
     } catch {
         return;
     }
-
     if (!data || typeof data !== 'object') return;
 
-    // ── Build field rows ──
+    // ── Build field rows for every populated field ──
     const rows = [];
     for (const field of FIELDS) {
         const value = data[field.key];
@@ -60,54 +65,77 @@ export function renderNarrativeEngine(el) {
 
         const displayVal = typeof value === 'string' ? value : JSON.stringify(value);
         rows.push(
-            // Subtle container per entry
-            `<div style="display:flex;gap:12px;align-items:flex-start;padding:5px 8px;margin-bottom:3px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.04);border-radius:3px">`
-            // Label column — monospace, top-aligned, with a small top padding to sit
-            // flush with the first line of the value text
-            + `<span style="font-family:${MONO};color:#4a5568;font-weight:600;font-size:10px;width:88px;text-align:right;letter-spacing:0.05em;flex-shrink:0;display:inline-flex;align-items:flex-start;justify-content:flex-end;gap:5px;padding-top:2px">`
+            `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 0;border-top:1px solid rgba(255,255,255,0.05)">`
+            + `<span style="font-family:${MONO};color:rgba(${ACCENT},0.85);font-weight:600;font-size:9.5px;width:74px;text-align:right;letter-spacing:0.08em;flex-shrink:0;display:inline-flex;align-items:flex-start;justify-content:flex-end;gap:5px;padding-top:2px">`
             + `<i class="fa-solid ${field.icon}" style="font-size:9px;opacity:0.7;margin-top:1px"></i>${field.label}</span>`
-            // Value — readable sans-serif
-            + `<span style="font-family:${SANS};color:#e2e8f0;font-size:12px;line-height:1.5">${escHtml(displayVal)}</span>`
+            + `<span style="font-family:${SANS};color:rgba(255,255,255,0.72);font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word">${escHtml(displayVal)}</span>`
             + `</div>`,
         );
     }
 
     if (rows.length === 0) return;
 
-    // ── Assemble as collapsible <details> ──
+    // ── Collapsible <details>, COLLAPSED by default (family convention). ──
     const container = document.createElement('details');
     container.className = 'ne-engine-rendered';
-    container.style.cssText = 'margin:10px 0';
+    container.open = false;
+    container.style.cssText = 'margin:8px 0;font-size:11px';
 
     const summary = document.createElement('summary');
     summary.style.cssText = [
-        'padding:8px 12px',
-        'background:rgba(15,17,21,0.85)',
-        'border:1px solid rgba(255,255,255,0.05)',
-        'border-left:3px solid #38b2ac',
-        'border-radius:3px',
-        'color:#a0aec0',
+        'display:flex',
+        'align-items:center',
+        'gap:8px',
+        'padding:5px 10px',
+        'background:rgba(255,255,255,0.02)',
+        'border:1px solid rgba(255,255,255,0.06)',
+        `border-left:2px solid rgba(${ACCENT},0.45)`,
+        'color:rgba(255,255,255,0.5)',
         `font-family:${MONO}`,
-        'font-size:11px',
-        'text-transform:uppercase',
+        'font-size:10px',
+        'font-weight:500',
         'letter-spacing:0.1em',
         'cursor:pointer',
         'list-style:none',
-        'backdrop-filter:blur(4px)',
-        '-webkit-backdrop-filter:blur(4px)',
+        'user-select:none',
+        'transition:color 0.15s ease,border-color 0.15s ease',
     ].join(';');
-    summary.innerHTML = '<span style="color:#38b2ac;margin-right:6px">&#9198;</span> Narrative Engine';
+
+    const glyph = document.createElement('span');
+    glyph.innerHTML = '&#9881;'; // ⚙ gear — steady, mechanical, fits "engine"
+    glyph.style.cssText = `color:rgba(${ACCENT},0.9);font-size:11px`;
+
+    const label = document.createElement('span');
+    label.style.cssText = 'text-transform:uppercase;letter-spacing:0.18em;opacity:0.7';
+    label.textContent = 'Narrative Engine';
+
+    const count = document.createElement('span');
+    count.style.cssText = `margin-left:auto;text-transform:none;letter-spacing:0.02em;color:rgba(${ACCENT},0.6);font-family:${MONO};font-size:9.5px`;
+    count.textContent = rows.length + (rows.length === 1 ? ' field' : ' fields');
+
+    summary.appendChild(glyph);
+    summary.appendChild(label);
+    summary.appendChild(count);
+
+    summary.addEventListener('mouseenter', () => {
+        summary.style.color = 'rgba(255,255,255,0.75)';
+        summary.style.borderLeftColor = `rgba(${ACCENT},0.75)`;
+    });
+    summary.addEventListener('mouseleave', () => {
+        summary.style.color = 'rgba(255,255,255,0.5)';
+        summary.style.borderLeftColor = `rgba(${ACCENT},0.45)`;
+    });
 
     const body = document.createElement('div');
     body.style.cssText = [
-        'padding:8px',
-        'background:rgba(10,12,14,0.7)',
-        'border:1px solid rgba(255,255,255,0.03)',
+        'padding:3px 12px 8px',
+        'background:rgba(0,0,0,0.18)',
+        'border:1px solid rgba(255,255,255,0.06)',
         'border-top:none',
-        'border-left:3px solid rgba(56,178,172,0.3)',
-        'border-radius:0 0 3px 3px',
+        `border-left:2px solid rgba(${ACCENT},0.3)`,
     ].join(';');
-    body.innerHTML = rows.join('');
+    // First row's top-border would double the body's edge; strip it.
+    body.innerHTML = rows.join('').replace('border-top:1px solid rgba(255,255,255,0.05)', 'border-top:none');
 
     container.appendChild(summary);
     container.appendChild(body);

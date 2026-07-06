@@ -16,6 +16,7 @@
 import { chat } from '../../../../../../script.js';
 import { getEnabledAgents, getAgentById } from '../data/store.js';
 import { readPendingUserMessage } from './richContext.js';
+import { advanceGeneralGate, ownsCounterItself } from './everyN.js';
 
 // ============================================================================
 // GENERATION TYPE
@@ -153,7 +154,24 @@ export function buildActivationSnapshot(generationType, options) {
     // see what the user just typed (it isn't in `chat` yet at pre-gen time —
     // audit fix #8). '' for automatic triggers and post-gen.
     const pendingUserText = readPendingUserMessage(options);
-    const activeAgents = getEnabledAgents().filter(a => shouldActivate(a, genType, pendingUserText));
+
+    // Stage 1: the existing per-agent activation gates (type / probability /
+    // keyword). Pure, no side effects.
+    let activeAgents = getEnabledAgents().filter(a => shouldActivate(a, genType, pendingUserText));
+
+    // Stage 2: the general every-N throttle. Advances each surviving agent's
+    // counter exactly ONCE here (snapshot builds once per generation) and drops
+    // agents that aren't due this turn. Only "new message" turns count toward N
+    // (normal + continue); impersonate/quiet neither advance nor gate. Agents
+    // that own their own counter (Continuity Guard) are exempt — they run every
+    // turn and manage cadence internally.
+    const counts = genType === 'normal' || genType === 'continue';
+    if (counts) {
+        activeAgents = activeAgents.filter(a =>
+            ownsCounterItself(a) ? true : advanceGeneralGate(a),
+        );
+    }
+
     return {
         generationType: genType,
         activeAgentIds: activeAgents.map(a => a.id),

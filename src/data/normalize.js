@@ -174,6 +174,8 @@ function defaultRichContext() {
         authorsNote: false,
         pendingUser: false,
         historyCount: 0,
+        selfMemory: false,
+        selfMemoryCount: 0,
     };
 }
 
@@ -259,6 +261,10 @@ function normalizeRichContext(raw) {
         historyCount: Number.isFinite(Number(raw.historyCount))
             ? clamp(Number(raw.historyCount), 0, 100)
             : d.historyCount,
+        selfMemory: Boolean(raw.selfMemory),
+        selfMemoryCount: Number.isFinite(Number(raw.selfMemoryCount))
+            ? clamp(Number(raw.selfMemoryCount), 0, 20)
+            : d.selfMemoryCount,
     };
 }
 
@@ -327,6 +333,28 @@ function normalizeConditions(raw) {
 export function normalizeAgent(raw = {}) {
     const d = createDefaultAgent();
 
+    // Normalize the two config objects that carry the mutually-exclusive
+    // "feed the agent its own output" toggles, so the guard below can see both.
+    const mergeVariable = normalizeMergeVariable(raw.mergeVariable);
+    const sidecarCall = normalizeSidecarCall(raw.sidecarCall);
+
+    // ── Mutual exclusion: carry-output feedback vs self-memory ──
+    // Both read the SAME per-swipe history of this agent's output. Carry-output
+    // (mergeVariable.injectFormatted) injects the CURRENT stored value;
+    // self-memory (richContext.selfMemory) injects a list of recent outputs
+    // whose NEWEST entry IS that same current value. With both on, the latest
+    // output is fed twice. There is no legitimate case for that, so they are
+    // mutually exclusive. Carry-output wins (it's the simpler, more common
+    // tracker feed that structured templates rely on); self-memory is forced
+    // off. This is the authoritative backstop — it catches template JSON,
+    // SillyBunny imports, and hand-edited saves regardless of the editor UI.
+    const carryOutputActive = mergeVariable.enabled
+        && mergeVariable.injectFormatted
+        && !!mergeVariable.variableName;
+    if (carryOutputActive && sidecarCall.richContext.selfMemory) {
+        sidecarCall.richContext.selfMemory = false;
+    }
+
     return {
         id: typeof raw.id === 'string' && raw.id.trim() ? raw.id.trim() : d.id,
         name: typeof raw.name === 'string' ? raw.name : d.name,
@@ -358,10 +386,10 @@ export function normalizeAgent(raw = {}) {
         sourceTemplateVersion: Number.isFinite(Number(raw.sourceTemplateVersion))
             ? Number(raw.sourceTemplateVersion)
             : 0,
-        mergeVariable: normalizeMergeVariable(raw.mergeVariable),
+        mergeVariable,
         stateCard: raw.stateCard && typeof raw.stateCard === 'object' ? raw.stateCard : null,
         phoneConfig: raw.phoneConfig && typeof raw.phoneConfig === 'object' ? raw.phoneConfig : null,
-        sidecarCall: normalizeSidecarCall(raw.sidecarCall),
+        sidecarCall,
     };
 }
 

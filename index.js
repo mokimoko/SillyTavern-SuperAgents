@@ -79,6 +79,7 @@ import {
 import {
     initLifecycle,
     runAgentOnMessage,
+    runAgentOnLastMessage,
     isAgentRunActive,
     cancelAgentRun,
     onRunStateChange,
@@ -140,6 +141,12 @@ import { renderNarrativeEngine } from './src/render/hooks/narrativeEngine.js';
 import { renderParallelOffscreen } from './src/render/hooks/parallelOffscreen.js';
 import { renderDirectionMenu, initDirectionMenuDelegation } from './src/render/hooks/directionMenuRenderer.js';
 import { renderDirectorPlan } from './src/render/hooks/directorPlan.js';
+import { renderSoundtrackSuggester } from './src/render/hooks/soundtrackSuggester.js';
+import { renderArtPrompt } from './src/render/hooks/artPromptGenerator.js';
+import { renderActorInterview } from './src/render/hooks/actorInterview.js';
+import { renderCommentarySection } from './src/render/hooks/commentarySection.js';
+import { renderContinuityGuard, initContinuityGuardDelegation } from './src/render/hooks/continuityGuard.js';
+import { initContinuityGuardRunner } from './src/modes/continuityGuardRunner.js';
 
 // UI layer: unified management modal (Step 9)
 import { openModal, closeModal, isModalOpen, registerPanelControl } from './src/ui/modal.js';
@@ -235,6 +242,7 @@ function initNamespace() {
             save:          saveAgent,
             delete:        deleteAgent,
             toggle:        toggleAgent,
+            runOnLast:     runAgentOnLastMessage,
             createDefault: createDefaultAgent,
         },
 
@@ -296,6 +304,7 @@ function initNamespace() {
         lifecycle: {
             init:            initLifecycle,
             runAgent:        runAgentOnMessage,
+            runOnLast:       runAgentOnLastMessage,
             isActive:        isAgentRunActive,
             cancel:          cancelAgentRun,
             onRunStateChange,
@@ -443,9 +452,16 @@ jQuery(async () => {
         registerRenderHook('parallel-hud-data', renderParallelOffscreen);
         registerRenderHook('dm-menu-data', renderDirectionMenu);
         registerRenderHook('director-plan-data', renderDirectorPlan);
+        registerRenderHook('soundtrack-suggester-data', renderSoundtrackSuggester);
+        registerRenderHook('art-prompt-data', renderArtPrompt);
+        registerRenderHook('actor-interview-data', renderActorInterview);
+        registerRenderHook('commentary-section-data', renderCommentarySection);
+        registerRenderHook('continuity-guard-data', renderContinuityGuard);
         // Direction Menu uses delegated click handling on #chat; install it up
         // front (idempotent + self-retries if #chat isn't in the DOM yet).
         initDirectionMenuDelegation();
+        // Continuity Guard's flag is clickable; bind its delegated handler too.
+        initContinuityGuardDelegation();
         initRenderer();
 
         // UI: add the wand-menu launcher for the unified modal.
@@ -467,6 +483,14 @@ jQuery(async () => {
         // UI: ReCast-style diff viewer — a per-message button that opens a
         // read-only inline diff of a rewrite agent's change, with revert.
         initDiffButtons();
+
+        // Continuity Guard: post-gen deterministic detection + every-N sweep.
+        // Runs after each post-gen turn, no-ops unless a Continuity Guard agent
+        // AND a State Card agent are enabled with real tracked state. Wired to
+        // the same post-process completion hook the State Card + macros use.
+        // Its click-driven repair reuses the rewrite/diff/revert machinery, so
+        // a confirmed fix lights up the diff button above automatically.
+        initContinuityGuardRunner(onPostProcessComplete);
 
         // User-facing slash commands (/sa-run, /sa-list, /sa-toggle, /sa-open).
         registerSlashCommands();

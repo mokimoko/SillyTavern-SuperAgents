@@ -1,0 +1,84 @@
+{
+    "id": "tpl-commentary-section",
+    "name": "Commentary Section",
+    "description": "A post-generation sidecar that simulates a reader comment section reacting to the scene that just aired — like the comments under a chapter on AO3. Runs as a separate LLM call with deliberately limited context: the commenters only know what has actually happened on the page, never the character cards or what's coming. It writes 3-5 diverse readers with their own handles and voices — some gushing, some analytical, some feral — and occasionally one replies to another. Shown as a collapsible dark-mode comment panel under the message and exposed as the {{agent_sa_commentary}} macro. Inspired by the Commentary Section from sidecar-ai; rebuilt as a SuperAgents agent so it batches, persists, and uses the shared pipeline.",
+    "icon": "fa-solid fa-comments",
+    "category": "content",
+    "tags": ["commentary", "comments", "readers", "community", "meta", "post-gen", "flavor"],
+    "version": 1,
+    "author": "",
+    "prompt": "### Commentary Section — Post-Generation Reader Comments\n\nROLE: The scene just posted, like a new chapter going up. Now write the reader comment section reacting to it. You are NOT continuing the story, writing narration, or speaking as the characters. You write READERS — an audience reacting to fiction they just consumed.\n\nWHAT THE READERS KNOW:\n- ONLY what has actually happened on the page so far. They are reacting to THIS chapter.\n- They have NO knowledge of character sheets, hidden backstory, author intentions, or anything that hasn't been shown. They can only guess and theorize like any reader.\n- They CANNOT see the future. No spoilers, no knowing what happens next — only reactions, hopes, and predictions.\n\nWHO COMMENTS:\n- 3 to 5 distinct readers, each with their own handle and voice.\n- MIX the energy: at least one emotional/feral reaction, one analytical/craft take, and vary the rest (funny, anxious, shippy, lurker-who-finally-commented, mild critique).\n- Handles are creative and varied — lowercase usernames, in-jokes, kaomoji-adjacent, AO3-pseud energy. NEVER generic like User1, Reader2.\n- Voices feel authentic: casual, some lowercase, some typos, slang, varied writing quality. Not polished prose.\n\nREPLIES:\n- Occasionally (not always) have ONE reader reply to another, to create a sense of community. Mark a reply by starting its line with \"> \".\n- A reply should @ the handle it's responding to. Keep replies to ONE level deep — replies never get their own replies.\n\nOUTPUT THIS BLOCK EXACTLY, and nothing else:\n\n[COMMENTS|short scene descriptor, 3-6 words|N readers]\n@handle :: their comment reacting to the chapter\n@another_handle :: a different reader, different energy\n> @replier :: @handle a reply to the comment above\n@third_handle :: another top-level comment\n[/COMMENTS]\n\nFIELD GUIDE:\n- First header field (after the first pipe): scene descriptor — a short human name for the beat readers are reacting to, e.g. \"the rooftop confession\" or \"the fight that wasn't\".\n- Second header field (after the second pipe): a short count phrase like \"5 readers\" or \"4 comments\".\n- Body: ONE comment per line. Top-level comments start with the handle. A reply starts with \"> \" then the handle. Format every line as `@handle :: comment text`.\n\nRULES:\n- Output ONLY the [COMMENTS] block. No preamble, no headers, no commentary of your own.\n- Use the `::` separator between handle and comment on every body line. Do NOT use `::` anywhere else.\n- Mark replies with a leading \"> \". Only one level of reply — never nest deeper.\n- Do not use a pipe character (|) anywhere except as the two field separators in the header line.\n- Emoji and kaomoji are welcome in moderation. Keep each comment short — a line or three, like a real comment.\n- React to THIS beat. Don't recycle the previous turn's comments — new chapter, fresh reactions."
+    ,
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 95,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 500,
+        "responseKey": "commentary",
+        "includeHistory": true,
+        "historyMessageCount": 4,
+        "richContext": {
+            "enabled": true,
+            "character": false,
+            "persona": false,
+            "worldInfo": false,
+            "summary": false,
+            "authorsNote": false,
+            "pendingUser": false,
+            "historyCount": 4
+        },
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "commentary-section-data",
+            "dataMap": {
+                "scene": "data-scene",
+                "count": "data-count"
+            },
+            "contentField": "comments"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_commentary",
+        "extractPattern": "\\[COMMENTS\\|([^|]+)\\|([^\\]]+)\\]\\n([\\s\\S]*?)\\[\\/COMMENTS\\]",
+        "fieldNames": ["scene", "count", "comments"],
+        "keyFields": ["scene"],
+        "stripFromResponse": true,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "\uD83D\uDCAC Reader Comments \u2014 {{scene}} ({{count}})\n{{comments}}",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 500,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-commentary-section"
+}

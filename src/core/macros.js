@@ -60,6 +60,23 @@ function macroSafe(name) {
         .replace(/^_|_$/g, '');
 }
 
+// Suffixes reserved for the built-in variant macros ({{..._raw}}, {{..._value}}).
+// A per-field macro must never shadow these, so a field literally named "raw"
+// or "value" is skipped by the field loop.
+const RESERVED_FIELD_SUFFIXES = new Set(['raw', 'value']);
+
+/**
+ * Normalize a stored field value into a plain string for macro output.
+ * Unwraps a bare-JSON-quoted string (batching can stringify single values) and
+ * joins arrays into a readable comma list.
+ */
+function fieldToString(val) {
+    if (typeof val === 'string' && val.startsWith('"') && val.endsWith('"')) {
+        try { val = JSON.parse(val); } catch { /* keep raw */ }
+    }
+    return Array.isArray(val) ? val.join(', ') : String(val ?? '').trim();
+}
+
 /**
  * Collect the merge-variable agents that have a usable variableName.
  * @returns {{ agent: object, varName: string, macroName: string }[]}
@@ -88,6 +105,7 @@ export function refreshMacros() {
     for (const { agent, macroName } of stateAgents) {
         liveNames.add(macroName);
         const rawName = `${macroName}_raw`;
+        const valueName = `${macroName}_value`;
 
         // Formatted state — resolver reads current state at expansion time, so
         // the macro always reflects the latest accumulated data, not a snapshot
@@ -120,15 +138,75 @@ export function refreshMacros() {
             `SuperAgents: raw JSON state array for "${agent.name}".`,
         );
 
+        // Bare payload value — the single "content" field of the first stored
+        // item, with no formatting, header, or emoji. Declared per-agent via
+        // sidecarCall.display.contentField (falls back to the first fieldName).
+        // This is the paste-ready form: drop {{agent_<name>_value}} straight
+        // into an image-gen call, a /sd command, or any downstream consumer
+        // that wants ONLY the payload, not the decorated display string.
+        MacrosParser.registerMacro(
+            valueName,
+            () => {
+                try {
+                    const mv = agent.mergeVariable;
+                    const arr = readMergeArray(mv.variableName);
+                    if (!arr.length) return '';
+                    const field = agent?.sidecarCall?.display?.contentField
+                        || mv.fieldNames?.[0];
+                    if (!field) return '';
+                    return fieldToString(arr[0][field]);
+                } catch (err) {
+                    debug(`${LOG_PREFIX} macro {{${valueName}}} resolver failed:`, err);
+                    return '';
+                }
+            },
+            `SuperAgents: bare payload value for "${agent.name}" (paste-ready, no formatting).`,
+        );
+
+        // Per-field macros — one {{agent_<name>_<field>}} for every declared
+        // fieldName, resolving to that field's value on the first stored item.
+        // Lets you pull a single column out of a multi-field agent, e.g.
+        // {{agent_sa_soundtrack_track}} for just the track name to search on,
+        // or {{agent_sa_art_prompt_style}} for the style tags alone.
+        const fieldNames = Array.isArray(agent?.mergeVariable?.fieldNames)
+            ? agent.mergeVariable.fieldNames
+            : [];
+        for (const field of fieldNames) {
+            const safeField = macroSafe(field);
+            if (!safeField || RESERVED_FIELD_SUFFIXES.has(safeField)) continue;
+            const fieldMacro = `${macroName}_${safeField}`;
+            MacrosParser.registerMacro(
+                fieldMacro,
+                () => {
+                    try {
+                        const arr = readMergeArray(agent.mergeVariable.variableName);
+                        if (!arr.length) return '';
+                        return fieldToString(arr[0][field]);
+                    } catch (err) {
+                        debug(`${LOG_PREFIX} macro {{${fieldMacro}}} resolver failed:`, err);
+                        return '';
+                    }
+                },
+                `SuperAgents: "${field}" field of "${agent.name}".`,
+            );
+            registered.add(fieldMacro);
+            liveNames.add(fieldMacro);
+        }
+
         registered.add(macroName);
         registered.add(rawName);
+        registered.add(valueName);
     }
 
     // Stale macros (agent removed or variableName changed): re-point their
     // resolvers at "" so they no longer surface obsolete data. We can't delete
     // them from the parser, but a neutral resolver is harmless.
     for (const name of registered) {
-        const base = name.endsWith('_raw') ? name.slice(0, -4) : name;
+        // Recover the base macro name by stripping any known suffix, so a live
+        // agent's _raw / _value variants aren't mistaken for stale bases.
+        let base = name;
+        if (name.endsWith('_raw')) base = name.slice(0, -4);
+        else if (name.endsWith('_value')) base = name.slice(0, -6);
         if (liveNames.has(base)) continue;
         MacrosParser.registerMacro(
             name,

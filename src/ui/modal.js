@@ -27,7 +27,6 @@
  */
 
 import { MODULE_NAME, debug } from '../../index.js';
-import { chat } from '../../../../../../script.js';
 import {
     getAgents,
     getAgentById,
@@ -42,10 +41,11 @@ import {
     instantiateTemplate,
 } from '../data/store.js';
 import { AGENT_CATEGORIES } from '../data/normalize.js';
+import { readMergeArray } from '../modes/mergeVariable.js';
 import { resolveAgentIcon, resolveGroupIcon } from './iconResolver.js';
 import { listBuiltInTemplates } from '../data/templateSync.js';
 import { importAgents, exportAllAgents, exportAgent } from '../data/importExport.js';
-import { runAgentOnMessage } from '../core/lifecycle.js';
+import { runAgentOnLastMessage, rerollAgentPreGen } from '../core/lifecycle.js';
 import { renderAgentEditor } from './editor.js';
 import { renderGroupEditor } from './groupEditor.js';
 import { initCardTooltips } from './cardTooltip.js';
@@ -311,6 +311,28 @@ function renderAgentCard(agent) {
     const cat = AGENT_CATEGORIES[agent.category] || AGENT_CATEGORIES.custom;
     const icon = resolveAgentIcon(agent);
     const phase = { pre: 'Pre', post: 'Post', both: 'Both' }[agent.phase] || agent.phase || '—';
+    const isPreGen = (agent.phase === 'pre' || agent.phase === 'both') && !!agent.sidecarCall?.enabled;
+    // "Run on last" (post-gen target selection) stays separate and always present.
+    // Reroll button visibility (capability) vs. active state (has data) are two
+    // separate questions. CAPABILITY: a pre-gen planner with self-memory on —
+    // only it has memory to blindfold. DATA: there's a prior plan in the agent's
+    // merge variable that a reroll would replace. A reroll with no prior plan is
+    // just a first run — nothing to "re-" do — so the button renders present but
+    // disabled/greyed, showing the capability without inviting a no-op.
+    // (We intentionally do NOT also gate on a last-assistant message: pre-gen
+    // plans off the pending user text, so the button must stay live when
+    // planning the very first reply, when there's no assistant message yet.)
+    const canReroll = isPreGen && !!agent.sidecarCall?.richContext?.selfMemory;
+    let rerollBtn = '';
+    if (canReroll) {
+        const varName = agent.mergeVariable?.variableName;
+        const hasPlan = !!varName && readMergeArray(varName).length > 0;
+        const attrs = hasPlan
+            ? `title="Reroll (re-plan, ignoring self-memory this pass)"`
+            : `disabled title="No plan to reroll yet."`;
+        const cls = hasPlan ? 'sam-icon-btn' : 'sam-icon-btn sam-icon-btn-disabled';
+        rerollBtn = `<button class="${cls}" data-act="reroll" data-id="${agent.id}" ${attrs}><i class="fa-solid fa-dice"></i></button>`;
+    }
     return `
     <div class="sam-card" data-agent-id="${agent.id}">
         <div class="sam-card-icon"><i class="fa-solid ${icon}"></i></div>
@@ -324,6 +346,7 @@ function renderAgentCard(agent) {
         </div>
         <div class="sam-card-actions">
             <button class="sam-icon-btn" data-act="run" data-id="${agent.id}" title="Run on last message"><i class="fa-solid fa-play"></i></button>
+            ${rerollBtn}
             <button class="sam-icon-btn" data-act="edit" data-id="${agent.id}" title="Edit"><i class="fa-solid fa-pen"></i></button>
             <button class="sam-icon-btn" data-act="export" data-id="${agent.id}" title="Export"><i class="fa-solid fa-file-export"></i></button>
             <button class="sam-icon-btn sam-icon-danger" data-act="delete" data-id="${agent.id}" title="Delete"><i class="fa-solid fa-trash"></i></button>
@@ -379,6 +402,7 @@ function bindManageTab(container) {
         switch (el.dataset.act) {
             case 'toggle': el.addEventListener('change', () => toggleAgent(id)); break;
             case 'run':    el.addEventListener('click', () => runOnLastMessage(id)); break;
+            case 'reroll': el.addEventListener('click', () => rerollAgentPreGen(id)); break;
             case 'edit':   el.addEventListener('click', () => onEditAgent(id)); break;
             case 'export': el.addEventListener('click', () => handleExportSingle(id)); break;
             case 'delete': el.addEventListener('click', () => onDeleteAgent(id)); break;
@@ -447,17 +471,10 @@ function onEditGroup(id)   { groupEditorOpen = true; editingGroupId = id; render
 
 // ---- Run / import / export -------------------------------------------
 
+// Thin wrapper: the "find last assistant message + run + toast" logic now lives
+// in lifecycle.runAgentOnLastMessage so the flyout play badge shares it verbatim.
 async function runOnLastMessage(agentId) {
-    let targetIdx = -1;
-    for (let i = chat.length - 1; i >= 0; i--) {
-        if (chat[i] && !chat[i].is_user && !chat[i].is_system) { targetIdx = i; break; }
-    }
-    if (targetIdx < 0) {
-        toastr.warning('No assistant message to run the agent on.');
-        return;
-    }
-    const result = await runAgentOnMessage(agentId, targetIdx);
-    if (result?.error) toastr.error(`Agent failed: ${result.error}`);
+    await runAgentOnLastMessage(agentId);
 }
 
 function handleImport() {

@@ -48,6 +48,8 @@ const AUTHORS_NOTE_KEY = '2_floating_prompt';
  * @property {boolean} authorsNote   Include the active Author's Note (### Author's Note).
  * @property {boolean} pendingUser   Include the user's not-yet-committed message (### Pending user message).
  * @property {number}  historyCount  How many recent messages to include (0 = none; history is rendered by the caller).
+ * @property {boolean} selfMemory    Include the agent's OWN recent outputs (### Your recent direction) so a planner can advance rather than restate. Opt-in; requires the caller to supply the collected memory (see buildRichContext's selfMemoryItems), since collecting it needs the agent's varName + chat walk which live outside this module.
+ * @property {number}  selfMemoryCount  How many recent self-outputs to include (0 = none). The caller reads this to size its collection; this module only formats what it's handed.
  */
 
 /** substituteParams wrapper that strips stray carriage returns and never throws. */
@@ -267,6 +269,62 @@ function getHistory(ctx, mesNum, count) {
 }
 
 // ============================================================================
+// SELF-MEMORY (agent's own recent outputs)
+// ============================================================================
+
+/**
+ * Format the agent's own recent outputs into a labelled "### Your recent
+ * output" block that reads to the LLM as "here's what you already produced —
+ * stay consistent with it." Wording is role-neutral so it suits planners and
+ * continuity trackers alike. The items come from the caller (buildAgentRichContext
+ * in sidecar.js), which collects them via mergeVariable.collectRecentStates for
+ * the agent's own variable; this module only shapes what it's handed so it needs
+ * no chat-walk imports (and thus no new edge toward lifecycle.js).
+ *
+ * IMPORTANT: these plans come from the saAgentSwipes snapshot store, NOT from
+ * raw message text, so BLOCK_RE (which only strips history message text) never
+ * touches them.
+ *
+ * @param {object} ctx
+ * @param {object[][]} memoryItems  newest-first list of stored item-arrays, each
+ *        a snapshot from one message's active swipe (collectRecentStates output).
+ * @param {string} [formatItem='{{plan}}']  the agent's mergeVariable.formatItem.
+ * @param {string[]} [fieldNames=['plan']]  the agent's mergeVariable.fieldNames.
+ * @returns {string}  the formatted section, or '' if nothing to show.
+ */
+function buildSelfMemorySection(ctx, memoryItems, formatItem = '{{plan}}', fieldNames = ['plan']) {
+    if (!Array.isArray(memoryItems) || memoryItems.length === 0) return '';
+
+    // Each stored entry is an array of items (snapshot mode = usually one item
+    // per turn). Render each entry's items with the agent's own formatItem, the
+    // same substitution formatMergeVariableData uses, so the memory reads in the
+    // agent's native shape.
+    const renderEntry = (items) => {
+        if (!Array.isArray(items)) return '';
+        return items.map(item => {
+            let line = formatItem;
+            for (const field of fieldNames) {
+                const val = item?.[field] ?? '';
+                const display = Array.isArray(val) ? val.join(', ') : String(val);
+                line = line.replaceAll(`{{${field}}}`, display);
+            }
+            return line.trim();
+        }).filter(Boolean).join(' ');
+    };
+
+    const lines = memoryItems.map(renderEntry).filter(Boolean).map(l => `- ${l}`);
+    if (lines.length === 0) return '';
+
+    // Role-neutral framing: this block suits both planners (which should build
+    // forward off prior direction) and trackers (which should stay consistent
+    // with prior state). Deliberately avoids commanding "advance / do not
+    // repeat" — that only fits planners and works against continuity agents.
+    const header = 'Your own output from recent turns (most recent first), '
+        + 'for continuity. Take it into account and stay consistent with it.';
+    return sub(ctx, `### Your recent output\n${header}\n${lines.join('\n')}`).trim();
+}
+
+// ============================================================================
 // PUBLIC: buildRichContext
 // ============================================================================
 
@@ -284,9 +342,15 @@ function getHistory(ctx, mesNum, count) {
  * @param {RichContextFlags} opts.flags        which sections to include.
  * @param {string} [opts.pendingUserText='']   the not-yet-committed user message.
  * @param {number} [opts.maxContext=8192]      token budget hint for WI activation.
+ * @param {object[][]} [opts.selfMemoryItems]  the agent's own recent outputs
+ *        (collectRecentStates output), supplied by the caller when flags.selfMemory
+ *        is on. Kept as a caller-supplied input so this module needs no chat-walk
+ *        imports. Ignored unless flags.selfMemory is true.
+ * @param {string} [opts.selfMemoryFormatItem]  agent mergeVariable.formatItem.
+ * @param {string[]} [opts.selfMemoryFieldNames]  agent mergeVariable.fieldNames.
  * @returns {Promise<string>}                  the composed context (may be '').
  */
-export async function buildRichContext({ mesNum, flags, pendingUserText = '', maxContext = 8192 }) {
+export async function buildRichContext({ mesNum, flags, pendingUserText = '', maxContext = 8192, selfMemoryItems = [], selfMemoryFormatItem, selfMemoryFieldNames }) {
     if (!flags?.enabled) return '';
     const ctx = getContext();
     const sections = [];
@@ -332,6 +396,15 @@ export async function buildRichContext({ mesNum, flags, pendingUserText = '', ma
     if (flags.historyCount > 0) {
         const history = getHistory(ctx, mesNum, flags.historyCount);
         if (history) sections.push(`### Recent history\n${history}`);
+    }
+
+    // Self-memory — the agent's own recent outputs, so it stays consistent with
+    // what it produced before (planners build forward, trackers hold continuity).
+    // Its own section, placed after history. The items are collected by the
+    // caller (needs the agent's varName + chat walk); this module only formats them.
+    if (flags.selfMemory) {
+        const memBlock = buildSelfMemorySection(ctx, selfMemoryItems, selfMemoryFormatItem, selfMemoryFieldNames);
+        if (memBlock) sections.push(memBlock);
     }
 
     if (flags.pendingUser && pendingUserText.trim()) {

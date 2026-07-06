@@ -39,6 +39,7 @@ const TEMPLATE_FILES = [
     'state-card.json',
     'phone-messenger.json',
     'continuity-check.json',
+    'continuity-guard.json',
     'narrative-engine.json',
     'direction-menu.json',
     'parallel-offscreen.json',
@@ -49,6 +50,10 @@ const TEMPLATE_FILES = [
     'dead-dove-escalation.json',
     'intimacy-kink-randomiser.json',
     'director.json',
+    'soundtrack-suggester.json',
+    'art-prompt-generator.json',
+    'actor-interview.json',
+    'commentary-section.json',
 ];
 
 /**
@@ -71,6 +76,7 @@ const TEMPLATE_SYNC_FIELDS = [
     'stateCard',
     'sidecarCall',
     'phoneConfig',
+    'continuityGuard',
 ];
 
 // ----------------------------------------------------------------------
