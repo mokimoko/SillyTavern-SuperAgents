@@ -109,24 +109,16 @@
     overflow-y: auto;
     overflow-x: hidden;
     scrollbar-width: thin;
-    /* Thumb rides on the (adaptive) panel surface, so it's a body-color wash —
-       a white-alpha thumb would vanish on light themes. */
-    scrollbar-color: color-mix(in srgb, transparent 88%, var(--SmartThemeBodyColor, #fff) 12%) transparent;
+    scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
 }
 .sa-sc-body::-webkit-scrollbar { width: 4px; }
 .sa-sc-body::-webkit-scrollbar-track { background: transparent; }
-.sa-sc-body::-webkit-scrollbar-thumb { background: color-mix(in srgb, transparent 88%, var(--SmartThemeBodyColor, #fff) 12%); border-radius: 2px; }
+.sa-sc-body::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.08); border-radius: 2px; }
 
-/* ── Cards (glass) ──
-   Glass base derives from the theme's blur tint so the card floats legibly
-   over ANY scene wallpaper on BOTH themes (the frosted tint is the layer that
-   sits between the card and the wallpaper — mixing toward it, not toward pure
-   body color, is what keeps the glass reading as glass on light themes).
-   Every literal is a color-mix fallback that only fires if SmartTheme vars are
-   absent, so the dark-theme look is unchanged. */
+/* ── Cards (glass) ── */
 .sa-sc-card {
-    background: color-mix(in srgb, var(--SmartThemeBlurTintColor, rgba(25,20,25,0.65)) 88%, var(--SmartThemeBodyColor, #fff) 5%);
-    border: 1px solid color-mix(in srgb, transparent 94%, var(--SmartThemeBodyColor, #fff) 6%);
+    background: rgba(25, 20, 25, 0.65);
+    border: 1px solid rgba(255, 255, 255, 0.06);
     border-radius: 8px;
     overflow: hidden;
     /* Don't let the flex body squeeze a card's content — cards keep their
@@ -135,7 +127,7 @@
     flex-shrink: 0;
     transition: border-color 0.15s;
 }
-.sa-sc-card:hover { border-color: color-mix(in srgb, transparent 91%, var(--SmartThemeBodyColor, #fff) 9%); }
+.sa-sc-card:hover { border-color: rgba(255, 255, 255, 0.09); }
 
 .sa-sc-card-header {
     display: flex;
@@ -146,12 +138,12 @@
     transition: background 0.1s;
 }
 .sa-sc-pinned .sa-sc-card-header { cursor: default; }
-.sa-sc-card-header:hover { background: color-mix(in srgb, transparent 97%, var(--SmartThemeBodyColor, #fff) 3%); }
+.sa-sc-card-header:hover { background: rgba(255, 255, 255, 0.02); }
 .sa-sc-pinned .sa-sc-card-header:hover { background: transparent; }
 
 .sa-sc-card-icon {
     font-size: 11px;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(200,210,225)) 32%, transparent);
+    color: rgba(200, 210, 225, 0.3);
     width: 16px;
     text-align: center;
     flex-shrink: 0;
@@ -159,7 +151,7 @@
 .sa-sc-card-label {
     font-size: 11px;
     font-weight: 500;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(230,235,245)) 85%, transparent);
+    color: rgba(230, 235, 245, 0.85);
     flex: 1;
     white-space: nowrap;
     overflow: hidden;
@@ -167,7 +159,7 @@
 }
 .sa-sc-collapse-icon {
     font-size: 9px;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(200,210,225)) 20%, transparent);
+    color: rgba(200, 210, 225, 0.2);
     transition: transform 0.2s;
     flex-shrink: 0;
 }
@@ -193,9 +185,7 @@
 .sa-sc-compact-meter { flex: 1; min-width: 0; }
 .sa-sc-compact-track {
     height: 3px;
-    /* Recessed track = a sink. Kept a direction-stable low-alpha black so it
-       reads as a groove on BOTH themes; a body-color mix would invert on light. */
-    background: rgba(0, 0, 0, 0.10);
+    background: rgba(255, 255, 255, 0.04);
     border-radius: 2px;
     overflow: hidden;
 }
@@ -222,10 +212,10 @@
     padding: 3px 0;
     gap: 8px;
 }
-.sa-sc-field-label { font-size: 10.5px; color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(200,210,225)) 60%, transparent); flex-shrink: 0; white-space: nowrap; }
+.sa-sc-field-label { font-size: 10.5px; color: rgba(200, 210, 225, 0.6); flex-shrink: 0; white-space: nowrap; }
 .sa-sc-field-value {
     font-size: 10.5px;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(220,225,235)) 68%, transparent);
+    color: rgba(220, 225, 235, 0.65);
     font-weight: 500;
     text-align: right;
     max-width: 60%;
@@ -237,21 +227,17 @@
 
 /* ── Tags ── */
 .sa-sc-tags { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0 4px; }
-/* Tags — blue semantic. Hue preserved on both themes; the label is mixed
-   toward body color so it darkens enough to stay legible on light glass
-   (raw sky-blue text washes out on a light card), while the bg stays a
-   low-alpha wash of the same blue. Dark-theme fallbacks reproduce today. */
 .sa-sc-tag {
     font-size: 9px;
     padding: 1px 7px;
     border-radius: 8px;
-    background: color-mix(in srgb, #85b7eb 12%, transparent);
-    color: color-mix(in srgb, #85b7eb 72%, var(--SmartThemeBodyColor, #85b7eb) 28%);
+    background: rgba(133, 183, 235, 0.1);
+    color: rgba(133, 183, 235, 0.7);
     font-weight: 500;
 }
 
 /* ── Separator ── */
-.sa-sc-sep { height: 1px; background: color-mix(in srgb, transparent 95%, var(--SmartThemeBodyColor, #fff) 5%); margin: 4px 0; }
+.sa-sc-sep { height: 1px; background: rgba(255, 255, 255, 0.04); margin: 4px 0; }
 
 /* ── Meters ── */
 .sa-sc-meter, .sa-sc-meter-col { padding: 3px 0; }
@@ -259,15 +245,14 @@
 .sa-sc-meter-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
 .sa-sc-meter-label {
     font-size: 10px;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(200,210,225)) 38%, transparent);
+    color: rgba(200, 210, 225, 0.35);
     display: flex;
     align-items: center;
     gap: 4px;
 }
 .sa-sc-meter-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; opacity: 0.7; }
-.sa-sc-meter-num { font-size: 9px; color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(200,210,225)) 32%, transparent); font-weight: 500; }
-/* Meter track = recessed sink → direction-stable low-alpha black (see compact-track). */
-.sa-sc-meter-track { height: 3px; background: rgba(0, 0, 0, 0.10); border-radius: 2px; overflow: hidden; }
+.sa-sc-meter-num { font-size: 9px; color: rgba(200, 210, 225, 0.3); font-weight: 500; }
+.sa-sc-meter-track { height: 3px; background: rgba(255, 255, 255, 0.04); border-radius: 2px; overflow: hidden; }
 .sa-sc-meter-fill { height: 100%; border-radius: 2px; opacity: 0.55; transition: width 0.4s ease; }
 
 /* ── World Events ── */
@@ -276,38 +261,34 @@
     position: relative;
     padding: 3px 0 3px 14px;
     font-size: 10.5px;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(220,225,235)) 62%, transparent);
+    color: rgba(220, 225, 235, 0.6);
     line-height: 1.45;
 }
-/* Lavender event bullet — semantic hue preserved; mixed toward body color so
-   it darkens for legibility on light glass. Dark fallback matches today. */
 .sa-sc-event::before {
     content: '•';
     position: absolute;
     left: 2px;
     top: 3px;
-    color: color-mix(in srgb, #afa9ec 60%, var(--SmartThemeBodyColor, #afa9ec) 40%);
+    color: rgba(175, 169, 236, 0.45);
     font-size: 10px;
 }
-.sa-sc-event + .sa-sc-event { border-top: 1px solid color-mix(in srgb, transparent 96%, var(--SmartThemeBodyColor, #fff) 4%); }
+.sa-sc-event + .sa-sc-event { border-top: 1px solid rgba(255, 255, 255, 0.03); }
 
-/* ── User Stats card accent ──
-   Green "you" marker — semantic hue preserved; mixed toward body color for
-   legibility on light glass. Dark fallback reproduces today's soft green. */
-.sa-sc-card[data-type="user"] .sa-sc-card-icon { color: color-mix(in srgb, #5dca7b 62%, var(--SmartThemeBodyColor, #5dca7b) 38%); }
+/* ── User Stats card accent ── */
+.sa-sc-card[data-type="user"] .sa-sc-card-icon { color: rgba(93, 202, 123, 0.5); }
 
 /* ── Empty state ── */
 .sa-sc-empty {
     padding: 24px 12px;
     text-align: center;
     font-size: 11px;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(200,210,225)) 28%, transparent);
+    color: rgba(200, 210, 225, 0.25);
     line-height: 1.6;
 }
 .sa-sc-empty-hint {
     display: block;
     font-size: 10px;
-    color: color-mix(in srgb, var(--SmartThemeBodyColor, rgb(200,210,225)) 18%, transparent);
+    color: rgba(200, 210, 225, 0.15);
     margin-top: 4px;
 }
 
@@ -334,8 +315,8 @@
     bottom: 2px;
     width: 6px;
     height: 6px;
-    border-right: 2px solid color-mix(in srgb, transparent 80%, var(--SmartThemeBodyColor, #fff) 20%);
-    border-bottom: 2px solid color-mix(in srgb, transparent 80%, var(--SmartThemeBodyColor, #fff) 20%);
+    border-right: 2px solid rgba(255, 255, 255, 0.18);
+    border-bottom: 2px solid rgba(255, 255, 255, 0.18);
     border-bottom-right-radius: 3px;
 }
 

@@ -39,91 +39,6 @@
     user-select: none;
 }
 
-/* ── Diegetic button reset ──
-   SillyTavern styles bare <button> globally (`button { font-family:
-   var(--mainFontFamily); font-size: var(--mainFontSize); color:
-   var(--SmartThemeBodyColor) }`). The phone's controls are diegetic iOS chrome,
-   not app buttons, so that theme styling leaks in by element type wherever a
-   given .sa-phone-* rule doesn't explicitly override it. This scoped reset
-   forces the phone's buttons + input to inherit the device's own font stack
-   and drops the leaked font-size/color to the phone's intent, so the controls
-   stay custom regardless of the active ST theme. Scoped to .sa-phone-panel so
-   nothing outside the device is touched. */
-.sa-phone-panel button,
-.sa-phone-panel input {
-    font-family: inherit;
-    font-size: inherit;
-    line-height: normal;
-}
-/* Icon glyphs inherit their button's diegetic color, not ST's theme.
-   `color` is intentionally NOT reset on the button above: the more-specific
-   .sa-phone-* rules (e.g. .sa-phone-close) own the button color, and the <i>
-   glyph inherits from there. This rule just guarantees the glyph never picks up
-   a direct theme color from ST's global icon/button styling. */
-.sa-phone-panel button > i,
-.sa-phone-panel button > .fa-solid,
-.sa-phone-panel button > .fa-regular,
-.sa-phone-panel button > .fa-brands {
-    color: inherit;
-}
-
-/* ── Theme-hardening for the phone's diegetic controls ──
-   Some ST custom themes (e.g. "Manic Pixie Dream Girl") restyle bare <button>
-   globally with a long :not() chain + !important (specificity ~0,5,1), turning
-   these into yellow pill buttons. Class-scoped rules can't beat that even with
-   !important, so we anchor on the panel's ID (#sa-phone-panel = 1,0,0) to win on
-   specificity. Kept generic (no theme name) so it defends against any such theme. */
-#sa-phone-panel .sa-phone-header button,
-#sa-phone-panel .sa-phone-input-bar button {
-    background: none !important;
-    border: none !important;
-    border-radius: 6px !important;
-    box-shadow: none !important;
-    filter: none !important;
-    transform: none !important;
-}
-/* Re-assert each control's own iOS glyph color (themes force button color with
-   !important, which would otherwise turn every glyph into theme ink). */
-#sa-phone-panel .sa-phone-back,
-#sa-phone-panel .sa-phone-close { color: rgba(255, 255, 255, 0.45) !important; }
-#sa-phone-panel .sa-phone-back:hover,
-#sa-phone-panel .sa-phone-close:hover { color: rgba(255, 255, 255, 0.85) !important; }
-#sa-phone-panel .sa-phone-clear { color: rgba(255, 255, 255, 0.3) !important; }
-#sa-phone-panel .sa-phone-clear:hover { color: rgba(255, 120, 120, 0.8) !important; }
-#sa-phone-panel .sa-phone-compose { color: rgba(255, 255, 255, 0.45) !important; }
-#sa-phone-panel .sa-phone-compose:hover { color: rgba(255, 255, 255, 0.85) !important; }
-/* Send is a neutral chrome circle (blue is reserved for message bubbles). */
-#sa-phone-panel .sa-phone-input-bar .sa-phone-send {
-    background: rgba(255, 255, 255, 0.12) !important;
-    border-radius: 50% !important;
-    color: rgba(255, 255, 255, 0.9) !important;
-}
-#sa-phone-panel .sa-phone-input-bar .sa-phone-send:hover {
-    background: rgba(255, 255, 255, 0.2) !important;
-}
-/* Glyph color follows the button's diegetic color, overriding any themed ink. */
-#sa-phone-panel .sa-phone-header button > i,
-#sa-phone-panel .sa-phone-input-bar button > i {
-    color: inherit !important;
-}
-/* Message input stays a dark field (a touch lighter than the phone body) with
-   light text on every theme. Themes force a light paper input bg + dark ink via
-   an input:not(...) rule (~0,2,4 !important); the panel ID (1,0,0) beats it. */
-#sa-phone-panel .sa-phone-input-bar .sa-phone-input {
-    background: rgba(255, 255, 255, 0.08) !important;
-    border: 1px solid rgba(255, 255, 255, 0.10) !important;
-    box-shadow: none !important;
-    color: rgba(255, 255, 255, 0.9) !important;
-}
-#sa-phone-panel .sa-phone-input-bar .sa-phone-input::placeholder {
-    color: rgba(255, 255, 255, 0.35) !important;
-    font-style: normal !important;
-}
-#sa-phone-panel .sa-phone-input-bar .sa-phone-input:focus {
-    border-color: rgba(255, 255, 255, 0.25) !important;
-    box-shadow: none !important;
-}
-
 /* Notch / dynamic island — sits over the header */
 .sa-phone-panel::after {
     content: '';
@@ -177,8 +92,8 @@
     min-width: 18px;
     height: 18px;
     border-radius: 9px;
-    background: rgba(255, 255, 255, 0.16);
-    color: rgba(255, 255, 255, 0.92);
+    background: #3478f6;
+    color: #fff;
     font-size: 10px;
     font-weight: 700;
     line-height: 18px;
@@ -223,11 +138,11 @@
 
 .sa-phone-compose {
     font-size: 12px;
-    color: rgba(255, 255, 255, 0.45);
+    color: rgba(52, 120, 246, 0.7);
 }
 .sa-phone-compose:hover {
-    color: rgba(255, 255, 255, 0.85);
-    background: rgba(255, 255, 255, 0.06);
+    color: rgba(52, 120, 246, 1);
+    background: rgba(52, 120, 246, 0.08);
 }
 
 /* ── Contacts List ── */
@@ -265,8 +180,8 @@
 
 .sa-phone-contact-badge {
     font-size: 10px;
-    color: rgba(255, 255, 255, 0.55);
-    background: rgba(255, 255, 255, 0.08);
+    color: rgba(52, 120, 246, 0.7);
+    background: rgba(52, 120, 246, 0.08);
     padding: 2px 8px;
     border-radius: 8px;
     flex-shrink: 0;
@@ -316,13 +231,13 @@
     position: relative;
 }
 .sa-phone-conv-item:hover { background: rgba(255, 255, 255, 0.04); }
-.sa-phone-conv-unread { background: rgba(255, 255, 255, 0.05); }
+.sa-phone-conv-unread { background: rgba(52, 120, 246, 0.06); }
 
 .sa-phone-conv-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
-    background: rgba(255, 255, 255, 0.75);
+    background: #3478f6;
     flex-shrink: 0;
 }
 
@@ -448,7 +363,7 @@
     font-family: inherit;
 }
 .sa-phone-input::placeholder { color: rgba(255, 255, 255, 0.2); }
-.sa-phone-input:focus { border-color: rgba(255, 255, 255, 0.25); }
+.sa-phone-input:focus { border-color: rgba(52, 120, 246, 0.5); }
 .sa-phone-input:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .sa-phone-send {
@@ -456,8 +371,8 @@
     height: 30px;
     border-radius: 50%;
     border: none;
-    background: rgba(255, 255, 255, 0.12);
-    color: rgba(255, 255, 255, 0.9);
+    background: #3478f6;
+    color: #fff;
     font-size: 12px;
     cursor: pointer;
     display: flex;
@@ -466,7 +381,7 @@
     transition: background 0.15s, transform 0.1s;
     flex-shrink: 0;
 }
-.sa-phone-send:hover { background: rgba(255, 255, 255, 0.2); }
+.sa-phone-send:hover { background: #2a62d0; }
 .sa-phone-send:active { transform: scale(0.92); }
 .sa-phone-send:disabled { opacity: 0.4; cursor: not-allowed; }
 

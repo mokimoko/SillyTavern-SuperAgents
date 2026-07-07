@@ -229,6 +229,10 @@ export function initStateCard() {
             hide:          () => hide(),
             toggle:        () => (isOpen() ? hide() : show()),
             isOpen,
+            // Available only when an enabled agent supplies a state-card schema.
+            isAvailable:   () => !!getStateCardAgent(),
+            // Re-sync visibility when agents change (enable/disable/delete).
+            reconcile:     () => reconcileVisibility(),
             resetPosition: () => controller?.resetPosition(),
         },
     });
@@ -273,9 +277,10 @@ export function initStateCard() {
  */
 function reconcileVisibility() {
     if (!controller) return;
-    if (!isInChat()) {
-        // Don't persist the hide — keep the user's "I want this visible"
-        // intent so re-entering a chat restores it.
+    // Gate on both chat presence and a backing agent being enabled. Hiding for
+    // either reason does NOT clear the persisted "visible" intent, so the panel
+    // returns on its own once we're back in a chat AND its agent is enabled.
+    if (!isInChat() || !getStateCardAgent()) {
         controller.hide();
         return;
     }

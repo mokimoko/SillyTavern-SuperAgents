@@ -104,6 +104,21 @@ export function registerPanelControl(entry) {
     if (isOpen && activeTab === 'settings') renderContent();
 }
 
+/**
+ * Re-sync every registered panel to current agent state, then repaint the
+ * Settings tab so panel toggles reflect availability. Called after an agent is
+ * enabled/disabled (or added/removed) so a panel whose agent just went away
+ * hides itself, and one whose agent just came back can reappear (per its own
+ * persisted intent). Each controller may expose reconcile() for the first half;
+ * panels without it are simply left as-is.
+ */
+export function reconcilePanels() {
+    for (const c of panelControls.values()) {
+        c.controller.reconcile?.();
+    }
+    if (isOpen && activeTab === 'settings') renderContent();
+}
+
 // ============================================================================
 // OPEN / CLOSE
 // ============================================================================
@@ -400,7 +415,7 @@ function bindManageTab(container) {
     container.querySelectorAll('#sam-agent-list [data-act]').forEach(el => {
         const id = el.dataset.id;
         switch (el.dataset.act) {
-            case 'toggle': el.addEventListener('change', () => toggleAgent(id)); break;
+            case 'toggle': el.addEventListener('change', () => { toggleAgent(id); reconcilePanels(); }); break;
             case 'run':    el.addEventListener('click', () => runOnLastMessage(id)); break;
             case 'reroll': el.addEventListener('click', () => rerollAgentPreGen(id)); break;
             case 'edit':   el.addEventListener('click', () => onEditAgent(id)); break;
@@ -442,6 +457,7 @@ function onDeleteAgent(id) {
     if (!confirm(`Delete agent "${agent.name}"? This cannot be undone.`)) return;
     deleteAgent(id);
     refreshManage();
+    reconcilePanels();
     toastr.info(`Deleted "${agent.name}".`);
 }
 
@@ -452,6 +468,7 @@ function onToggleGroup(id) {
         toastr.info(`Group ${label} — ${result.agentCount} agent(s) toggled.`);
     }
     refreshGroups();
+    reconcilePanels();
 }
 
 function onDeleteGroup(id) {
@@ -535,16 +552,25 @@ function renderSettingsTab(container) {
         ? `<div class="sam-empty sam-empty-sm">No display panels registered yet. The State Card and Phone register here once their build steps land.</div>`
         : controls.map(c => {
             const open = !!c.controller.isOpen?.();
+            // A panel is "available" only when its backing agent exists AND is
+            // enabled. isAvailable is optional; a panel that doesn't declare it
+            // is always available (back-compat). When unavailable, the toggle is
+            // disabled and the row explains why.
+            const available = c.controller.isAvailable ? !!c.controller.isAvailable() : true;
+            const rowCls = available ? 'sam-row' : 'sam-row sam-row-disabled';
+            const desc = available
+                ? 'Show this floating panel. Drag it anywhere; position is remembered.'
+                : 'Enable its agent to use this panel.';
             return `
-            <div class="sam-row" data-panel="${c.id}">
+            <div class="${rowCls}" data-panel="${c.id}">
                 <div class="sam-row-info">
                     <div class="sam-row-title"><i class="fa-solid ${c.icon}"></i> ${esc(c.label)}</div>
-                    <div class="sam-row-desc">Show this floating panel. Drag it anywhere; position is remembered.</div>
+                    <div class="sam-row-desc">${desc}</div>
                 </div>
                 <div class="sam-row-controls">
-                    <button class="sam-btn sam-btn-sm" data-act="reset-panel" data-id="${c.id}" title="Reset position">Reset</button>
+                    <button class="sam-btn sam-btn-sm" data-act="reset-panel" data-id="${c.id}" title="Reset position"${available ? '' : ' disabled'}>Reset</button>
                     <label class="sam-switch">
-                        <input type="checkbox" data-act="toggle-panel" data-id="${c.id}" ${open ? 'checked' : ''}>
+                        <input type="checkbox" data-act="toggle-panel" data-id="${c.id}" ${open ? 'checked' : ''}${available ? '' : ' disabled'}>
                         <span class="sam-switch-track"></span>
                     </label>
                 </div>
@@ -566,6 +592,12 @@ function renderSettingsTab(container) {
         el.addEventListener('change', () => {
             const c = panelControls.get(el.dataset.id);
             if (!c) return;
+            // Ignore toggles on unavailable panels (agent not enabled). The
+            // input is also disabled in markup; this is belt-and-suspenders.
+            if (c.controller.isAvailable && !c.controller.isAvailable()) {
+                el.checked = false;
+                return;
+            }
             if (el.checked) c.controller.show?.(); else c.controller.hide?.();
         });
     });

@@ -22,7 +22,8 @@
  * Namespace: VM's vm-phone-* → sa-phone-*.
  */
 
-import { eventSource, event_types } from '../../../../../../script.js';
+import { eventSource, event_types, this_chid } from '../../../../../../script.js';
+import { selected_group } from '../../../../../group-chats.js';
 import { getContext } from '../../../../../extensions.js';
 import { extension_settings } from '../../../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../../../script.js';
@@ -69,6 +70,37 @@ function persistVisible(v) {
     const root = extension_settings[MODULE_NAME] ?? (extension_settings[MODULE_NAME] = {});
     root.phoneVisible = !!v;
     saveSettingsDebounced();
+}
+
+/**
+ * True when SillyTavern is actually inside a chat (character or group), false
+ * on the Landing Page / empty state. Mirrors stateCard.js's isInChat so the
+ * phone follows the same "persist visibility, but only surface inside a chat"
+ * rule. `this_chid` is undefined on Landing and a string index in a character
+ * chat; `selected_group` is null on Landing and a group id in a group chat.
+ */
+function isInChat() {
+    return (this_chid != null) || !!selected_group;
+}
+
+/**
+ * Bring the phone's visibility in line with persisted intent and chat presence.
+ * Called on init and after every CHAT_CHANGED. The persisted "visible" flag is
+ * the user's intent; this decides whether it applies now (in a chat) or has to
+ * wait (Landing). Hiding for "not in chat" does NOT clear the flag, so entering
+ * a chat restores the phone; the user's own close (hide()) is what clears it.
+ */
+function reconcileVisibility() {
+    if (!controller) return;
+    if (!isPhoneEnabled() || !isInChat()) {
+        // Hide without persisting — preserve the "I want this open" intent.
+        controller.hide();
+        return;
+    }
+    if (isVisiblePersisted()) {
+        controller.show();
+        openView();
+    }
 }
 
 // ============================================================================
@@ -165,6 +197,10 @@ export function initPhonePanel() {
             hide:          () => hide(),
             toggle:        () => (isOpen() ? hide() : show()),
             isOpen,
+            // Available only when a phone agent exists and is enabled.
+            isAvailable:   () => isPhoneEnabled(),
+            // Re-sync visibility when agents change (enable/disable/delete).
+            reconcile:     () => reconcileVisibility(),
             resetPosition: () => controller?.resetPosition(),
         },
     });
@@ -191,16 +227,26 @@ export function initPhonePanel() {
         }
     });
 
-    // Chat change: badge may differ; close the panel to avoid stale thread view.
+    // Chat change: the previous thread view is stale, and we may have moved
+    // between Landing and a chat. Drop the active-thread pointer, then reconcile
+    // visibility against the new chat state — this restores the phone if the
+    // user had it open and we're (still) in a chat, or hides it (without
+    // clearing intent) on Landing. Runs on first load too, so a persisted-open
+    // phone survives a refresh straight into a chat.
     eventSource.on(event_types.CHAT_CHANGED, () => {
         updateBadge();
-        if (isOpen()) hide();
+        activeThread = null;
+        reconcileVisibility();
     });
 
     updateBadge();
 
-    // Restore prior visibility.
-    if (isVisiblePersisted() && isPhoneEnabled()) show();
+    // Initial reconciliation: show only if the persisted flag is set AND we're
+    // already in a chat. If ST loaded to a chat the phone reappears; if we're on
+    // Landing it stays hidden (intent preserved) until a chat is opened. The
+    // CHAT_CHANGED handler above also fires once on load, but calling this here
+    // covers the case where the chat is already present at init time.
+    reconcileVisibility();
 
     debug(`${LOG_PREFIX} phone panel initialized`);
 }

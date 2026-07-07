@@ -1,45 +1,63 @@
 /* ============================================================
    SuperAgents — base styles
-   Aesthetic mirrors SillyTavern-LandingPageRedux's modal:
-   dark surface (rgba 18,18,22,0.97), 56px icon rail, warm
-   tan/beige accent (rgba 180,160,140,...), sharp corners, tight
-   11-15px fonts. Real modal styles arrive with src/ui/modal.js.
+   Aesthetic mirrors SillyTavern-LandingPageRedux's modal: 56px icon
+   rail, sharp corners, tight 11-15px fonts.
 
-   CSS namespace: sa- (super agents). Modal sub-classes will be
-   sam- (super agents modal) to keep selectors short.
+   THEME ADAPTATION: the modal + editor chrome (sam-/sae-) now ADAPTS to
+   the active ST theme. Surfaces, borders, text and washes derive from
+   --SmartTheme* via color-mix, so the settings chrome reads correctly on
+   light AND dark themes (frosted tint over whatever the theme provides).
+   Accents route to --SmartThemeQuoteColor to match the rest of the suite
+   (LP Redux / Lorebook Organizer pattern). Every literal below is a
+   fallback that only fires if SmartTheme tokens are entirely absent.
+
+   NOT adapted (deliberately): the State Card inner glass cards
+   (src/ui/stateCard.css) keep a hand-tuned glass palette + semantic
+   colors — they float over the scene, not a themed surface. The Phone
+   panel (src/phone/phonePanel.css) is a diegetic iPhone, left fully
+   literal. Both panel SHELLS still adapt for free since they reference
+   these --sa-* tokens.
+
+   CSS namespace: sa- (super agents). Modal sub-classes are sam-; editor
+   sub-classes are sae-.
    ============================================================ */
 
 :root {
-    /* Surfaces */
-    --sa-surface-main:     rgba(18, 18, 22, 0.97);
-    --sa-surface-rail:     rgba(255, 255, 255, 0.03);
-    --sa-surface-rail-hot: rgba(255, 255, 255, 0.06);
-    --sa-surface-input:    rgba(255, 255, 255, 0.04);
+    /* Surfaces — frosted theme tint (adapt). Main surface is a near-opaque
+       blur tint; rail/input/info are body-color washes / low-alpha black so
+       recesses stay direction-stable across light and dark themes. */
+    --sa-surface-main:     color-mix(in srgb, var(--SmartThemeBlurTintColor, rgba(18,18,22,0.97)) 94%, var(--SmartThemeBodyColor, #fff) 4%);
+    --sa-surface-rail:     color-mix(in srgb, transparent 97%, var(--SmartThemeBodyColor, #fff) 3%);
+    --sa-surface-rail-hot: color-mix(in srgb, transparent 94%, var(--SmartThemeBodyColor, #fff) 6%);
+    --sa-surface-input:    color-mix(in srgb, transparent 96%, var(--SmartThemeBodyColor, #fff) 4%);
+    /* info/recess panels: a sink reads as a shadow, so low-alpha black on
+       both themes (a body-color mix would invert direction on light). */
     --sa-surface-info:     rgba(0, 0, 0, 0.15);
 
-    /* Borders */
-    --sa-border-faint:     rgba(255, 255, 255, 0.04);
-    --sa-border-soft:      rgba(255, 255, 255, 0.06);
-    --sa-border-mid:       rgba(255, 255, 255, 0.08);
-    --sa-border-strong:    rgba(255, 255, 255, 0.18);
+    /* Borders — body-color hairlines (adapt) */
+    --sa-border-faint:     color-mix(in srgb, transparent 96%, var(--SmartThemeBodyColor, #fff) 4%);
+    --sa-border-soft:      color-mix(in srgb, transparent 94%, var(--SmartThemeBodyColor, #fff) 6%);
+    --sa-border-mid:       color-mix(in srgb, transparent 92%, var(--SmartThemeBodyColor, #fff) 8%);
+    --sa-border-strong:    color-mix(in srgb, transparent 82%, var(--SmartThemeBodyColor, #fff) 18%);
 
-    /* Text */
-    --sa-text-primary:     rgba(255, 255, 255, 0.85);
-    --sa-text-body:        rgba(255, 255, 255, 0.80);
-    --sa-text-secondary:   rgba(255, 255, 255, 0.65);
-    --sa-text-muted:       rgba(255, 255, 255, 0.45);
-    --sa-text-faint:       rgba(255, 255, 255, 0.35);
-    --sa-text-ghost:       rgba(255, 255, 255, 0.25);
+    /* Text — tiers off body color (adapt) */
+    --sa-text-primary:     color-mix(in srgb, var(--SmartThemeBodyColor, #fff) 85%, transparent);
+    --sa-text-body:        color-mix(in srgb, var(--SmartThemeBodyColor, #fff) 80%, transparent);
+    --sa-text-secondary:   color-mix(in srgb, var(--SmartThemeBodyColor, #fff) 65%, transparent);
+    --sa-text-muted:       color-mix(in srgb, var(--SmartThemeBodyColor, #fff) 45%, transparent);
+    --sa-text-faint:       color-mix(in srgb, var(--SmartThemeBodyColor, #fff) 35%, transparent);
+    --sa-text-ghost:       color-mix(in srgb, var(--SmartThemeBodyColor, #fff) 25%, transparent);
 
-    /* Accent (warm tan/beige — matches LPR) */
-    --sa-accent:           rgba(180, 160, 140, 0.9);
-    --sa-accent-soft:      rgba(180, 160, 140, 0.6);
-    --sa-accent-faint:     rgba(180, 160, 140, 0.25);
-    --sa-accent-bg:        rgba(180, 160, 140, 0.2);
-    --sa-accent-bg-hot:    rgba(180, 160, 140, 0.3);
-    --sa-accent-text:      rgba(220, 180, 140, 0.85);
+    /* Accent — routes to --SmartThemeQuoteColor (suite pattern). Tan/beige
+       literals kept only as fallbacks. */
+    --sa-accent:           color-mix(in srgb, var(--SmartThemeQuoteColor, rgba(180,160,140,0.9)) 90%, transparent);
+    --sa-accent-soft:      color-mix(in srgb, var(--SmartThemeQuoteColor, rgba(180,160,140,0.6)) 60%, transparent);
+    --sa-accent-faint:     color-mix(in srgb, var(--SmartThemeQuoteColor, rgba(180,160,140,0.25)) 25%, transparent);
+    --sa-accent-bg:        color-mix(in srgb, var(--SmartThemeQuoteColor, rgba(180,160,140,0.2)) 20%, transparent);
+    --sa-accent-bg-hot:    color-mix(in srgb, var(--SmartThemeQuoteColor, rgba(180,160,140,0.3)) 30%, transparent);
+    --sa-accent-text:      color-mix(in srgb, var(--SmartThemeQuoteColor, rgba(220,180,140,0.85)) 85%, var(--SmartThemeBodyColor, #fff) 15%);
 
-    /* Status */
+    /* Status — semantic, kept literal (must read as warn/error on any theme) */
     --sa-status-warn:      rgba(230, 180, 100, 0.85);
     --sa-status-error:     rgba(230, 140, 120, 0.9);
 
@@ -243,6 +261,10 @@
     padding: 9px 0;
     border-bottom: 1px solid var(--sa-border-faint);
 }
+/* A panel whose backing agent isn't enabled: dim the row and block its controls. */
+.sam-row-disabled { opacity: 0.5; }
+.sam-row-disabled .sam-switch,
+.sam-row-disabled .sam-btn { cursor: not-allowed; }
 .sam-row-info { min-width: 0; }
 .sam-row-title { font-size: var(--sa-font-label); color: var(--sa-text-primary); }
 .sam-row-title i { color: var(--sa-accent-soft); margin-right: 5px; }
@@ -250,23 +272,11 @@
 .sam-row-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 
 /* ── Switch (toggle) ───────────────────────────────────────── */
-.sam-switch { position: relative; display: inline-block; width: 34px; height: 18px; flex-shrink: 0; cursor: pointer; }
-.sam-switch input { opacity: 0; width: 0; height: 0; }
-.sam-switch-track {
-    position: absolute; inset: 0;
-    background: var(--sa-border-mid);
-    border-radius: 10px;
-    transition: background 0.15s ease;
-}
-.sam-switch-track::before {
-    content: ''; position: absolute;
-    width: 12px; height: 12px; left: 3px; top: 3px;
-    background: var(--sa-text-secondary);
-    border-radius: 50%;
-    transition: transform 0.15s ease, background 0.15s ease;
-}
-.sam-switch input:checked + .sam-switch-track { background: var(--sa-accent-bg-hot); }
-.sam-switch input:checked + .sam-switch-track::before { transform: translateX(16px); background: var(--sa-accent); }
+/* Intentionally minimal: the checkbox renders as the active ST theme's own
+   native checkbox (no custom track/knob), so it always matches the theme. The
+   leftover decorative track span from the markup is hidden. */
+.sam-switch { display: inline-flex; align-items: center; flex-shrink: 0; cursor: pointer; }
+.sam-switch .sam-switch-track { display: none; }
 
 /* ── Cards (agent / group list) ────────────────────────────── */
 .sam-list { display: flex; flex-direction: column; gap: 6px; }
