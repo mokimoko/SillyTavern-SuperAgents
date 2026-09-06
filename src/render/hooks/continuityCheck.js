@@ -39,6 +39,10 @@ const VERDICT_STYLES = {
     major_issues: { color: '#f56565', icon: 'fa-circle-exclamation', label: 'Major issues' },
 };
 
+function readableSemanticColor(color) {
+    return `color-mix(in srgb, ${color} 65%, var(--SmartThemeBodyColor, #fff) 35%)`;
+}
+
 // ============================================================================
 // MAIN RENDER FUNCTION
 // ============================================================================
@@ -68,26 +72,28 @@ export function renderContinuityCheck(el) {
     const issues = Array.isArray(data.issues) ? data.issues : [];
     const verdict = data.verdict || (issues.length === 0 ? 'clean' : 'minor_issues');
     const verdictStyle = VERDICT_STYLES[verdict] ?? VERDICT_STYLES.clean;
+    const verdictTextColor = readableSemanticColor(verdictStyle.color);
 
     // ── Build issue rows ──
     const rows = issues.map(issue => {
         const sev = SEVERITY_STYLES[issue.severity] ?? SEVERITY_STYLES.note;
+        const severityTextColor = readableSemanticColor(sev.color);
         const catIcon = CATEGORY_ICONS[issue.category] ?? 'fa-question';
         const catLabel = (issue.category ?? 'unknown').toUpperCase();
 
-        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 8px;margin-bottom:3px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.04);border-left:2px solid ${sev.color};border-radius:3px">`
+        return `<div style="display:flex;gap:10px;align-items:flex-start;padding:6px 8px;margin-bottom:3px;background:var(--sa-surface-input,rgba(255,255,255,0.02));border:1px solid var(--sa-border-faint,rgba(255,255,255,0.04));border-left:2px solid ${sev.color};border-radius:3px">`
             // Severity + category badge
             + `<div style="flex-shrink:0;display:flex;flex-direction:column;align-items:center;gap:2px;min-width:70px">`
-            + `<span style="font-family:${MONO};color:${sev.color};font-size:9px;font-weight:700;letter-spacing:0.05em">`
+            + `<span style="font-family:${MONO};color:${severityTextColor};font-size:9px;font-weight:700;letter-spacing:0.05em">`
             + `<i class="fa-solid ${sev.icon}" style="font-size:9px;margin-right:3px"></i>${sev.label}</span>`
-            + `<span style="font-family:${MONO};color:#4a5568;font-size:9px;letter-spacing:0.03em">`
+            + `<span style="font-family:${MONO};color:var(--sa-text-muted,#718096);font-size:9px;letter-spacing:0.03em">`
             + `<i class="fa-solid ${catIcon}" style="font-size:8px;margin-right:2px"></i>${catLabel}</span>`
             + `</div>`
             // Description + suggestion
             + `<div style="flex:1;min-width:0">`
-            + `<div style="font-family:${SANS};color:#e2e8f0;font-size:12px;line-height:1.45">${escHtml(issue.description ?? '')}</div>`
+            + `<div style="font-family:${SANS};color:var(--sa-text-body,#e2e8f0);font-size:12px;line-height:1.45">${escHtml(issue.description ?? '')}</div>`
             + (issue.suggestion
-                ? `<div style="font-family:${SANS};color:#718096;font-size:11px;line-height:1.4;margin-top:3px;font-style:italic">💡 ${escHtml(issue.suggestion)}</div>`
+                ? `<div style="font-family:${SANS};color:var(--sa-text-secondary,#a0aec0);font-size:11px;line-height:1.4;margin-top:3px;font-style:italic">💡 ${escHtml(issue.suggestion)}</div>`
                 : '')
             + `</div>`
             + `</div>`;
@@ -106,11 +112,11 @@ export function renderContinuityCheck(el) {
     const summary = document.createElement('summary');
     summary.style.cssText = [
         'padding:8px 12px',
-        'background:rgba(15,17,21,0.85)',
-        'border:1px solid rgba(255,255,255,0.05)',
+        'background:var(--sa-surface-info,rgba(15,17,21,0.85))',
+        'border:1px solid var(--sa-border-faint,rgba(255,255,255,0.05))',
         `border-left:3px solid ${verdictStyle.color}`,
         'border-radius:3px',
-        'color:#a0aec0',
+        'color:var(--sa-text-secondary,#a0aec0)',
         `font-family:${MONO}`,
         'font-size:11px',
         'text-transform:uppercase',
@@ -120,23 +126,23 @@ export function renderContinuityCheck(el) {
         'backdrop-filter:blur(4px)',
         '-webkit-backdrop-filter:blur(4px)',
     ].join(';');
-    summary.innerHTML = `<span style="color:${verdictStyle.color};margin-right:6px">`
+    summary.innerHTML = `<span style="color:${verdictTextColor};margin-right:6px">`
         + `<i class="fa-solid ${verdictStyle.icon}"></i></span> Continuity Check`
-        + `<span style="float:right;color:${verdictStyle.color};font-size:10px;font-weight:600">`
+        + `<span style="float:right;color:${verdictTextColor};font-size:10px;font-weight:600">`
         + `${verdictStyle.label}${issues.length > 0 ? ` (${issues.length})` : ''}</span>`;
 
     const body = document.createElement('div');
     body.style.cssText = [
         'padding:8px',
-        'background:rgba(10,12,14,0.7)',
-        'border:1px solid rgba(255,255,255,0.03)',
+        'background:var(--sa-surface-info,rgba(10,12,14,0.7))',
+        'border:1px solid var(--sa-border-faint,rgba(255,255,255,0.03))',
         'border-top:none',
         `border-left:3px solid ${verdictStyle.color}33`,
         'border-radius:0 0 3px 3px',
     ].join(';');
 
     if (rows.length === 0) {
-        body.innerHTML = `<div style="text-align:center;padding:12px;color:#48bb78;font-family:${SANS};font-size:12px">`
+        body.innerHTML = `<div style="text-align:center;padding:12px;color:${readableSemanticColor('#48bb78')};font-family:${SANS};font-size:12px">`
             + `<i class="fa-solid fa-circle-check" style="margin-right:5px"></i>No continuity issues detected</div>`;
     } else {
         body.innerHTML = rows.join('');

@@ -1,0 +1,604 @@
+/* Muted, diegetic app launchers: visible in chat without competing with ST chrome. */
+
+.sa-surface-dock {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    left: max(12px, env(safe-area-inset-left));
+    z-index: var(--sa-z-launcher, 100);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    pointer-events: auto;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.sa-surface-dock.sa-surface-dock--dragging,
+.sa-surface-dock.sa-surface-dock--dragging * {
+    cursor: grabbing !important;
+}
+
+#sa-surface-dock .sa-surface-dock-grip {
+    position: absolute;
+    top: 50%;
+    z-index: 2;
+    width: 20px !important;
+    min-width: 0 !important;
+    height: 28px !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    display: grid;
+    place-items: center;
+    color: rgb(205 211 217 / 58%) !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    opacity: 0;
+    transform: translateY(-50%);
+    cursor: grab;
+    pointer-events: auto;
+    touch-action: none;
+    transition: opacity 140ms ease, color 140ms ease;
+}
+
+#sa-surface-dock .sa-surface-dock-grip--left { left: -20px; }
+#sa-surface-dock .sa-surface-dock-grip--right { right: -20px; }
+
+#sa-surface-dock .sa-surface-dock-grip:is(:hover, :focus-visible),
+.sa-surface-dock.sa-surface-dock--dragging .sa-surface-dock-grip {
+    color: rgb(235 239 242 / 72%) !important;
+    opacity: 0.62;
+}
+
+#sa-surface-dock .sa-surface-dock-grip > i {
+    color: inherit !important;
+    font-size: 10px;
+    filter: none !important;
+    text-shadow: none !important;
+    -webkit-text-stroke: 0 !important;
+}
+
+.sa-surface-dock[hidden],
+.sa-surface-launcher[hidden] {
+    display: none !important;
+}
+
+.sa-surface-launcher {
+    --sa-surface-tint: 128 138 148;
+    position: relative;
+    width: 38px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    padding: 0 !important;
+    color: #f4f6f7 !important;
+    background:
+        linear-gradient(145deg, rgb(var(--sa-surface-tint) / 13%), transparent 65%),
+        rgb(17 20 23 / 92%) !important;
+    border: 1px solid rgb(var(--sa-surface-tint) / 32%) !important;
+    border-radius: 50% !important;
+    box-shadow: 0 7px 22px rgb(0 0 0 / 30%), inset 0 1px 0 rgb(255 255 255 / 6%) !important;
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    cursor: pointer;
+    pointer-events: auto;
+    transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+/* Defend the compact circles against custom themes that restyle bare buttons. */
+#sa-surface-dock .sa-surface-launcher {
+    width: 38px !important;
+    min-width: 38px !important;
+    height: 38px !important;
+    min-height: 38px !important;
+    margin: 0 !important;
+    line-height: 1 !important;
+    appearance: none;
+}
+
+.sa-surface-launcher--phone { --sa-surface-tint: 120 143 159; }
+.sa-surface-launcher--feed { --sa-surface-tint: 154 130 151; }
+.sa-surface-launcher--state-card { --sa-surface-tint: 126 119 221; }
+.sa-surface-launcher--notifications { --sa-surface-tint: 214 160 86; }
+.sa-surface-launcher--calendar { --sa-surface-tint: 195 168 106; }
+
+.sa-surface-launcher > i {
+    color: inherit !important;
+    font-size: 14px;
+    filter: none !important;
+    text-shadow: none !important;
+    -webkit-text-stroke: 0 !important;
+}
+
+.sa-surface-launcher:hover {
+    border-color: rgb(var(--sa-surface-tint) / 58%) !important;
+    transform: translateY(-1px);
+}
+
+.sa-surface-launcher:active { transform: scale(.94); }
+
+.sa-surface-launcher.is-open {
+    background:
+        linear-gradient(145deg, rgb(var(--sa-surface-tint) / 24%), transparent 72%),
+        rgb(22 25 29 / 96%) !important;
+    border-color: rgb(var(--sa-surface-tint) / 66%) !important;
+}
+
+.sa-surface-launcher-dot {
+    position: absolute;
+    top: -1px;
+    right: -1px;
+    width: 8px;
+    height: 8px;
+    box-sizing: content-box;
+    background: #7eaf91;
+    border: 2px solid #15191c;
+    border-radius: 50%;
+}
+
+@media (max-width: 520px) {
+    .sa-surface-dock { top: 8px; left: 8px; gap: 6px; }
+    #sa-surface-dock .sa-surface-launcher {
+        width: 35px !important;
+        min-width: 35px !important;
+        height: 35px !important;
+        min-height: 35px !important;
+    }
+}
+
+/* Cute Retro dock: chunky translucent consumer-electronics buttons. */
+
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-dock {
+    gap: 7px;
+    padding: 6px;
+    background: rgb(239 229 201 / 88%);
+    border: 2px solid #cabb95;
+    border-radius: 13px;
+    box-shadow: inset 0 0 0 1px #fff7df, 0 8px 22px rgb(35 26 17 / 24%);
+    backdrop-filter: blur(9px);
+}
+
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher,
+html[data-sa-presentation-theme="cute-retro"] #sa-surface-dock .sa-surface-launcher {
+    width: 36px !important;
+    min-width: 36px !important;
+    height: 36px !important;
+    min-height: 36px !important;
+    color: #fff7db !important;
+    background: rgb(var(--sa-surface-tint)) !important;
+    border: 3px outset rgb(255 255 255 / 40%) !important;
+    border-radius: 8px !important;
+    box-shadow: 0 3px 0 rgb(63 60 49 / 34%) !important;
+    backdrop-filter: none;
+}
+
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher--answering-machine { --sa-surface-tint: 67 145 147; }
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher--bulletin-board { --sa-surface-tint: 228 111 143; }
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher--updates { --sa-surface-tint: 232 157 77; }
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher--planner { --sa-surface-tint: 129 105 157; }
+
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher:active {
+    transform: translateY(2px);
+    box-shadow: 0 1px 0 rgb(63 60 49 / 34%) !important;
+}
+
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher.is-open { filter: brightness(1.08) saturate(1.12); }
+
+html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher-dot {
+    background: #ffef89;
+    border-color: #78495a;
+    border-radius: 3px;
+    box-shadow: 0 0 7px #ffef89;
+}
+
+/* Retro Analog dock: a tiny pastel desktop taskbar. */
+
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-dock {
+    gap: 3px;
+    padding: 4px;
+    background: #c9c9d7;
+    border: 3px outset #f5f4ff;
+    border-radius: 1px;
+    box-shadow: 6px 7px 0 rgb(70 53 103 / 23%), 0 10px 26px rgb(31 20 51 / 25%);
+    backdrop-filter: none;
+}
+
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher,
+html[data-sa-presentation-theme="retro-pc"] #sa-surface-dock .sa-surface-launcher {
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 32px !important;
+    min-height: 32px !important;
+    color: #30264a !important;
+    background: rgb(var(--sa-surface-tint)) !important;
+    border: 3px outset rgb(255 255 255 / 64%) !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    backdrop-filter: none;
+}
+
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher--email { --sa-surface-tint: 242 161 193; }
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher--bb-board { --sa-surface-tint: 182 235 238; }
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher--desktop-alerts { --sa-surface-tint: 255 228 119; }
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher--organizer { --sa-surface-tint: 179 164 222; }
+
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher:hover { filter: brightness(1.04) saturate(1.08); }
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher:active,
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher.is-open { border-style: inset !important; transform: none; }
+
+html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher-dot {
+    top: -4px;
+    right: -4px;
+    width: 7px;
+    height: 7px;
+    background: #f25494;
+    border: 2px solid #fff4a6;
+    border-radius: 0;
+    box-shadow: 1px 1px 0 #64365e;
+}
+
+/* Grounded Historical launchers: independent keepsakes, with State Card as a seal. */
+
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-dock {
+    gap: 7px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+}
+
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher,
+html[data-sa-presentation-theme="grounded-historical"] #sa-surface-dock .sa-surface-launcher {
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    color: #594438 !important;
+    background:
+        linear-gradient(145deg, rgb(255 255 255 / 45%), transparent 55%),
+        rgb(var(--sa-surface-tint)) !important;
+    border: 1px solid #76604c !important;
+    border-radius: 3px !important;
+    box-shadow: inset 0 0 0 2px rgb(255 255 255 / 32%), 0 3px 8px rgb(56 43 34 / 25%) !important;
+    backdrop-filter: none;
+}
+
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher--correspondence { --sa-surface-tint: 232 224 201; }
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher--society-pages { --sa-surface-tint: 194 170 99; }
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher--notices { --sa-surface-tint: 166 174 160; }
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher--engagement-book { --sa-surface-tint: 120 119 80; color: #f4edd8 !important; }
+
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher--state-card,
+html[data-sa-presentation-theme="grounded-historical"] #sa-surface-dock .sa-surface-launcher--state-card {
+    --sa-surface-tint: 166 93 73;
+    color: #f7edda !important;
+    border: 3px double #7a4436 !important;
+    border-radius: 50% !important;
+    box-shadow: inset 0 0 0 2px rgb(255 230 204 / 16%), 0 3px 8px rgb(78 44 34 / 30%) !important;
+}
+
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher:hover { filter: brightness(1.05); transform: translateY(-1px); }
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher:active,
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher.is-open {
+    background:
+        linear-gradient(145deg, rgb(255 255 255 / 18%), transparent 55%),
+        rgb(var(--sa-surface-tint)) !important;
+    box-shadow: inset 0 2px 3px rgb(57 49 36 / 18%), 0 2px 5px rgb(56 43 34 / 20%) !important;
+    transform: translateY(1px);
+}
+
+html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher-dot {
+    top: -3px;
+    right: -3px;
+    width: 7px;
+    height: 7px;
+    background: #a65d49;
+    border: 2px solid #e8e0c9;
+    border-radius: 50%;
+    box-shadow: 0 0 0 1px #594438;
+}
+
+/* Gamer Modern dock: a compact VRMMO hotbar with distinct channel telemetry. */
+
+html[data-sa-presentation-theme="game-ui"] .sa-surface-dock {
+    gap: 4px;
+    padding: 5px;
+    background: linear-gradient(145deg, rgb(20 34 52 / 38%), rgb(6 10 17 / 24%));
+    border: 1px solid rgb(152 222 226 / 20%);
+    border-radius: 8px 2px 8px 2px;
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 4%), 0 9px 26px rgb(0 0 0 / 24%);
+    backdrop-filter: blur(18px) saturate(122%);
+}
+
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher,
+html[data-sa-presentation-theme="game-ui"] #sa-surface-dock .sa-surface-launcher {
+    width: 35px !important;
+    min-width: 35px !important;
+    height: 35px !important;
+    min-height: 35px !important;
+    color: rgb(var(--sa-surface-tint)) !important;
+    background:
+        linear-gradient(145deg, rgb(var(--sa-surface-tint) / 16%), transparent 62%),
+        #0b1320 !important;
+    border: 1px solid rgb(var(--sa-surface-tint) / 48%) !important;
+    border-radius: 3px 9px 3px 3px !important;
+    box-shadow: inset 2px 0 rgb(var(--sa-surface-tint) / 58%), 0 3px 10px rgb(0 0 0 / 25%) !important;
+    backdrop-filter: none;
+}
+
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher--state-card { --sa-surface-tint: 87 230 223; }
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher--whispers { --sa-surface-tint: 237 117 190; }
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher--world-board { --sa-surface-tint: 155 130 255; }
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher--system-alerts { --sa-surface-tint: 240 189 99; }
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher--event-tracker { --sa-surface-tint: 112 210 164; }
+
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher:hover {
+    filter: brightness(1.18);
+    transform: translateY(-1px);
+    box-shadow: inset 2px 0 rgb(var(--sa-surface-tint) / 80%), 0 0 14px rgb(var(--sa-surface-tint) / 18%) !important;
+}
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher:active,
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher.is-open {
+    color: #071115 !important;
+    background: rgb(var(--sa-surface-tint)) !important;
+    transform: translateY(1px);
+}
+html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher-dot {
+    top: -3px;
+    right: -3px;
+    width: 7px;
+    height: 7px;
+    background: #f0bd63;
+    border: 2px solid #09111c;
+    border-radius: 2px;
+    box-shadow: 0 0 9px #f0bd63;
+}
+
+/* Xianxia dock: loose celadon keepsakes floating together like charms in mist. */
+
+html[data-sa-presentation-theme="xianxia"] .sa-surface-dock {
+    gap: 7px;
+    padding: 5px 7px;
+    background:
+        linear-gradient(110deg, rgb(247 247 239 / 41%), rgb(194 218 211 / 15%) 58%, rgb(216 185 179 / 9%)),
+        rgb(232 240 235 / 15%);
+    border: 1px solid rgb(99 129 123 / 23%);
+    border-radius: 10px;
+    box-shadow: inset 0 1px rgb(255 255 255 / 58%), 0 9px 28px rgb(44 65 62 / 18%);
+    backdrop-filter: blur(18px) saturate(108%);
+    -webkit-backdrop-filter: blur(18px) saturate(108%);
+}
+
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher,
+html[data-sa-presentation-theme="xianxia"] #sa-surface-dock .sa-surface-launcher {
+    width: 35px !important;
+    min-width: 35px !important;
+    height: 35px !important;
+    min-height: 35px !important;
+    color: #314744 !important;
+    background:
+        linear-gradient(145deg, rgb(255 255 255 / 46%), rgb(var(--sa-surface-tint) / 14%) 72%),
+        rgb(220 233 227 / 49%) !important;
+    border: 1px solid rgb(var(--sa-surface-tint) / 42%) !important;
+    border-radius: 8px !important;
+    box-shadow: inset 0 1px rgb(255 255 255 / 76%), 0 4px 11px rgb(46 72 67 / 15%) !important;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+}
+
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher--state-card { --sa-surface-tint: 111 151 143; }
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher--missives { --sa-surface-tint: 141 177 168; }
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher--tidings-board { --sa-surface-tint: 185 166 106; }
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher--tidings { --sa-surface-tint: 165 82 71; }
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher--seasonal-register { --sa-surface-tint: 95 115 116; }
+
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher:hover {
+    filter: brightness(1.02);
+    box-shadow: inset 0 1px rgb(255 255 255 / 72%), 0 5px 12px rgb(var(--sa-surface-tint) / 15%) !important;
+}
+
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher:active,
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher.is-open {
+    color: #203633 !important;
+    background:
+        linear-gradient(145deg, rgb(255 255 255 / 36%), rgb(var(--sa-surface-tint) / 24%)),
+        rgb(211 228 220 / 56%) !important;
+}
+
+html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher-dot {
+    top: -3px;
+    right: -3px;
+    width: 8px;
+    height: 8px;
+    background: #a55247;
+    border: 2px solid #f1eee3;
+    border-radius: 2px 50% 50%;
+    box-shadow: 0 0 0 1px rgb(73 89 84 / 30%);
+}
+
+/* Post-Apocalyptic dock: compact salvaged controls in one smoked equipment rail. */
+
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-dock {
+    gap: 5px;
+    padding: 5px 6px;
+    background:
+        repeating-linear-gradient(135deg, rgb(255 255 255 / 1.4%) 0 1px, transparent 1px 5px),
+        linear-gradient(145deg, rgb(37 41 40 / 89%), rgb(9 11 11 / 94%));
+    border: 1px solid #454a48;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1px #090b0b, inset 0 1px rgb(255 255 255 / 7%), 0 10px 30px rgb(0 0 0 / 44%);
+    backdrop-filter: blur(16px) saturate(74%);
+    -webkit-backdrop-filter: blur(16px) saturate(74%);
+}
+
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher,
+html[data-sa-presentation-theme="post-apocalyptic"] #sa-surface-dock .sa-surface-launcher {
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    color: #cbc9c1 !important;
+    background:
+        linear-gradient(145deg, rgb(var(--sa-surface-tint) / 12%), transparent 48%),
+        linear-gradient(145deg, #454a47, #202423) !important;
+    border: 1px solid #5b605c !important;
+    border-radius: 3px !important;
+    box-shadow: inset 0 0 0 1px #111414, inset 0 1px rgb(255 255 255 / 8%), 0 3px 8px rgb(0 0 0 / 38%) !important;
+    transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher--state-card { --sa-surface-tint: 144 148 143; }
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher--comms { --sa-surface-tint: 120 151 101; }
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher--signal-board { --sa-surface-tint: 174 146 90; }
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher--incoming { --sa-surface-tint: 164 81 56; }
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher--field-log { --sa-surface-tint: 117 106 134; }
+
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher:hover {
+    color: #f0ece2 !important;
+    border-color: rgb(var(--sa-surface-tint) / 72%) !important;
+    box-shadow: inset 0 0 0 1px #111414, inset 0 1px rgb(255 255 255 / 9%), 0 4px 11px rgb(var(--sa-surface-tint) / 18%) !important;
+}
+
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher:active,
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher.is-open {
+    color: #fffaf0 !important;
+    background:
+        linear-gradient(145deg, rgb(var(--sa-surface-tint) / 20%), transparent 54%),
+        linear-gradient(145deg, #383d3a, #181b1a) !important;
+    border-color: rgb(var(--sa-surface-tint) / 82%) !important;
+}
+
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher-dot {
+    top: -3px;
+    right: -3px;
+    width: 7px;
+    height: 7px;
+    background: #a45138;
+    border: 1px solid #d28a6d;
+    border-radius: 1px;
+    box-shadow: 0 0 7px rgb(164 81 56 / 48%);
+}
+
+/* Near Future dock: independent glass controls without a containing tray. */
+
+html[data-sa-presentation-theme="near-future"] .sa-surface-dock {
+    gap: 7px;
+    padding: 0;
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher,
+html[data-sa-presentation-theme="near-future"] #sa-surface-dock .sa-surface-launcher {
+    width: 35px !important;
+    min-width: 35px !important;
+    height: 35px !important;
+    min-height: 35px !important;
+    color: #b9cbd7 !important;
+    background: linear-gradient(155deg, rgb(34 47 72 / 54%), rgb(8 13 25 / 66%)) !important;
+    border: 1px solid rgb(var(--sa-surface-tint) / 38%) !important;
+    border-radius: 7px !important;
+    box-shadow: inset 0 1px rgb(255 255 255 / 7%), 0 5px 15px rgb(0 4 14 / 28%) !important;
+    backdrop-filter: blur(14px) saturate(120%);
+    -webkit-backdrop-filter: blur(14px) saturate(120%);
+    transition: border-color 140ms ease, background 140ms ease, box-shadow 140ms ease, color 140ms ease;
+}
+
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher--state-card { --sa-surface-tint: 138 126 231; }
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher--link { --sa-surface-tint: 104 214 229; }
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher--stream { --sa-surface-tint: 138 126 231; }
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher--signals { --sa-surface-tint: 255 107 95; }
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher--timeline { --sa-surface-tint: 104 214 229; }
+
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher:hover {
+    color: #f4fbff !important;
+    border-color: rgb(var(--sa-surface-tint) / 78%) !important;
+    box-shadow: inset 0 1px rgb(255 255 255 / 8%), 0 5px 14px rgb(0 4 14 / 38%), 0 0 16px rgb(var(--sa-surface-tint) / 17%) !important;
+}
+
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher:active,
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher.is-open {
+    color: #07131c !important;
+    background:
+        linear-gradient(145deg, rgb(var(--sa-surface-tint) / 88%), rgb(var(--sa-surface-tint) / 58%)) !important;
+    border-color: rgb(var(--sa-surface-tint) / 90%) !important;
+    box-shadow: inset 0 1px rgb(255 255 255 / 25%), 0 0 18px rgb(var(--sa-surface-tint) / 22%) !important;
+}
+
+html[data-sa-presentation-theme="near-future"] .sa-surface-launcher-dot {
+    top: -3px;
+    right: -3px;
+    width: 8px;
+    height: 8px;
+    background: #ff6b5f;
+    border: 1px solid #ffb1a8;
+    border-radius: 50%;
+    box-shadow: 0 0 11px rgb(255 107 95 / 72%);
+}
+
+/* Historical Fantasy dock: a compact obsidian guild rail with crimson seals. */
+
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-dock {
+    gap: 6px;
+    padding: 6px;
+    background:
+        linear-gradient(135deg, rgb(255 255 255 / 3%), transparent 42%),
+        linear-gradient(180deg, rgb(31 31 34 / 94%), rgb(10 10 12 / 96%));
+    border: 1px solid #47464a;
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px #070708, inset 0 1px rgb(255 255 255 / 6%), 0 10px 28px rgb(0 0 0 / 45%);
+    backdrop-filter: blur(16px) saturate(78%);
+    -webkit-backdrop-filter: blur(16px) saturate(78%);
+}
+
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher,
+html[data-sa-presentation-theme="mythic-fantasy"] #sa-surface-dock .sa-surface-launcher {
+    width: 34px;
+    height: 34px;
+    color: #e7d9c0 !important;
+    background: linear-gradient(145deg, rgb(var(--sa-surface-tint) / 70%), rgb(17 13 17 / 96%)) !important;
+    border: 1px solid rgb(179 151 94 / 42%) !important;
+    border-radius: 2px !important;
+    box-shadow: inset 0 1px rgb(255 255 255 / 9%), inset 0 0 0 1px rgb(0 0 0 / 35%), 0 4px 10px rgb(0 0 0 / 36%) !important;
+    text-shadow: 0 1px #000;
+}
+
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher--state-card { --sa-surface-tint: 76 57 69; }
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher--missives { --sa-surface-tint: 108 50 57; }
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher--rumor-board { --sa-surface-tint: 95 83 52; }
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher--dispatches { --sa-surface-tint: 104 34 45; }
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher--almanac { --sa-surface-tint: 72 76 54; }
+
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher:hover {
+    color: #fff1d2 !important;
+    border-color: #b3975e !important;
+    filter: brightness(1.12);
+}
+
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher:active,
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher.is-open {
+    color: #fff4df !important;
+    background: linear-gradient(145deg, #9d2a36, #4e131c) !important;
+    border-color: #c5aa70 !important;
+    box-shadow: inset 0 2px 5px rgb(0 0 0 / 48%), 0 0 11px rgb(143 31 44 / 28%) !important;
+}
+
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-launcher-dot {
+    top: -3px;
+    right: -3px;
+    width: 8px;
+    height: 8px;
+    background: #c13a45;
+    border: 1px solid #e49a8c;
+    border-radius: 2px;
+    box-shadow: 0 0 8px rgb(193 58 69 / 58%);
+}

@@ -1,0 +1,75 @@
+{
+    "id": "tpl-prompt-nsfw",
+    "name": "Prompt NSFW",
+    "description": "The conditional second stage of the Adaptive Prompt Kit. It runs only after Prompt Base freshly classifies nsfw=true, then records the focused character's sex, pairing configuration, virginity, first-time status, and relevant relationship dynamics.",
+    "icon": "fa-solid fa-fire-flame-curved",
+    "category": "tracker",
+    "tags": ["prompt routing", "classifier", "pre-gen", "validated", "conditional", "nsfw"],
+    "version": 3,
+    "author": "",
+    "prompt": "### Prompt NSFW — Conditional Silent Classifier\n\nPrompt Base has freshly classified this turn as NSFW:\n{{sa_prompt_base}}\n\nClassify only the requested NSFW details for the focus character and {{user}}. Do not write fiction or instructions. Output only the required block.\n\n[PROMPT_NSFW]\n{\"characterSex\":\"male\",\"pairingType\":\"m/f\",\"virginity\":\"neither\",\"firstTimeTogether\":false,\"closeFriends\":false,\"family\":false}\n[/PROMPT_NSFW]\n\nRULES:\n- characterSex: Choose exactly one: male, female, genderless, nonbinary, intersex, unknown. Genderless is for beings with no sense of gender. Intersex is for established complicated or mixed sex anatomy. Nonbinary is an established gender identity and does not imply anatomy. Use unknown rather than inventing identity or anatomy.\n- pairingType: Choose exactly one: m/f, m/m, f/f, other_or_unclear. This is a compact prompt-configuration label for the focus character and {{user}}, not a claim about identity. Use other_or_unclear whenever the three binary configurations do not accurately fit or the required information is not established.\n- virginity: Choose exactly one: virgin_character, virgin_user, both, neither. Unless {{user}}'s profile or canon mentions past partners or sexual experience, treat {{user}} as probably virgin. Do not invent experience for either participant.\n- firstTimeTogether: true only if the focus character and {{user}} have never had sex together.\n- closeFriends: true only when they are established close friends.\n- family: true only when they are established family. This is independent of firstTimeTogether.\n- Classify the currently relevant focus character only. Use established canon and necessary logical inference; never decide consent, intent, acts, or outcomes for {{user}}.\n- Output valid compact JSON and only the [PROMPT_NSFW] block.",
+    "phase": "pre",
+    "injection": { "position": 1, "depth": 0, "role": 0, "order": 50, "scan": false, "template": "", "injectResult": false },
+    "postProcess": { "enabled": false, "type": "regex", "regexFind": "", "regexReplace": "", "regexFlags": "g", "appendText": "", "extractPattern": "", "extractVariable": "", "rewriteEnabled": false, "rewriteMode": "rewrite", "rewriteMaxTokens": 500 },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 1000,
+        "responseKey": "prompt_nsfw",
+        "includeHistory": false,
+        "historyMessageCount": 12,
+        "genesisHistoryCount": 20,
+        "richContext": { "enabled": true, "character": true, "persona": true, "worldInfo": true, "summary": true, "authorsNote": true, "pendingUser": true, "historyCount": 10, "selfMemory": false, "selfMemoryCount": 0 },
+        "display": { "enabled": false, "position": "top", "hookClass": "", "dataMap": {}, "contentField": "" }
+    },
+    "mergeVariable": {
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 1,
+            "invariants": [],
+            "schema": {
+                "type": "object",
+                "required": ["characterSex", "pairingType", "virginity", "firstTimeTogether", "closeFriends", "family"],
+                "properties": {
+                    "characterSex": { "type": "string", "enum": ["male", "female", "genderless", "nonbinary", "intersex", "unknown"] },
+                    "pairingType": { "type": "string", "enum": ["m/f", "m/m", "f/f", "other_or_unclear"] },
+                    "virginity": { "type": "string", "enum": ["virgin_character", "virgin_user", "both", "neither"] },
+                    "firstTimeTogether": { "type": "boolean" },
+                    "closeFriends": { "type": "boolean" },
+                    "family": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }
+        },
+        "enabled": true,
+        "variableName": "sa_prompt_nsfw",
+        "extractPattern": "\\[PROMPT_NSFW\\]\\s*([\\s\\S]*?)\\s*\\[\\/PROMPT_NSFW\\]",
+        "fieldNames": ["json"],
+        "keyFields": [],
+        "mode": "snapshot",
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "autoInject": false,
+        "macroName": "",
+        "formatHeader": "CURRENT NSFW PROMPT CLASSIFICATION:",
+        "formatItem": "{{json}}",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 1000,
+    "everyN": 1,
+    "everyNCadence": "new-replies",
+    "activationPolicy": { "mode": "always" },
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerPatterns": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue", "impersonate", "swipe"],
+        "generationTypesVersion": 2,
+        "stateGate": { "enabled": true, "variableName": "sa_prompt_base", "jsonField": "json", "path": "nsfw", "operator": "eq", "value": "true", "requireFresh": true }
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-prompt-nsfw"
+}

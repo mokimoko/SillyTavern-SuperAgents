@@ -1,0 +1,176 @@
+{
+    "id": "tpl-knowledge-ledger",
+    "name": "Knowledge Ledger",
+    "description": "Maintains a token-budgeted, validated ledger of facts, claims, rumors, lies, cover stories, and each relevant character's actual information position. Truth, belief, access, and disclosure gates remain separate; safe lifecycle retirement and compact main-context projection prevent accidental omniscience without turning the ledger into a lorebook.",
+    "icon": "fa-solid fa-user-shield",
+    "category": "tracker",
+    "tags": ["tracker", "knowledge", "secrets", "beliefs", "lies", "privacy", "persistent", "state"],
+    "version": 6,
+    "author": "mokimoko",
+    "prompt": "### Knowledge Ledger — Post-Generation Information-State Tracker\n\nROLE: Maintain a bounded ledger of narratively important propositions and the information position of each relevant character. Separate ground truth from belief, suspicion, ignorance, and deception. Output ONLY the ledger block. No prose, commentary, or explanation.\n\nOWNERSHIP BOUNDARY:\n- This ledger owns facts, claims, rumors, lies, cover stories, information access, and disclosure constraints.\n- Relationship feelings and social topology belong in the Relationship Ledger and Social Web Ledger. Record only the information consequence here.\n- Current goals, locations, and off-screen action plans belong in Active Roster.\n- This is authorial state, not automatic viewpoint knowledge. A fact may affect a character's thoughts, choices, dialogue, Phone messages, Feed posts, or narration only when that character's perspective record supports access. If no perspective exists, never infer access.\n\nSTABLE RECORDS:\n- Key facts with short stable kebab-case IDs such as fenris-council-oath. Preserve every existing ID exactly. Never rename an ID merely to improve wording.\n- One record represents one proposition. A false cover story or deliberate lie gets its own record and links to the protected record through coverFor/coverStories; do not overwrite truth with the lie.\n- Keep at most 24 records and at most 16 relevant perspectives per record. Fewer is better. Track information only when access, misunderstanding, concealment, or disclosure could matter to continuity.\n\nOUTPUT FORMAT (compact JSON):\n[KNOWLEDGE_LEDGER]\n{\"facts\":{\"fenris-council-oath\":{\"summary\":\"Fenris secretly swore to deliver Mina to the council\",\"recordType\":\"fact\",\"truthStatus\":\"confirmed\",\"canonBasis\":\"Fenris made the oath in the chapter-three council scene\",\"visibility\":\"secret\",\"sensitivity\":\"critical\",\"pressure\":65,\"disclosureRisk\":30,\"originators\":[],\"controllers\":[\"Fenris\"],\"disclosurePolicy\":\"Do not reveal through omniscient narration; disclosure requires a witnessed confession, discovered evidence, or a canon-backed voluntary admission\",\"revealPrerequisites\":[\"Mina obtains the sealed council order or Fenris chooses to confess\"],\"consequences\":[\"Could fracture Mina's trust in Fenris\"],\"coverFor\":[],\"coverStories\":[\"fenris-routine-council-business\"],\"perspectives\":[{\"character\":\"Fenris\",\"position\":\"knows-true\",\"confidence\":100,\"access\":\"direct\",\"basis\":\"He made the oath\",\"disclosureIntent\":\"conceal\",\"lastShift\":\"He nearly admitted it after Mina defended him\"},{\"character\":\"Mina\",\"position\":\"suspects-true\",\"confidence\":35,\"access\":\"inferred\",\"basis\":\"His explanation conflicts with the council schedule\",\"disclosureIntent\":\"investigate\",\"lastShift\":\"She noticed the contradiction\"}],\"lastShift\":\"Mina noticed Fenris's explanation did not fit the council schedule\",\"durability\":\"structural\",\"attention\":\"active\",\"milestones\":[\"Fenris made the oath\"],\"significantEvents\":[]}}}\n[/KNOWLEDGE_LEDGER]\n\nRECORD FIELDS:\n- summary: the proposition in one precise sentence. Do not use euphemism that obscures what the record means.\n- recordType: fact, claim, rumor, lie, or cover-story. A fact must have confirmed truthStatus. A lie is knowingly created; a merely mistaken belief is not a lie.\n- truthStatus: confirmed, false, or unresolved. Use unresolved when canon deliberately leaves the truth open. Never solve a mystery or validate a claim by guesswork.\n- canonBasis: concise source in card, scenario, lore, or visible story that justifies the current truthStatus. Do not invent off-screen evidence.\n- visibility: public, limited, private, or secret. This describes current distribution, not narrative importance.\n- sensitivity: low, moderate, high, or critical.\n- pressure: how strongly this information is currently pushing decisions or relationships.\n- disclosureRisk: current likelihood of accidental discovery or voluntary/involuntary exposure. Neither score authorizes revelation.\n- originators: creators of a claim, rumor, lie, or cover story. Empty for ordinary facts when no originator matters.\n- controllers: characters or institutions actively controlling access or disclosure.\n- disclosurePolicy: one concise authorial rule describing what must not leak and what kind of disclosure is allowed.\n- revealPrerequisites: canon-backed gates required before a protected truth may be disclosed. Empty only when no gate exists.\n- consequences: plausible established stakes, not guaranteed outcomes.\n- coverFor: stable IDs of protected records this lie or cover story conceals.\n- coverStories: stable IDs of lie/cover-story records currently shielding this record.\n- lastShift: the latest meaningful information-state change. Preserve until a later change replaces it.\n- durability: structural, durable, or contextual.\n- attention: active when access, concealment, investigation, or disclosure could influence the near-term story; otherwise dormant. Dormant records remain remembered but are excluded from normal Dynamic Events subject selection.\n- milestones: append-only canonical information events such as learned, disproved, confessed, exposed, or deliberately erased.\n- significantEvents: up to 8 concise information-defining events; retain the most consequential.\n\nPERSPECTIVES:\n- Include only established characters or institutions whose information position matters. Do not create entries for the entire cast and do not assume anyone shares another character's knowledge.\n- character: exact established name. {{user}} may appear only for information the active persona canonically learned; human reader awareness is not persona knowledge.\n- position: knows-true, knows-false, believes-true, believes-false, suspects-true, suspects-false, uncertain, or unaware. Knowing requires direct canonical access; hearsay normally supports belief or suspicion, not knowledge.\n- confidence: 0–100 confidence in that position, not probability that the proposition is objectively true.\n- access: direct, told, inferred, rumor, fabricated, or unknown.\n- basis: concise canonical reason for the position.\n- disclosureIntent: conceal, protect, share-selectively, reveal, investigate, exploit, ignore, or unknown. This is present intent, not a forced future action.\n- lastShift: latest change to this perspective.\n\nCONTINUITY AND SAFETY:\n1. Copy existing records and perspectives forward unless the latest scene provides explicit evidence of change. Absence from a scene is not forgetting.\n2. Never move unresolved truthStatus to confirmed/false, or belief/suspicion to knowledge, without canonical evidence.\n3. Normal pressure and disclosureRisk changes are 0–15 points.\n4. Do not remove a perspective merely because a character is off-screen. Memory loss, coercive alteration, or mistaken identity must occur explicitly and be preserved as a milestone.\n5. Scores create pressure, not permission. Never invent discovery, confession, exposure, betrayal, forgiveness, consent, reciprocation, or the persona's thoughts from a threshold.\n6. Never leak protected truth through omniscient narration, convenient intuition, Phone, Feed, or Dynamic Events. A disclosure must satisfy the viewpoint's access and the record's prerequisites/policy.\n7. Output valid compact JSON and only the required block.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 90,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 4096,
+        "responseKey": "knowledge_ledger",
+        "includeHistory": true,
+        "historyMessageCount": 10,
+        "genesisHistoryCount": 24
+    },
+    "mergeVariable": {
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 2,
+            "invariants": [
+                { "type": "maxDelta", "path": "facts.*.pressure", "maximum": 15 },
+                { "type": "maxDelta", "path": "facts.*.disclosureRisk", "maximum": 15 },
+                { "type": "appendOnlySet", "path": "facts.*.milestones" }
+            ],
+            "schema": {
+                "type": "object",
+                "required": ["facts"],
+                "properties": {
+                    "facts": {
+                        "type": "object",
+                        "maxProperties": 24,
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["summary", "recordType", "truthStatus", "canonBasis", "visibility", "sensitivity", "pressure", "disclosureRisk", "originators", "controllers", "disclosurePolicy", "revealPrerequisites", "consequences", "coverFor", "coverStories", "perspectives", "lastShift", "durability", "lifecycle", "changed", "attention", "milestones", "significantEvents"],
+                            "properties": {
+                                "summary": { "type": "string", "minLength": 1, "maxLength": 240 },
+                                "recordType": { "type": "string", "enum": ["fact", "claim", "rumor", "lie", "cover-story"] },
+                                "truthStatus": { "type": "string", "enum": ["confirmed", "false", "unresolved"] },
+                                "canonBasis": { "type": "string", "minLength": 1, "maxLength": 280 },
+                                "visibility": { "type": "string", "enum": ["public", "limited", "private", "secret"] },
+                                "sensitivity": { "type": "string", "enum": ["low", "moderate", "high", "critical"] },
+                                "pressure": { "type": "number", "minimum": 0, "maximum": 100 },
+                                "disclosureRisk": { "type": "number", "minimum": 0, "maximum": 100 },
+                                "originators": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 120 } },
+                                "controllers": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 120 } },
+                                "disclosurePolicy": { "type": "string", "minLength": 1, "maxLength": 320 },
+                                "revealPrerequisites": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 220 } },
+                                "consequences": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 220 } },
+                                "coverFor": { "type": "array", "maxItems": 6, "items": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" } },
+                                "coverStories": { "type": "array", "maxItems": 6, "items": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" } },
+                                "perspectives": {
+                                    "type": "array",
+                                    "maxItems": 16,
+                                    "items": {
+                                        "type": "object",
+                                        "required": ["character", "position", "confidence", "access", "basis", "disclosureIntent", "lastShift"],
+                                        "properties": {
+                                            "character": { "type": "string", "minLength": 1, "maxLength": 120 },
+                                            "position": { "type": "string", "enum": ["knows-true", "knows-false", "believes-true", "believes-false", "suspects-true", "suspects-false", "uncertain", "unaware"] },
+                                            "confidence": { "type": "number", "minimum": 0, "maximum": 100 },
+                                            "access": { "type": "string", "enum": ["direct", "told", "inferred", "rumor", "fabricated", "unknown"] },
+                                            "basis": { "type": "string", "minLength": 1, "maxLength": 240 },
+                                            "disclosureIntent": { "type": "string", "enum": ["conceal", "protect", "share-selectively", "reveal", "investigate", "exploit", "ignore", "unknown"] },
+                                            "lastShift": { "type": "string", "minLength": 1, "maxLength": 240 }
+                                        },
+                                        "additionalProperties": false
+                                    }
+                                },
+                                "lastShift": { "type": "string", "minLength": 1, "maxLength": 280 },
+                                "durability": { "type": "string", "enum": ["structural", "durable", "contextual"] },
+                                "lifecycle": { "type": "string", "enum": ["open", "resolved"] },
+                                "changed": { "type": "boolean" },
+                                "attention": { "type": "string", "enum": ["active", "dormant"] },
+                                "milestones": { "type": "array", "maxItems": 24, "items": { "type": "string", "minLength": 1, "maxLength": 180 } },
+                                "significantEvents": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 240 } }
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_knowledge",
+        "extractPattern": "\\[KNOWLEDGE_LEDGER\\]\\s*([\\s\\S]*?)\\s*\\[\\/KNOWLEDGE_LEDGER\\]",
+        "fieldNames": ["json"],
+        "keyFields": [],
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "formatHeader": "CURRENT KNOWLEDGE LEDGER — preserve stable records and character perspectives; update only from canonical evidence. This is authorial state, not shared viewpoint knowledge. In compact main-context form, omittedFactStubs are continuity warnings only and never permission to disclose:",
+        "formatItem": "{{json}}",
+        "formatEmpty": "FIRST RUN — create only information records whose access, misunderstanding, concealment, or disclosure matters to continuity. An empty facts object is valid. Never turn ambiguity into truth or give a character knowledge they did not canonically acquire.",
+        "retention": {
+            "enabled": true,
+            "strategy": "knowledge",
+            "collectionPath": "facts",
+            "maxEntries": 16,
+            "dormantAfter": 4,
+            "pruneAfter": 8,
+            "changeField": "changed",
+            "attentionField": "attention",
+            "excludeParticipants": false,
+            "protectedWhen": []
+        },
+        "mainContext": {
+            "enabled": true,
+            "mode": "knowledge",
+            "maxDetailedEntries": 12,
+            "presencePath": "facts",
+            "formatHeader": "CURRENT KNOWLEDGE STATE:",
+            "formatItem": "<knowledge_state>\nRead-only authorial reference. Truth, belief, suspicion, and access are separate. A record may influence a character only when that character's perspective supports access. Never disclose protected information merely because it appears here.\n\n{{#each json.facts}}Fact {{@key}} — {{summary}}\n  Type: {{recordType}} | Truth: {{truthStatus}} | Visibility: {{visibility}} | Sensitivity: {{sensitivity}}\n  Canon basis: {{canonBasis}}\n  Pressure {{pressure}}/100 | Disclosure risk {{disclosureRisk}}/100 | Lifecycle: {{lifecycle}} | Attention: {{attention}}\n  Disclosure policy: {{disclosurePolicy}}\n{{#if controllers}}  Controllers: {{controllers}}\n{{/if}}{{#if revealPrerequisites}}  Reveal prerequisites: {{revealPrerequisites}}\n{{/if}}{{#if perspectives}}  Character perspectives\n{{#each perspectives}}  - {{character}}: {{position}}; access {{access}}; intent {{disclosureIntent}}{{#if confidence}}; confidence {{confidence}}/100{{/if}}{{#if basis}}; basis: {{basis}}{{/if}}\n{{/each}}{{/if}}{{/each}}{{#if json.omittedFactStubs}}\nOther continuity records — summaries only; not permission to disclose\n{{#each json.omittedFactStubs}}- {{id}}: {{summary}} [{{truthStatus}}; {{visibility}}; {{lifecycle}}]\n{{/each}}{{/if}}</knowledge_state>",
+            "formatEmpty": ""
+        }
+    },
+    "regexScripts": [],
+    "stateCard": {
+        "enabled": true,
+        "order": 50,
+        "schema": {
+            "factTextFields": [
+                { "key": "recordId", "label": "Record ID" },
+                { "key": "recordType", "label": "Type", "type": "badge", "badgeColor": "#6A9DC0" },
+                { "key": "truthStatus", "label": "Truth", "type": "badge", "badgeColor": "#AFA9EC" },
+                { "key": "canonBasis", "label": "Canon basis" },
+                { "key": "visibility", "label": "Visibility", "type": "badge", "badgeColor": "#8890A0" },
+                { "key": "sensitivity", "label": "Sensitivity", "type": "badge", "badgeColor": "#C0554D" },
+                { "key": "disclosurePolicy", "label": "Disclosure policy" },
+                { "key": "lastShift", "label": "Last shift" },
+                { "key": "durability", "label": "Durability", "type": "badge", "badgeColor": "#D19A52" },
+                { "key": "lifecycle", "label": "Lifecycle", "type": "badge", "badgeColor": "#6A9DC0" },
+                { "key": "attention", "label": "Attention", "type": "badge", "badgeColor": "#5DCAA5" }
+            ],
+            "factMeters": [
+                { "key": "pressure", "label": "Pressure", "color": "#D19A52", "max": 100 },
+                { "key": "disclosureRisk", "label": "Disclosure risk", "color": "#C0554D", "max": 100 }
+            ]
+        }
+    },
+    "connectionProfile": "",
+    "maxTokens": 4096,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-knowledge-ledger"
+}

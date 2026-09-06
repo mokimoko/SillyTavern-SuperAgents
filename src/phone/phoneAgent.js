@@ -40,8 +40,25 @@ import {
 import { getContext } from '../../../../../extensions.js';
 import { eventSource, event_types } from '../../../../../events.js';
 import { debug } from '../../index.js';
-import { getEnabledAgents } from '../data/store.js';
+import {
+    getEnabledAgents,
+    isAgentsPaused,
+    onAgentsPauseChange,
+    onAgentPauseChange,
+} from '../data/store.js';
 import { callAgentLLM } from '../core/llm.js';
+import { getActiveSurfacePresentation } from '../presentation/presentationState.js';
+import { buildModelBehaviorContract, fillPresentationTemplate } from '../presentation/promptSemantics.js';
+import { buildPhoneStateContext } from './phoneContext.js';
+import { createPhoneQueue } from './phoneQueue.js';
+import {
+    clearVisiblePhoneMessages,
+    markVisiblePhoneMessagesRead,
+    normalizePhoneThread,
+    projectPhoneThread,
+    resolvePhoneBranch,
+    stampPhoneMessage,
+} from './phoneThreads.js';
 
 // ============================================================================
 // CONSTANTS
@@ -66,9 +83,16 @@ const EVAL_COOLDOWN_MS = 5000;
 
 /** Reply generation in flight? (evaluation is serialized by the lifecycle.) */
 let isReplyBusy = false;
+let phoneQueue = null;
+// Incremented on every chat switch. Queue.clear() only removes work that has
+// not started yet; this epoch also prevents an already-running request from
+// committing its result into the newly opened chat.
+let phoneChatEpoch = 0;
 
 /** Listeners notified when new text(s) land (panel UI subscribes). */
 const textListeners = [];
+/** Optional artifact consumers subscribe without becoming a Phone dependency. */
+const activityListeners = [];
 
 // ============================================================================
 // PHONE AGENT DETECTION
@@ -133,7 +157,11 @@ function readThreads() {
         const raw = chat_metadata?.variables?.[THREAD_VAR];
         if (!raw) return {};
         const parsed = JSON.parse(raw);
-        return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+        return Object.fromEntries(Object.entries(parsed).map(([key, thread]) => [
+            key,
+            normalizePhoneThread(thread),
+        ]));
     } catch {
         return {};
     }
@@ -150,13 +178,21 @@ function writeThreads(threads) {
  * @param {string} charKey
  * @returns {object|null}
  */
-export function getThread(charKey) {
-    return readThreads()[charKey] ?? null;
+export function getThread(charKey, options = {}) {
+    const thread = readThreads()[charKey];
+    return thread ? projectPhoneThread(thread, chat, options) : null;
 }
 
 /** @returns {Object<string, object>} all threads (for the conversation list). */
-export function getAllThreads() {
-    return readThreads();
+export function getAllThreads(options = {}) {
+    const entries = [];
+    for (const [key, thread] of Object.entries(readThreads())) {
+        const projected = projectPhoneThread(thread, chat, options);
+        if (projected.messages.length > 0 || thread.messages.length === 0) {
+            entries.push([key, projected]);
+        }
+    }
+    return Object.fromEntries(entries);
 }
 
 /**
@@ -177,16 +213,19 @@ function addTextsToThread(charKey, texts, messageIndex = null, swipeId = null) {
     const thread = threads[charKey];
     const maxStored = getPhoneConfig()?.maxStoredTexts ?? 50;
 
+    const branch = resolvePhoneBranch(chat, { messageIndex, swipeId });
+    const added = [];
     for (const text of texts) {
-        thread.messages.push({
+        const stored = stampPhoneMessage({
             id: `txt_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
             from: text.from,
             name: text.name,
             content: text.content,
             timestamp: Date.now(),
-            messageIndex,
-            swipeId,
-        });
+            unread: text.from === 'char',
+        }, branch);
+        thread.messages.push(stored);
+        added.push(stored);
     }
 
     // Unread counts character-initiated texts only.
@@ -198,7 +237,7 @@ function addTextsToThread(charKey, texts, messageIndex = null, swipeId = null) {
     }
 
     writeThreads(threads);
-    return thread;
+    return { thread, added };
 }
 
 /**
@@ -208,10 +247,10 @@ function addTextsToThread(charKey, texts, messageIndex = null, swipeId = null) {
 export function clearThread(charKey) {
     const threads = readThreads();
     if (threads[charKey]) {
-        threads[charKey].messages = [];
-        threads[charKey].unread = 0;
-        threads[charKey].lastActivity = Date.now();
+        const sourceIds = projectPhoneThread(threads[charKey], chat).messages.map(message => message.id);
+        threads[charKey] = clearVisiblePhoneMessages(threads[charKey], chat);
         writeThreads(threads);
+        notifyPhoneActivity({ kind: 'clear', character: charKey, sourceIds });
     }
     saveChatDebounced();
     clearInjection();
@@ -225,14 +264,16 @@ export function clearThread(charKey) {
 export function markThreadRead(charKey) {
     const threads = readThreads();
     if (threads[charKey]) {
-        threads[charKey].unread = 0;
+        const sourceIds = projectPhoneThread(threads[charKey], chat).messages.map(message => message.id);
+        threads[charKey] = markVisiblePhoneMessagesRead(threads[charKey], chat);
         writeThreads(threads);
+        notifyPhoneActivity({ kind: 'read', character: charKey, sourceIds });
     }
 }
 
 /** @returns {number} total unread across all threads. */
 export function getTotalUnread() {
-    const threads = readThreads();
+    const threads = getAllThreads();
     return Object.values(threads).reduce((sum, t) => sum + (t.unread ?? 0), 0);
 }
 
@@ -275,6 +316,13 @@ function getCharacterTalkativeness(charName) {
  * @returns {string}
  */
 function getTalkativenessDescription(value, config) {
+    const presentationTiers = getActiveSurfacePresentation('phone')?.modelBehavior?.talkativeness;
+    if (Array.isArray(presentationTiers) && presentationTiers.length >= 4) {
+        if (value <= 0.2) return presentationTiers[0];
+        if (value <= 0.5) return presentationTiers[1];
+        if (value <= 0.8) return presentationTiers[2];
+        return presentationTiers[3];
+    }
     const thresholds = config?.talkativenessThresholds;
     if (!thresholds) {
         if (value <= 0.2) return 'Only texts when something critical happens';
@@ -383,10 +431,26 @@ function parseTextTags(response) {
  * @param {object} agent
  * @param {object} message chat[messageIndex]
  * @param {number} messageIndex
- * @param {boolean} [forceEvaluate=false] skip gating (manual run)
+ * @param {boolean} [forceEvaluate=false] skip gating (manual run/integration request)
+ * @param {boolean} [showFeedback=forceEvaluate] show manual-run toasts
+ * @param {boolean} [requireText=false] retry once instead of accepting [NO_TEXT]
+ * @param {string} [externalCue=''] integration-supplied reason kept outside scene canon
  * @returns {Promise<{textsGenerated:number, charName?:string}>}
  */
-export async function executePhoneEvaluation(agent, message, messageIndex, forceEvaluate = false) {
+export async function executePhoneEvaluation(
+    agent,
+    message,
+    messageIndex,
+    forceEvaluate = false,
+    showFeedback = forceEvaluate,
+    requireText = false,
+    externalCue = '',
+) {
+    if (isAgentsPaused() || agent?.paused) {
+        if (showFeedback) toastr.info('SuperAgents are paused. Phone state is frozen.');
+        return { textsGenerated: 0, error: 'agents paused' };
+    }
+    const startedInChatEpoch = phoneChatEpoch;
     const charName = message.name || 'Character';
     const config = agent.phoneConfig;
 
@@ -417,6 +481,9 @@ export async function executePhoneEvaluation(agent, message, messageIndex, force
 
     // ── Build evaluation prompt ──
     const talkativeness = getCharacterTalkativeness(charName);
+    const surface = getActiveSurfacePresentation('phone') || {};
+    const presentationPrompt = surface.prompt || {};
+    const behaviorContract = buildModelBehaviorContract(surface);
     let systemPrompt = substituteParams(agent.prompt)
         .replace('{{talkativeness_description}}', getTalkativenessDescription(talkativeness, config));
 
@@ -424,62 +491,182 @@ export async function executePhoneEvaluation(agent, message, messageIndex, force
     const thread = getThread(charName);
     if (thread?.messages?.length > 0) {
         const recent = thread.messages.slice(-6).map(t => `${t.name}: ${t.content}`).join('\n');
-        systemPrompt += `\n\nRecent text history with {{user}}:\n${recent}`;
+        systemPrompt += `\n\n${presentationPrompt.historyLabel || 'Recent text history with {{user}}'}:\n${recent}`;
+    }
+
+    const stateContext = buildPhoneStateContext(charName, {
+        messageIndex,
+        swipeId: message.swipe_id ?? 0,
+        config: config?.stateContext,
+    });
+    if (stateContext) systemPrompt += `\n\n${stateContext}`;
+    if (externalCue) {
+        systemPrompt += `\n\n${presentationPrompt.externalCueLabel || 'External Phone cue'} (guidance, not quoted scene canon):\n${substituteParams(externalCue)}`;
+    }
+    if (requireText) {
+        systemPrompt += `\n\n${presentationPrompt.required || 'This development is canonically delivered through a text message. You MUST send 1–3 brief in-character texts. [NO_TEXT] is not allowed.'}`;
+    }
+    if (behaviorContract) {
+        systemPrompt += `\n\n${behaviorContract}\nThe active presentation contract takes precedence over modern wording in the base template or external cue.`;
     }
 
     const userContent = [
-        `Character name: ${charName}`,
+        fillPresentationTemplate(
+            presentationPrompt.evaluate || 'Evaluate whether {name} would use this communication surface now.',
+            { name: charName },
+        ),
         `The following is the latest scene to analyze:`,
         `<scene>\n${message.mes}\n</scene>`,
     ].join('\n');
 
     const maxTokens = config?.replyMaxTokens ?? 256;
 
-    if (forceEvaluate) toastr.info('Evaluating...', agent.name, { timeOut: 0, extendedTimeOut: 0 });
+    if (showFeedback) toastr.info('Evaluating...', agent.name, { timeOut: 0, extendedTimeOut: 0 });
 
     try {
-        let response = await callAgentLLM({
-            systemPrompt,
-            userContent,
+        const runCall = (prompt, content, callerName) => callAgentLLM({
+            systemPrompt: prompt,
+            userContent: content,
             profileRef: agent.connectionProfile,
             maxTokens,
-            callerName: `Phone: ${charName}`,
+            callerName,
         });
-        response = String(response ?? '').trim();
-
-        if (forceEvaluate) toastr.clear();
-
-        if (!response || NO_TEXT_REGEX.test(response)) {
-            debug(`${LOG_PREFIX} ${charName}: no text this turn`);
-            if (forceEvaluate) toastr.info('No text this turn.', agent.name, { timeOut: 3000 });
+        let response = await runCall(
+            systemPrompt,
+            userContent,
+            `${surface.title || 'Phone'}: ${charName}`,
+        );
+        if (startedInChatEpoch !== phoneChatEpoch) {
+            if (showFeedback) toastr.clear();
+            debug(`${LOG_PREFIX} discarded ${charName} evaluation after chat changed`);
             return { textsGenerated: 0, charName };
         }
+        response = String(response ?? '').trim();
 
-        const texts = parseTextTags(response);
+        if (showFeedback) toastr.clear();
+
+        let texts = (!response || NO_TEXT_REGEX.test(response)) ? [] : parseTextTags(response);
+        if (requireText && texts.length === 0) {
+            const repairPrompt = `${systemPrompt}\n\nYour previous answer did not contain a deliverable message. Return only [TEXT|${charName}|content] tags now; interpret them according to the behavior contract.`;
+            response = String(await runCall(
+                repairPrompt,
+                fillPresentationTemplate(presentationPrompt.required || `Send the required message to {{user}} now as ${charName}.`, { name: charName }),
+                `${surface.title || 'Phone'} Required Message: ${charName}`,
+            ) ?? '').trim();
+            if (startedInChatEpoch !== phoneChatEpoch) {
+                if (showFeedback) toastr.clear();
+                debug(`${LOG_PREFIX} discarded ${charName} repair result after chat changed`);
+                return { textsGenerated: 0, charName };
+            }
+            texts = (!response || NO_TEXT_REGEX.test(response)) ? [] : parseTextTags(response);
+            if (texts.length === 0 && response && !NO_TEXT_REGEX.test(response)) {
+                const cleaned = response
+                    .replace(/^```[^\n]*\n?/, '')
+                    .replace(/\n?```$/, '')
+                    .trim();
+                if (cleaned) texts = [{ from: 'char', name: charName, content: cleaned }];
+            }
+        }
+
         if (texts.length === 0) {
-            debug(`${LOG_PREFIX} ${charName}: response had no [TEXT|...] tags`);
-            if (forceEvaluate) toastr.info('No text this turn.', agent.name, { timeOut: 3000 });
+            debug(`${LOG_PREFIX} ${charName}: no text this turn`);
+            if (showFeedback) toastr.info(surface.copy?.noDelivery || 'No text this turn.', agent.name, { timeOut: 3000 });
             return { textsGenerated: 0, charName };
         }
 
         const swipeId = message.swipe_id ?? 0;
-        addTextsToThread(charName, texts, messageIndex, swipeId);
+        if (startedInChatEpoch !== phoneChatEpoch) return { textsGenerated: 0, charName };
+        const stored = addTextsToThread(charName, texts, messageIndex, swipeId);
         saveChatDebounced();
         syncInjection();
 
         debug(`${LOG_PREFIX} ${charName} sent ${texts.length} text(s)`);
-        if (forceEvaluate) toastr.success(`${texts.length} text(s) generated`, agent.name, { timeOut: 3000 });
+        if (showFeedback) {
+            toastr.success(
+                fillPresentationTemplate(surface.copy?.deliveryGenerated || '{count} text(s) generated', { count: texts.length }),
+                agent.name,
+                { timeOut: 3000 },
+            );
+        }
 
-        notifyTextListeners(charName, texts);
+        notifyPhoneActivity({ kind: 'message', character: charName, messages: stored.added });
+        notifyTextListeners(charName, texts, stored.added);
         return { textsGenerated: texts.length, charName };
     } catch (err) {
-        if (forceEvaluate) {
+        if (showFeedback) {
             toastr.clear();
             toastr.error(`Failed: ${err.message}`, agent.name, { timeOut: 8000 });
         }
         console.error(`${LOG_PREFIX} evaluation failed for ${charName}:`, err);
         return { textsGenerated: 0 };
     }
+}
+
+function getPhoneQueue() {
+    phoneQueue ||= createPhoneQueue({ execute: executeQueuedPhoneRequest });
+    return phoneQueue;
+}
+
+function phoneQueueKey(character, branch) {
+    const path = Array.isArray(branch.branchPath)
+        ? branch.branchPath.join('.')
+        : `${branch.messageIndex ?? 'none'}:${branch.swipeId ?? 0}`;
+    return `${String(character || '').trim().toLowerCase()}|${path}`;
+}
+
+async function executeQueuedPhoneRequest(request) {
+    const agent = request.agent || getPhoneAgent();
+    if (!agent) return { accepted: false, textsGenerated: 0, error: 'phone is not enabled' };
+    const reason = String(request.reason || '').trim();
+    const message = { ...(request.message || {}) };
+    const behavior = ['consider', 'send'].includes(request.behavior) ? request.behavior : 'ambient';
+    const result = await executePhoneEvaluation(
+        agent,
+        message,
+        request.messageIndex,
+        behavior !== 'ambient',
+        false,
+        behavior === 'send',
+        reason,
+    );
+    const accepted = behavior !== 'send' || result.textsGenerated > 0;
+    const surface = getActiveSurfacePresentation('phone') || {};
+    return {
+        accepted,
+        behavior,
+        sources: request.sources || [],
+        ...result,
+        ...(!accepted ? { error: surface.copy?.requiredFailure || 'required Phone text was not produced after retry' } : {}),
+    };
+}
+
+/** Queue one automatic or integration-driven evaluation for same-turn merging. */
+export function queuePhoneEvaluation({
+    agent = null,
+    message = null,
+    messageIndex = null,
+    behavior = 'ambient',
+    reason = '',
+    source = 'ambient',
+} = {}) {
+    if (isAgentsPaused() || agent?.paused) {
+        return Promise.resolve({ accepted: false, textsGenerated: 0, error: 'agents paused' });
+    }
+    const character = String(message?.name || '').trim();
+    if (!character) return Promise.resolve({ accepted: false, textsGenerated: 0, error: 'character is required' });
+    const branch = resolvePhoneBranch(chat, {
+        messageIndex,
+        swipeId: message?.swipe_id,
+    });
+    return getPhoneQueue().enqueue({
+        key: phoneQueueKey(character, branch),
+        agent,
+        message: { ...(message || {}), name: character, swipe_id: branch.swipeId ?? 0 },
+        messageIndex: branch.messageIndex ?? Math.max(0, chat.length - 1),
+        behavior,
+        reason,
+        source,
+    });
 }
 
 // ============================================================================
@@ -495,9 +682,10 @@ export async function executePhoneEvaluation(agent, message, messageIndex, force
  */
 export function addUserText(charKey, userMessage) {
     const text = { from: 'user', name: substituteParams('{{user}}'), content: userMessage.trim() };
-    addTextsToThread(charKey, [text], null, null);
+    const stored = addTextsToThread(charKey, [text], null, null);
     saveChatDebounced();
     syncInjection();
+    notifyPhoneActivity({ kind: 'message', character: charKey, messages: stored.added });
     return text;
 }
 
@@ -512,13 +700,24 @@ export function addUserText(charKey, userMessage) {
  * @returns {Promise<Array<{from:string,name:string,content:string}>>}
  */
 export async function generateAndStoreReply(charKey, userMessage) {
+    if (isAgentsPaused()) {
+        toastr.info('SuperAgents are paused. Phone state is frozen.');
+        return [];
+    }
+    const startedInChatEpoch = phoneChatEpoch;
     const agent = getPhoneAgent();
     if (!agent) {
         debug(`${LOG_PREFIX} generateAndStoreReply: no enabled phone agent found — nothing to reply with`);
         return [];
     }
+    if (agent.paused) {
+        toastr.info('This Phone agent is paused. Its state is frozen.');
+        return [];
+    }
 
     const config = agent.phoneConfig;
+    const surface = getActiveSurfacePresentation('phone') || {};
+    const presentationPrompt = surface.prompt || {};
     const replyTemplate = config?.replyPrompt ?? agent.prompt;
     const maxTokens = config?.replyMaxTokens ?? 256;
 
@@ -537,15 +736,27 @@ export async function generateAndStoreReply(charKey, userMessage) {
     const thread = getThread(charKey);
     const threadText = (thread?.messages?.slice(-12) ?? [])
         .map(t => `${t.name}: ${t.content}`).join('\n');
+    const branch = resolvePhoneBranch(chat);
+    const stateContext = buildPhoneStateContext(charKey, {
+        messageIndex: branch.messageIndex,
+        swipeId: branch.swipeId,
+        config: config?.stateContext,
+    });
 
     // Function replacements (not string) so any '$' in the user's message or
     // chat context isn't interpreted as a replace-pattern token ($&, $1, ...).
+    const behaviorContract = buildModelBehaviorContract(surface);
     const systemPrompt = substituteParams(replyTemplate)
         .replace('{{recent_chat_context}}', () => recentChatContext)
         .replace('{{text_thread}}', () => threadText || '(no previous texts)')
-        .replace('{{user_message}}', () => userMessage);
+        .replace('{{user_message}}', () => userMessage)
+        + (stateContext ? `\n\n${stateContext}` : '')
+        + (behaviorContract ? `\n\n${behaviorContract}` : '');
 
-    const userContent = `Reply to this text message in character as ${charKey}. You MUST use the format [TEXT|${charKey}|your message here] for each message.`;
+    const userContent = fillPresentationTemplate(
+        presentationPrompt.reply || 'Reply to this message in character as {name}. You MUST use [TEXT|{name}|content] for storage.',
+        { name: charKey },
+    );
 
     isReplyBusy = true;
     try {
@@ -554,8 +765,12 @@ export async function generateAndStoreReply(charKey, userMessage) {
             userContent,
             profileRef: agent.connectionProfile,
             maxTokens,
-            callerName: `Phone Reply: ${charKey}`,
+            callerName: `${surface.title || 'Phone'} Reply: ${charKey}`,
         });
+        if (startedInChatEpoch !== phoneChatEpoch) {
+            debug(`${LOG_PREFIX} discarded ${charKey} reply after chat changed`);
+            return [];
+        }
         response = String(response ?? '').trim();
         debug(`${LOG_PREFIX} reply raw for ${charKey}: "${response.slice(0, 200)}"`);
 
@@ -579,12 +794,14 @@ export async function generateAndStoreReply(charKey, userMessage) {
         }
         if (texts.length === 0) return [];
 
-        addTextsToThread(charKey, texts, null, null);
+        if (startedInChatEpoch !== phoneChatEpoch) return [];
+        const stored = addTextsToThread(charKey, texts, null, null);
         saveChatDebounced();
         syncInjection();
 
         debug(`${LOG_PREFIX} ${charKey} replied with ${texts.length} text(s)`);
-        notifyTextListeners(charKey, texts);
+        notifyPhoneActivity({ kind: 'message', character: charKey, messages: stored.added });
+        notifyTextListeners(charKey, texts, stored.added);
         return texts;
     } catch (err) {
         console.error(`${LOG_PREFIX} reply generation failed for ${charKey}:`, err);
@@ -592,6 +809,41 @@ export async function generateAndStoreReply(charKey, userMessage) {
     } finally {
         isReplyBusy = false;
     }
+}
+
+/**
+ * Stable integration command: ask the configured Phone agent to evaluate a
+ * phone-worthy development for one character without showing manual-run UI.
+ */
+export async function requestCharacterText(options = {}) {
+    if (isAgentsPaused()) {
+        return { accepted: false, textsGenerated: 0, error: 'agents paused' };
+    }
+    const character = String(options.character || '').trim();
+    if (!character) return { accepted: false, textsGenerated: 0, error: 'character is required' };
+
+    const agent = getPhoneAgent();
+    if (!agent) return { accepted: false, textsGenerated: 0, error: 'phone is not enabled' };
+    if (agent.paused) return { accepted: false, textsGenerated: 0, error: 'agent paused' };
+
+    const branch = resolvePhoneBranch(chat, options);
+    const sourceMessage = branch.messageIndex == null ? null : chat[branch.messageIndex];
+    const scene = String(options.scene || sourceMessage?.mes || '').trim();
+    const message = {
+        ...(sourceMessage || {}),
+        name: character,
+        swipe_id: branch.swipeId ?? 0,
+        mes: scene,
+    };
+
+    return queuePhoneEvaluation({
+        agent,
+        message,
+        messageIndex: branch.messageIndex ?? Math.max(0, chat.length - 1),
+        behavior: options.behavior === 'send' ? 'send' : 'consider',
+        reason: String(options.reason || '').trim(),
+        source: String(options.source || 'integration'),
+    });
 }
 
 // ============================================================================
@@ -610,7 +862,16 @@ function buildContextInjection(charKey, maxTexts = 8) {
 
     const limit = getPhoneConfig()?.maxInjectedTexts ?? maxTexts;
     const lines = thread.messages.slice(-limit).map(t => `${t.name}: ${t.content}`);
-    return `[Recent text messages between {{user}} and ${charKey}:]\n${lines.join('\n')}`;
+    const presentationPrompt = getActiveSurfacePresentation('phone')?.prompt || {};
+    const header = fillPresentationTemplate(
+        presentationPrompt.injectionHeader || 'Recent text messages between {{user}} and {name}',
+        { name: charKey },
+    );
+    return [
+        `[${header}]`,
+        'These communications are private to their participants unless canon establishes that they were shared, intercepted, or observed.',
+        ...lines,
+    ].join('\n');
 }
 
 /**
@@ -682,15 +943,30 @@ export function onNewText(fn) {
     textListeners.push(fn);
 }
 
-function notifyTextListeners(charKey, texts) {
+function notifyTextListeners(charKey, texts, storedMessages = []) {
     for (const fn of textListeners) {
-        try { fn(charKey, texts); } catch { /* non-fatal */ }
+        try { fn(charKey, texts, storedMessages); } catch { /* non-fatal */ }
+    }
+}
+
+export function onPhoneActivity(fn) {
+    if (typeof fn !== 'function') return () => {};
+    activityListeners.push(fn);
+    return () => {
+        const index = activityListeners.indexOf(fn);
+        if (index >= 0) activityListeners.splice(index, 1);
+    };
+}
+
+function notifyPhoneActivity(event) {
+    for (const listener of activityListeners) {
+        try { listener(event); } catch { /* optional consumers are non-fatal */ }
     }
 }
 
 /** @returns {boolean} reply generation currently in flight. */
 export function isPhoneBusy() {
-    return isReplyBusy;
+    return isReplyBusy || getPhoneQueue().isBusy();
 }
 
 // ============================================================================
@@ -711,9 +987,24 @@ export function initPhoneAgent() {
     initialized = true;
 
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, () => syncInjection());
+    onAgentsPauseChange((paused) => {
+        if (!paused) return;
+        phoneChatEpoch += 1;
+        getPhoneQueue().clear('agents paused');
+    });
+    onAgentPauseChange((agent, paused) => {
+        if (!paused || !agent?.phoneConfig) return;
+        phoneChatEpoch += 1;
+        getPhoneQueue().clear('phone agent paused');
+    });
+    if (event_types.MESSAGE_SWIPED) {
+        eventSource.on(event_types.MESSAGE_SWIPED, () => syncInjection());
+    }
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        phoneChatEpoch += 1;
         lastDraftedCharName = null;
         lastEvalTime.clear();
+        getPhoneQueue().clear('chat changed');
         clearInjection();
     });
 

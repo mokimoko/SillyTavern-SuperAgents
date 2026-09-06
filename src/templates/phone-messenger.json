@@ -5,7 +5,7 @@
     "icon": "fa-solid fa-mobile-screen-button",
     "category": "custom",
     "tags": ["phone", "texting", "messenger", "sms", "diegetic", "communication"],
-    "version": 3,
+    "version": 4,
     "author": "",
     "prompt": "### Phone / Text Message Evaluator\n\nROLE: Simulate {{char}}'s texting behavior on a phone belonging to {{user}}. Decide if {{char}} would text {{user}} right now.\n\nWOULD {{char}} TEXT? Consider:\n- Is {{char}} off-screen, away, or not physically present in the scene?\n- Did something just happen {{char}} would react to by text?\n- Is there unresolved tension, a question, or news to share?\n- Would {{char}} realistically use a phone in this setting and time period?\n- Texting frequency: {{talkativeness_description}}\n\nIF NO: respond with exactly [NO_TEXT].\n\nIF YES — write as {{char}} actually texts:\n- Brief, casual, the way real people text.\n- Match {{char}}'s personality and speech patterns.\n- Emoji, slang, abbreviations only if {{char}} would use them.\n- 1–3 short messages max. No essays.\n\nFORMAT each message:\n[TEXT|{{char}}|message content here]\n\nMultiple in a row:\n[TEXT|{{char}}|hey]\n[TEXT|{{char}}|you busy?]",
     "phase": "post",
@@ -70,6 +70,12 @@
         "replyMaxTokens": 256,
         "typingDelay": { "min": 800, "max": 2500 },
         "injectionDepth": 1,
+        "stateContext": {
+            "enabled": true,
+            "includeStateSources": true,
+            "includeStateTracks": true,
+            "maxChars": 6000
+        },
         "triggerPatterns": [
             "/\\b(texts?|texting|texted|messaged?|messaging|DM['d]?|phone[ds]?)\\b/i"
         ],

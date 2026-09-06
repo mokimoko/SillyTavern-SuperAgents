@@ -14,12 +14,21 @@
  */
 
 import {
+    chat,
     chat_metadata,
     substituteParams,
     saveChatDebounced,
 } from '../../../../../../script.js';
 import { debug } from '../../index.js';
 import { recordAgentRun } from '../core/idempotency.js';
+import { validateMergeItems } from '../data/stateValidation.js';
+import { applyStateRetention } from '../data/stateRetention.js';
+import { projectItemsForMainContext } from '../data/mainContextProjection.js';
+import { renderMainContextTemplate } from '../data/mainContextTemplate.js';
+import { extractJsonObjectCandidates } from '../data/structuredOutput.js';
+import { getConfiguredParticipantExclusion, projectActivePersona } from '../core/participants.js';
+import { emitStateTransaction } from '../integration/events.js';
+import { clearActivationPolicyState, markActivationPolicyComplete } from '../core/activationPolicy.js';
 
 const LOG_PREFIX = '[SuperAgents/mergeVar]';
 
@@ -51,6 +60,156 @@ export function readMergeArray(varName) {
 export function writeMergeArray(varName, arr) {
     if (!chat_metadata.variables) chat_metadata.variables = {};
     chat_metadata.variables[varName] = JSON.stringify(arr);
+}
+
+/**
+ * Wipe ALL chat-local state for one agent from the CURRENT chat: the live merge
+ * variable, its turn baseline, every per-swipe snapshot on every message, and
+ * the agent's per-message transaction log. Used by /sa-clear — e.g. when a
+ * schema change leaves stale fields behind (relationship meters lingering in a
+ * repurposed tracker) or to reset a tracker mid-chat. The agent stays enabled;
+ * the next generation repopulates fresh state. Persists via saveChatDebounced.
+ * @param {object} agent
+ * @returns {{variableName:string, messagesTouched:number, hadLiveValue:boolean}}
+ */
+export function clearAgentChatState(agent) {
+    const varName = agent?.mergeVariable?.variableName || '';
+    const agentId = agent?.id || '';
+    let hadLiveValue = false;
+    let messagesTouched = 0;
+    const policyCleared = clearActivationPolicyState(agent);
+
+    if (varName && chat_metadata?.variables && varName in chat_metadata.variables) {
+        delete chat_metadata.variables[varName];
+        hadLiveValue = true;
+    }
+    if (varName && chat_metadata?.saAgentBaseline && varName in chat_metadata.saAgentBaseline) {
+        delete chat_metadata.saAgentBaseline[varName];
+    }
+
+    for (const message of (chat || [])) {
+        if (!message || typeof message !== 'object') continue;
+        let touched = false;
+        if (varName && message.saAgentSwipes && varName in message.saAgentSwipes) {
+            delete message.saAgentSwipes[varName];
+            if (Object.keys(message.saAgentSwipes).length === 0) delete message.saAgentSwipes;
+            touched = true;
+        }
+        if (agentId && message.saAgentStateTransactions && agentId in message.saAgentStateTransactions) {
+            delete message.saAgentStateTransactions[agentId];
+            if (Object.keys(message.saAgentStateTransactions).length === 0) delete message.saAgentStateTransactions;
+            touched = true;
+        }
+        if (touched) messagesTouched++;
+    }
+
+    saveChatDebounced();
+    debug(`${LOG_PREFIX} cleared chat state for "${agent?.name}" (${varName}): live=${hadLiveValue}, messages=${messagesTouched}`);
+    return { variableName: varName, messagesTouched, hadLiveValue, policyCleared };
+}
+
+function removeCollectionRecordFromItems(items, jsonField, collectionPath, recordId) {
+    if (!Array.isArray(items) || !jsonField || !collectionPath || !recordId) {
+        return { items, removed: false };
+    }
+    let removed = false;
+    const path = collectionPath.split('.').filter(Boolean);
+    const nextItems = items.map(item => {
+        if (!item || typeof item !== 'object' || typeof item[jsonField] !== 'string') return item;
+        try {
+            const logical = JSON.parse(item[jsonField]);
+            let collection = logical;
+            for (const part of path) collection = collection?.[part];
+            if (!collection || typeof collection !== 'object'
+                || !Object.prototype.hasOwnProperty.call(collection, recordId)) return item;
+            delete collection[recordId];
+            const nextItem = { ...item, [jsonField]: JSON.stringify(logical) };
+            const retention = item?._retention?.[collectionPath];
+            if (retention && typeof retention === 'object') {
+                const nextRetention = { ...retention };
+                delete nextRetention[recordId];
+                nextItem._retention = {
+                    ...(item._retention || {}),
+                    [collectionPath]: nextRetention,
+                };
+            }
+            removed = true;
+            return nextItem;
+        } catch {
+            return item;
+        }
+    });
+    return { items: nextItems, removed };
+}
+
+/** Remove one keyed record from an agent's live value, baseline, and all branch snapshots. */
+export function removeCollectionRecordFromAgentChatState(agent, collectionPath, recordId) {
+    const varName = agent?.mergeVariable?.variableName || '';
+    const jsonField = agent?.mergeVariable?.validation?.jsonField
+        || agent?.mergeVariable?.fieldNames?.[0]
+        || '';
+    const cleanPath = String(collectionPath || '').trim();
+    const cleanId = String(recordId || '').trim();
+    if (!varName || !jsonField || !cleanPath || !cleanId) {
+        return { variableName: varName, recordId: cleanId, removed: false, messagesTouched: 0 };
+    }
+
+    let removed = false;
+    let messagesTouched = 0;
+
+    const liveResult = removeCollectionRecordFromItems(
+        readMergeArray(varName), jsonField, cleanPath, cleanId,
+    );
+    if (liveResult.removed) {
+        writeMergeArray(varName, liveResult.items);
+        removed = true;
+    }
+
+    const baseline = chat_metadata?.saAgentBaseline?.[varName];
+    if (typeof baseline === 'string') {
+        try {
+            const baselineItems = JSON.parse(baseline);
+            const baselineResult = removeCollectionRecordFromItems(
+                baselineItems, jsonField, cleanPath, cleanId,
+            );
+            if (baselineResult.removed) {
+                chat_metadata.saAgentBaseline[varName] = JSON.stringify(baselineResult.items);
+                removed = true;
+            }
+        } catch { /* A malformed baseline remains untouched. */ }
+    }
+
+    for (const message of (chat || [])) {
+        const snapshots = message?.saAgentSwipes?.[varName];
+        if (!snapshots || typeof snapshots !== 'object') continue;
+        let messageTouched = false;
+        for (const [swipeId, items] of Object.entries(snapshots)) {
+            const result = removeCollectionRecordFromItems(items, jsonField, cleanPath, cleanId);
+            if (!result.removed) continue;
+            snapshots[swipeId] = result.items;
+            messageTouched = true;
+            removed = true;
+        }
+        if (messageTouched) messagesTouched++;
+    }
+
+    if (removed) {
+        saveChatDebounced();
+        emitStateTransaction(true, {
+            agentId: agent?.id || '',
+            agentName: agent?.name || '',
+            variableName: varName,
+            messageIndex: -1,
+            swipeId: -1,
+            source: 'manual_record_delete',
+            collectionPath: cleanPath,
+            recordId: cleanId,
+            errors: [],
+        });
+        debug(`${LOG_PREFIX} removed ${cleanPath}.${cleanId} from "${agent?.name}" across ${messagesTouched} message(s)`);
+    }
+
+    return { variableName: varName, recordId: cleanId, removed, messagesTouched };
 }
 
 // ============================================================================
@@ -99,22 +258,78 @@ export function restoreTurnBaseline(varName) {
 // ============================================================================
 
 /**
+ * Project one stored item's JSON blob down to the active persona's slice.
+ * The persona-keyed blob lives (stringified) in the item's json field; parse it,
+ * project via participants.projectActivePersona, and re-stringify in place. On
+ * any parse failure or non-string field the item passes through untouched, so
+ * this is safe on legacy (non-persona) blobs and malformed data alike.
+ * @param {object} item
+ * @param {string} jsonField
+ * @returns {object}
+ */
+function projectItemToActivePersona(item, jsonField) {
+    try {
+        const raw = item?.[jsonField];
+        if (typeof raw !== 'string') return item;
+        const projected = projectActivePersona(JSON.parse(raw));
+        return { ...item, [jsonField]: JSON.stringify(projected) };
+    } catch {
+        return item;
+    }
+}
+
+/**
  * Format the current merge variable state as readable text for LLM injection.
- * Uses the template's formatHeader / formatItem / formatEmpty fields.
+ * Tracker continuity uses the top-level format fields. Main-model injection may
+ * provide read-only wording through mainContext format overrides.
+ *
+ * When the caller consumes this for the MAIN model (chat injection or a
+ * user-placed macro), pass `{ projectPersona: true }`. For a persona-scoped
+ * variable (e.g. the Relationship Ledger) that projects each stored blob down to
+ * the ACTIVE persona's slice before formatting, so the main model only ever sees
+ * the current persona's relationships — mirroring what DE and the State Card get.
+ * The tracker's OWN self-continuity feed leaves this false so it still sees every
+ * persona and never drops the inactive ones when it writes back.
+ *
  * @param {object} config - agent.mergeVariable
+ * @param {{ projectPersona?: boolean }} [options]
  * @returns {string}
  */
-export function formatMergeVariableData(config) {
-    const arr = readMergeArray(config.variableName);
+export function formatMergeVariableData(config, { projectPersona = false } = {}) {
+    let arr = readMergeArray(config.variableName);
+    const mainFormat = projectPersona ? config.mainContext : null;
+    const formatHeader = typeof mainFormat?.formatHeader === 'string'
+        ? mainFormat.formatHeader
+        : config.formatHeader;
+    const formatItem = typeof mainFormat?.formatItem === 'string'
+        ? mainFormat.formatItem
+        : config.formatItem;
+    const formatEmpty = typeof mainFormat?.formatEmpty === 'string'
+        ? mainFormat.formatEmpty
+        : config.formatEmpty;
+
+    if (projectPersona && config.personaScoped) {
+        const jsonField = config.validation?.jsonField || config.fieldNames?.[0] || 'json';
+        arr = arr.map(item => projectItemToActivePersona(item, jsonField));
+    }
+
+    if (projectPersona) {
+        const jsonField = config.validation?.jsonField || config.fieldNames?.[0] || 'json';
+        arr = projectItemsForMainContext(arr, config.mainContext, jsonField);
+    }
 
     if (arr.length === 0) {
-        return config.formatHeader
-            ? `${config.formatHeader}\n${config.formatEmpty}`
-            : config.formatEmpty;
+        if (!formatEmpty) return '';
+        return formatHeader
+            ? `${formatHeader}\n${formatEmpty}`
+            : formatEmpty;
     }
 
     const lines = arr.map(item => {
-        let line = config.formatItem;
+        if (projectPersona && typeof mainFormat?.formatItem === 'string') {
+            return renderMainContextTemplate(formatItem, item);
+        }
+        let line = formatItem;
         for (const field of config.fieldNames) {
             const val = item[field] ?? '';
             // Handle arrays (like knownBy) gracefully
@@ -124,8 +339,8 @@ export function formatMergeVariableData(config) {
         return line;
     });
 
-    return config.formatHeader
-        ? `${config.formatHeader}\n${lines.join('\n')}`
+    return formatHeader
+        ? `${formatHeader}\n${lines.join('\n')}`
         : lines.join('\n');
 }
 
@@ -151,6 +366,86 @@ function storePerSwipe(message, varName, items) {
     if (!message.saAgentSwipes) message.saAgentSwipes = {};
     if (!message.saAgentSwipes[varName]) message.saAgentSwipes[varName] = {};
     message.saAgentSwipes[varName][swipeId] = items;
+}
+
+function storeStateTransaction(agent, message, messageIndex, source, result, proposedItems) {
+    if (!message || !agent?.id) return;
+    const swipeId = message.swipe_id ?? 0;
+    if (!message.saAgentStateTransactions) message.saAgentStateTransactions = {};
+    if (!message.saAgentStateTransactions[agent.id]) {
+        message.saAgentStateTransactions[agent.id] = {};
+    }
+    message.saAgentStateTransactions[agent.id][swipeId] = {
+        status: result.valid ? 'committed' : 'rejected',
+        timestamp: Date.now(),
+        messageIndex,
+        swipeId,
+        source,
+        variableName: agent.mergeVariable?.variableName || '',
+        agentVersion: agent.version ?? 1,
+        schemaVersion: agent.mergeVariable?.validation?.schemaVersion ?? null,
+        validationEnabled: Boolean(agent.mergeVariable?.validation?.enabled),
+        errors: result.errors ?? [],
+        previousValuePreserved: !result.valid,
+        committedItemCount: result.valid ? result.items?.length ?? 0 : 0,
+        // Keep rejected proposals for diagnostics. Successful state already
+        // lives in saAgentSwipes, so duplicating it here would only bloat chat.
+        proposedItems: result.valid ? undefined : proposedItems,
+    };
+}
+
+export function getStateTransaction(message, agentId, swipeId = message?.swipe_id ?? 0) {
+    return message?.saAgentStateTransactions?.[agentId]?.[swipeId] ?? null;
+}
+
+/** Validate and atomically commit a complete merge-variable state. */
+function commitMergeItems(agent, message, messageIndex, proposedItems, source) {
+    const mv = agent.mergeVariable;
+    const previousItems = readMergeArray(mv.variableName);
+    const result = validateMergeItems(proposedItems, mv.validation, { previousItems });
+    storeStateTransaction(agent, message, messageIndex, source, result, proposedItems);
+
+    const eventDetail = {
+        agentId: agent.id,
+        agentName: agent.name,
+        variableName: mv.variableName,
+        messageIndex,
+        swipeId: message?.swipe_id ?? 0,
+        source,
+        agentVersion: agent.version ?? 1,
+        schemaVersion: mv.validation?.schemaVersion ?? null,
+        errors: result.errors ?? [],
+    };
+
+    if (!result.valid) {
+        emitStateTransaction(false, eventDetail);
+        console.warn(
+            `${LOG_PREFIX} Rejected invalid state for "${agent.name}"; previous value preserved:`,
+            result.errors,
+        );
+        // Rejected transactions are still useful branch history. Sidecar
+        // callers return null and therefore do not necessarily trigger the
+        // lifecycle's normal save path, so persist the audit record here.
+        if (message) saveChatDebounced();
+        return { committed: false, items: null, errors: result.errors };
+    }
+
+    const retentionOptions = {
+        previousItems,
+        jsonField: mv.validation?.jsonField,
+    };
+    // Opt-in participant exclusion (e.g. Active Roster): never persist a player
+    // persona or explicitly excluded name as a tracked entry. Requires retention
+    // (the exclusion runs inside applyStateRetention, alongside the collection it
+    // filters); the flag lives on retention config for exactly that reason.
+    const participantExclusion = getConfiguredParticipantExclusion(mv.retention);
+    if (participantExclusion.normSet.size) retentionOptions.excludeNames = participantExclusion.normSet;
+    const committedItems = applyStateRetention(result.items, mv.retention, retentionOptions);
+    writeMergeArray(mv.variableName, committedItems);
+    if (message) storePerSwipe(message, mv.variableName, committedItems);
+    markActivationPolicyComplete(agent);
+    emitStateTransaction(true, eventDetail);
+    return { committed: true, items: committedItems, errors: [] };
 }
 
 /**
@@ -366,7 +661,10 @@ function buildExtractRegex(pattern) {
             const flags = slashMatch[2].includes('g') ? slashMatch[2] : slashMatch[2] + 'g';
             return new RegExp(slashMatch[1], flags);
         }
-        return new RegExp(pattern, 'gs');
+        // Built-in tag names are protocol markers, not case-sensitive story
+        // data. Accept harmless casing drift such as [World|...] while leaving
+        // explicitly-authored /pattern/flags expressions under user control.
+        return new RegExp(pattern, 'gis');
     } catch (err) {
         console.error(`${LOG_PREFIX} Invalid extractPattern:`, err);
         return null;
@@ -404,6 +702,7 @@ export function executeMergeVariable(agent, message, messageIndex) {
 
     // ── Snapshot mode: replace entire array with this turn's extractions ──
     if (mv.mode === 'snapshot') {
+        const messageBeforeStrip = message.mes;
         const items = [];
         for (const match of matches) {
             const item = {};
@@ -415,25 +714,37 @@ export function executeMergeVariable(agent, message, messageIndex) {
             items.push(item);
         }
 
-        writeMergeArray(mv.variableName, items);
-        storePerSwipe(message, mv.variableName, items);
+        const commit = commitMergeItems(agent, message, messageIndex, items, 'inline_snapshot');
 
         if (mv.stripFromResponse) {
             message.mes = message.mes.replace(regex, '').trim();
         }
+        const stripped = message.mes !== messageBeforeStrip;
 
-        debug(`${LOG_PREFIX} Merge variable "${mv.variableName}" (snapshot): replaced with ${items.length} item(s)`);
+        if (!commit.committed) {
+            if (stripped) saveChatDebounced();
+            return {
+                changed: stripped,
+                added: 0,
+                updated: 0,
+                resolved: 0,
+                rejected: true,
+                errors: commit.errors,
+            };
+        }
+
+        debug(`${LOG_PREFIX} Merge variable "${mv.variableName}" (snapshot): replaced with ${commit.items.length} item(s)`);
 
         recordAgentRun(messageIndex, {
             agentId: agent.id,
             agentName: agent.name,
             phase: 'post',
             originalText: null,
-            result: `Snapshot: ${items.length} item(s)`,
+            result: `Snapshot: ${commit.items.length} item(s)`,
             mode: 'merge_variable',
         });
 
-        return { changed: true, added: items.length, updated: 0, resolved: 0 };
+        return { changed: true, added: commit.items.length, updated: 0, resolved: 0 };
     }
 
     // ── Accumulate mode (default): add / update / resolve logic ──
@@ -496,15 +807,27 @@ export function executeMergeVariable(agent, message, messageIndex) {
         }
     }
 
-    // Write back
-    writeMergeArray(mv.variableName, arr);
-
+    const messageBeforeStrip = message.mes;
     // Strip tags from message if configured
     if (mv.stripFromResponse) {
         message.mes = message.mes.replace(regex, '').trim();
     }
+    const stripped = message.mes !== messageBeforeStrip;
 
     const totalChanges = added + updated + resolved;
+    const commit = commitMergeItems(agent, message, messageIndex, arr, 'inline_accumulate');
+    if (!commit.committed) {
+        if (stripped) saveChatDebounced();
+        return {
+            changed: stripped,
+            added: 0,
+            updated: 0,
+            resolved: 0,
+            rejected: true,
+            errors: commit.errors,
+        };
+    }
+
     if (totalChanges > 0) {
         debug(`${LOG_PREFIX} Merge variable "${mv.variableName}": +${added} new, ~${updated} updated, -${resolved} resolved (${arr.length} total)`);
 
@@ -540,13 +863,68 @@ export function executeMergeVariable(agent, message, messageIndex) {
  */
 export function storeSidecarResult(agent, response, message, messageIndex) {
     const mv = agent.mergeVariable;
-    if (!mv?.enabled || !mv.extractPattern || !mv.variableName) return null;
+    if (!mv?.enabled || !mv.variableName) return null;
+
+    // A plain custom sidecar may want to remember its complete answer rather
+    // than forcing the user to invent a wrapper tag and regex. Batched sidecars
+    // already support this shape; keeping the solo path equivalent prevents an
+    // agent from changing behavior merely because it has no connection profile.
+    if (!mv.extractPattern) {
+        const value = String(response ?? '').trim();
+        if (!value) return null;
+        const field = mv.fieldNames?.[0] || 'text';
+        const item = {
+            [field]: value,
+            _addedAt: Date.now(),
+            _messageIndex: messageIndex,
+        };
+        const commit = commitMergeItems(agent, message, messageIndex, [item], 'sidecar');
+        if (!commit.committed) return null;
+        debug(`${LOG_PREFIX} Sidecar stored whole output to "${mv.variableName}"`);
+        return commit.items;
+    }
 
     const regex = buildExtractRegex(mv.extractPattern);
     if (!regex) return null;
 
     const matches = [...response.matchAll(regex)];
     if (matches.length === 0) {
+        // Small structured classifiers sometimes return valid bare JSON (or
+        // angle-bracket tags) despite being asked for a square-bracket wrapper.
+        // For a validated one-field snapshot only, recover JSON candidates and
+        // let the normal schema transaction be the hard acceptance boundary.
+        const jsonField = mv.validation?.jsonField;
+        const canRecoverJson = mv.mode === 'snapshot'
+            && mv.validation?.enabled
+            && mv.fieldNames?.length === 1
+            && mv.fieldNames[0] === jsonField;
+        if (canRecoverJson) {
+            const candidates = extractJsonObjectCandidates(response);
+            const previousItems = readMergeArray(mv.variableName);
+            let rejectedCandidate = null;
+            for (let index = candidates.length - 1; index >= 0; index--) {
+                const item = {
+                    [jsonField]: JSON.stringify(candidates[index]),
+                    _addedAt: Date.now(),
+                    _messageIndex: messageIndex,
+                };
+                const preview = validateMergeItems([item], mv.validation, { previousItems });
+                if (!preview.valid) {
+                    rejectedCandidate ??= item;
+                    continue;
+                }
+                const commit = commitMergeItems(agent, message, messageIndex, [item], 'sidecar_json_fallback');
+                if (commit.committed) {
+                    debug(`${LOG_PREFIX} Sidecar recovered bare JSON for "${agent.name}"`);
+                    return commit.items;
+                }
+            }
+            // Preserve the normal rejected-transaction/repair path when JSON
+            // was present but no candidate satisfied the schema.
+            if (rejectedCandidate) {
+                commitMergeItems(agent, message, messageIndex, [rejectedCandidate], 'sidecar_json_fallback');
+            }
+        }
         debug(`${LOG_PREFIX} Sidecar: no matches in LLM response for "${agent.name}"`);
         return null;
     }
@@ -563,11 +941,11 @@ export function storeSidecarResult(agent, response, message, messageIndex) {
         items.push(item);
     }
 
-    writeMergeArray(mv.variableName, items);
-    storePerSwipe(message, mv.variableName, items);
+    const commit = commitMergeItems(agent, message, messageIndex, items, 'sidecar');
+    if (!commit.committed) return null;
 
-    debug(`${LOG_PREFIX} Sidecar stored ${items.length} item(s) to "${mv.variableName}"`);
-    return items;
+    debug(`${LOG_PREFIX} Sidecar stored ${commit.items.length} item(s) to "${mv.variableName}"`);
+    return commit.items;
 }
 
 /**
@@ -581,23 +959,56 @@ export function storeSidecarResult(agent, response, message, messageIndex) {
  * @param {*} extractedValue — the value from envelope[responseKey]
  * @param {object} message — chat[n]
  * @param {number} messageIndex
+ * @param {string} [source='sidecar_batch'] — transaction source for consumers
  * @returns {object[]|null}
  */
-export function storeBatchedSidecarResult(agent, extractedValue, message, messageIndex) {
+export function storeBatchedSidecarResult(agent, extractedValue, message, messageIndex, source = 'sidecar_batch') {
     const mv = agent.mergeVariable;
     if (!mv?.enabled || !mv.variableName) return null;
 
     if (mv.mode === 'snapshot') {
-        // If the LLM returned a string (raw tag format) and the agent has
-        // multiple fields + an extractPattern, delegate to storeSidecarResult
-        // which does proper regex extraction.
-        if (typeof extractedValue === 'string' && mv.fieldNames.length > 1 && mv.extractPattern) {
-            return storeSidecarResult(agent, extractedValue, message, messageIndex);
+        // A batched model may obey the task's tagged output format instead of
+        // returning the bare envelope value. Detect an actual extraction match
+        // for both single- and multi-field trackers, then reuse the solo path.
+        if (typeof extractedValue === 'string' && mv.extractPattern) {
+            const extractionRegex = buildExtractRegex(mv.extractPattern);
+            if (extractionRegex?.test(extractedValue)) {
+                return storeSidecarResult(agent, extractedValue, message, messageIndex);
+            }
+
+            // Batch models occasionally preserve the inside of a task-local
+            // tag as a JSON string while dropping only its square brackets,
+            // e.g. "World|Parking Lot|Day 2|10:30 AM|Morning|Clear|Mild|Indoors".
+            // Re-wrap once and reuse the normal extractor; schema validation is
+            // still the final acceptance boundary.
+            const trimmedValue = extractedValue.trim();
+            const wrappedValue = trimmedValue.startsWith('[')
+                ? trimmedValue
+                : `[${trimmedValue}]`;
+            const wrappedRegex = buildExtractRegex(mv.extractPattern);
+            const wrappedCaseInsensitive = wrappedRegex
+                ? new RegExp(
+                    wrappedRegex.source,
+                    wrappedRegex.flags.includes('i') ? wrappedRegex.flags : `${wrappedRegex.flags}i`,
+                )
+                : null;
+            if (wrappedCaseInsensitive?.test(wrappedValue)) {
+                return storeSidecarResult(agent, wrappedValue, message, messageIndex);
+            }
         }
 
         const item = {};
 
-        if (typeof extractedValue === 'object' && !Array.isArray(extractedValue) && mv.fieldNames.length > 1) {
+        if (typeof extractedValue === 'object' && !Array.isArray(extractedValue) && mv.validation?.jsonField) {
+            // Validated structured trackers treat the complete envelope value as
+            // their logical JSON payload, even when extra legacy/display fields
+            // remain declared for migration compatibility.
+            for (const field of mv.fieldNames) {
+                item[field] = field === mv.validation.jsonField
+                    ? JSON.stringify(extractedValue)
+                    : '';
+            }
+        } else if (typeof extractedValue === 'object' && !Array.isArray(extractedValue) && mv.fieldNames.length > 1) {
             // Multi-field agent (e.g. World State with location/date/time/weather/temperature):
             // map object properties directly to fieldNames.
             for (const field of mv.fieldNames) {
@@ -620,11 +1031,11 @@ export function storeBatchedSidecarResult(agent, extractedValue, message, messag
         item._messageIndex = messageIndex;
 
         const items = [item];
-        writeMergeArray(mv.variableName, items);
-        storePerSwipe(message, mv.variableName, items);
+        const commit = commitMergeItems(agent, message, messageIndex, items, source);
+        if (!commit.committed) return null;
 
         debug(`${LOG_PREFIX} Batched result stored for "${agent.name}" → "${mv.variableName}"`);
-        return items;
+        return commit.items;
     }
 
     // Accumulate mode: fall back to regex extraction on the stringified value.

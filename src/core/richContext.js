@@ -246,7 +246,12 @@ export function buildHistoryLines(ctx, mesNum, count, opts = {}) {
     const bracket = opts.speakerStyle === 'bracket';
     const end = Math.min(Number(mesNum) + 1, chat.length);
     const label = (c) => {
-        const name = c.is_user ? '{{user}}' : (c.name || 'Assistant');
+        // Use the message's real author name for user turns too, not a flattened
+        // {{user}}: a chat may alternate player personas, and trackers (esp. the
+        // persona-scoped Relationship Ledger) must see WHICH persona spoke to
+        // attribute updates correctly. Single-persona chats are unaffected (the
+        // name equals {{user}}). Falls back to the {{user}} macro if unnamed.
+        const name = c.is_user ? (c.name || '{{user}}') : (c.name || 'Assistant');
         return bracket ? `[${name}]` : name;
     };
     const slice = chat

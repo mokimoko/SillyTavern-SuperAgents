@@ -28,6 +28,7 @@
 import { chat, saveChatDebounced } from '../../../../../../../script.js';
 import { getContext } from '../../../../../../extensions.js';
 import { callAgentLLM, isAbortError } from '../../core/llm.js';
+import { getAgentById, isAgentsPaused } from '../../data/store.js';
 import { recordAgentRun } from '../../core/idempotency.js';
 import { readMergeArray } from '../../modes/mergeVariable.js';
 import { refreshMessage } from '../renderer.js';
@@ -258,9 +259,14 @@ function clearFinding(message) {
  * @param {HTMLElement} flagEl — the .continuity-guard-flag element
  */
 async function onFlagClick(flagEl) {
+    const targetAgentId = flagEl.getAttribute('data-agent-id') || 'continuity-guard';
+    if (isAgentsPaused() || getAgentById(targetAgentId)?.paused) {
+        toastr.info('SuperAgents are paused. Continuity state is frozen.');
+        return;
+    }
     const mesId = parseInt(flagEl.getAttribute('data-mesid'), 10);
     if (Number.isNaN(mesId)) return;
-    const agentId = flagEl.getAttribute('data-agent-id') || 'continuity-guard';
+    const agentId = targetAgentId;
     const agentName = flagEl.getAttribute('data-agent-name') || 'Continuity Guard';
     const profileRef = flagEl.getAttribute('data-profile') || '';
 
@@ -278,6 +284,13 @@ async function onFlagClick(flagEl) {
 
     try {
         const envelope = await runRepairCall(mesId, finding, agentId, agentName, profileRef);
+
+        // A pause requested while the check was in flight freezes the message;
+        // discard the result rather than applying a late repair.
+        if (isAgentsPaused() || getAgentById(agentId)?.paused) {
+            restoreFlag(flagEl, labelEl, prevLabel);
+            return;
+        }
 
         if (!envelope) {
             flash(flagEl, 'check failed', '#C08040');
@@ -353,6 +366,8 @@ export function renderContinuityGuard(el) {
     const agentName = el.dataset.agentName ?? 'Continuity Guard';
     const profile = el.dataset.profile ?? '';
     const reason = el.dataset.reason ?? '';
+    const flagColor = 'color-mix(in srgb, rgb(200,180,150) 55%, var(--SmartThemeBodyColor, #fff) 45%)';
+    const flagHoverColor = 'color-mix(in srgb, rgb(210,190,160) 35%, var(--SmartThemeBodyColor, #fff) 65%)';
 
     const flag = document.createElement('div');
     flag.className = 'continuity-guard-flag';
@@ -371,7 +386,7 @@ export function renderContinuityGuard(el) {
         'margin:6px 2px 0 0',
         'font-size:11px',
         'font-style:italic',
-        'color:rgba(200,180,150,0.42)',
+        `color:${flagColor}`,
         'cursor:pointer',
         'user-select:none',
         'letter-spacing:0.02em',
@@ -381,13 +396,13 @@ export function renderContinuityGuard(el) {
         `<i class="fa-solid fa-triangle-exclamation" `
         + `style="font-size:12px;opacity:0.6;flex-shrink:0"></i>`
         + `<span class="continuity-guard-label" `
-        + `style="border-bottom:1px dotted rgba(200,180,150,0.4);padding-bottom:1px">`
+        + `style="border-bottom:1px dotted var(--sa-text-muted,rgba(200,180,150,0.4));padding-bottom:1px">`
         + `continuity</span>`;
 
     // Hover affordance without shouting.
-    flag.addEventListener('mouseenter', () => { flag.style.color = 'rgba(210,190,160,0.7)'; });
+    flag.addEventListener('mouseenter', () => { flag.style.color = flagHoverColor; });
     flag.addEventListener('mouseleave', () => {
-        if (flag.dataset.busy !== '1') flag.style.color = 'rgba(200,180,150,0.42)';
+        if (flag.dataset.busy !== '1') flag.style.color = flagColor;
     });
 
     el.replaceWith(flag);

@@ -23,11 +23,13 @@
 import { substituteParams, setExtensionPrompt } from '../../../../../../script.js';
 import { chat } from '../../../../../../script.js';
 import { debug } from '../../index.js';
-import { callAgentLLM, isAbortError } from '../core/llm.js';
+import { AgentCallAbortedError, callAgentLLM, isAbortError } from '../core/llm.js';
 import { recordAgentRun } from '../core/idempotency.js';
 import {
     formatMergeVariableData,
+    readMergeArray,
     storeBatchedSidecarResult,
+    getStateTransaction,
 } from './mergeVariable.js';
 import {
     executeSidecarAgent,
@@ -37,10 +39,17 @@ import {
     buildHistoryContext,
     buildPreGenContext,
     groupSidecarsByProfile,
+    repairRejectedState,
 } from './sidecar.js';
 import { readPendingUserMessage } from '../core/richContext.js';
 import { getGlobalSettings, getGroupById } from '../data/store.js';
 import { recordAgents } from '../core/callStats.js';
+import { buildRetentionPrompt } from '../data/stateRetention.js';
+import { markActivationPolicyComplete } from '../core/activationPolicy.js';
+import { evaluateStateGate, hasStateGate } from '../core/stateGate.js';
+import { recoverBatchEnvelope } from '../data/structuredOutput.js';
+import { validateMergeItems } from '../data/stateValidation.js';
+import { getConfiguredParticipantExclusion } from '../core/participants.js';
 
 const LOG_PREFIX = '[SuperAgents/batch]';
 const PROMPT_KEY_PREFIX = 'sa_agent_';
@@ -68,6 +77,14 @@ const ENVELOPE_OVERHEAD_FRACTION = 0.08;
 function timeoutOpts() {
     const t = getGlobalSettings().agentCallTimeoutMs;
     return (typeof t === 'number' && t >= 0) ? { timeoutMs: t } : {};
+}
+
+async function yieldToUi() {
+    if (typeof globalThis.scheduler?.yield === 'function') {
+        await globalThis.scheduler.yield();
+        return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
 }
 
 // ============================================================================
@@ -268,10 +285,10 @@ function salvageKey(text, key) {
  * @param {number} [messageIndex] — context point for the optional history block
  * @returns {string}
  */
-function buildBatchedPrompt(agents, sceneText, message, generationType, messageIndex = chat.length) {
+async function buildBatchedPrompt(agents, sceneText, message, generationType, messageIndex = chat.length) {
     const keys = agents.map(a => a.sidecarCall?.responseKey || a.id);
 
-    const taskBlocks = agents.map(agent => {
+    const taskBlocks = (await Promise.all(agents.map(async agent => {
         const key = agent.sidecarCall?.responseKey || agent.id;
         let prompt = substituteParams(agent.prompt).trim();
 
@@ -279,9 +296,30 @@ function buildBatchedPrompt(agents, sceneText, message, generationType, messageI
             const formatted = formatMergeVariableData(agent.mergeVariable);
             if (formatted) prompt += '\n\n' + formatted;
         }
+        const retentionPrompt = buildRetentionPrompt(agent.mergeVariable?.retention);
+        if (retentionPrompt) prompt += '\n\n' + retentionPrompt;
 
-        return `=== Task: ${key} ===\n${prompt}`;
-    }).join('\n\n');
+        const participantExclusion = getConfiguredParticipantExclusion(agent.mergeVariable?.retention);
+        if (participantExclusion.names.length) {
+            const reason = participantExclusion.playersOnly
+                ? 'current or previously used player personas; Relationship Ledger exclusively owns their relationships'
+                : 'player personas or explicitly excluded participants';
+            prompt += `\n\nDO NOT TRACK these names — they are ${reason}: ${participantExclusion.names.join(', ')}.`;
+        }
+
+        // Solo post-gen sidecars have always received rich context. A batch is
+        // an optimization, not a different execution mode, so preserve the same
+        // card/persona/WI/summary/history inputs inside each task block.
+        const maxTokens = agent.sidecarCall?.maxTokens || agent.maxTokens || 8192;
+        const richContext = await buildAgentRichContext(agent, messageIndex, '', maxTokens);
+        if (richContext) prompt += '\n\n' + richContext;
+
+        const batchContract = `BATCH OUTPUT CONTRACT (overrides any task-local wrapper/tag instruction):\n` +
+            `Return this task's payload as the bare JSON value of the top-level key "${key}". ` +
+            `Do not include task wrapper tags, markdown fences, or commentary.`;
+
+        return `=== Task: ${key} ===\n${prompt}\n\n${batchContract}`;
+    }))).join('\n\n');
 
     // Shared history block: if ANY batched agent opted into history, include one
     // <chat_history> block sized to the largest requested window. Mirrors the
@@ -290,7 +328,15 @@ function buildBatchedPrompt(agents, sceneText, message, generationType, messageI
     let historyBlock = '';
     const histCount = agents
         .filter(a => a.sidecarCall?.includeHistory)
-        .reduce((max, a) => Math.max(max, a.sidecarCall.historyMessageCount || 20), 0);
+        .reduce((max, agent) => {
+            const mvName = agent.mergeVariable?.enabled ? agent.mergeVariable.variableName : '';
+            const isGenesis = !!mvName && readMergeArray(mvName).length === 0;
+            const genesisCount = Number(agent.sidecarCall?.genesisHistoryCount) || 0;
+            const requested = isGenesis && genesisCount > 0
+                ? genesisCount
+                : (agent.sidecarCall?.historyMessageCount || 20);
+            return Math.max(max, requested);
+        }, 0);
     if (histCount > 0) {
         const historyText = buildHistoryContext(messageIndex, histCount);
         if (historyText) {
@@ -339,12 +385,17 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
     const profileId = batch[0].connectionProfile || '';
     const showNotifications = getGlobalSettings().showNotifications;
     const batchNames = batch.map(a => a.name).join(', ');
+    const ensureRunCurrent = () => {
+        if (!opts.signal?.aborted) return;
+        if (showNotifications) toastr.clear();
+        throw new AgentCallAbortedError('cancel');
+    };
 
     if (showNotifications) {
         toastr.info('Analyzing (batched)...', batchNames, { timeOut: 0, extendedTimeOut: 0 });
     }
 
-    const systemPrompt = buildBatchedPrompt(batch, sceneText, message, generationType, messageIndex);
+    const systemPrompt = await buildBatchedPrompt(batch, sceneText, message, generationType, messageIndex);
 
     let response;
     try {
@@ -373,6 +424,11 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
         response = '';
     }
 
+    // The response may settle on the same tick that a chat change aborts the
+    // run. Do not parse or commit that now-stale payload into the newly active
+    // chat's metadata.
+    ensureRunCurrent();
+
     if (!response) {
         if (showNotifications) {
             toastr.clear();
@@ -381,22 +437,58 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
         return { changed: false, dataStored: false };
     }
 
-    const { envelope } = parseEnvelope(response, keys);
+    const parsed = parseEnvelope(response, keys);
+    const envelope = recoverBatchEnvelope(response, batch, parsed.envelope, (agent, candidate) => {
+        const mv = agent.mergeVariable;
+        const jsonField = mv?.validation?.jsonField;
+        if (mv?.mode !== 'snapshot' || !mv.validation?.enabled || !jsonField) return false;
+        const previewItem = {
+            [jsonField]: JSON.stringify(candidate),
+            _addedAt: Date.now(),
+            _messageIndex: messageIndex,
+        };
+        return validateMergeItems([previewItem], mv.validation, {
+            previousItems: readMergeArray(mv.variableName),
+        }).valid;
+    });
 
     let storedCount = 0;
-    for (const agent of batch) {
+    const rejectedNames = [];
+    for (let batchIndex = 0; batchIndex < batch.length; batchIndex++) {
+        ensureRunCurrent();
+        const agent = batch[batchIndex];
         const key = agent.sidecarCall?.responseKey || agent.id;
         const value = envelope[key];
 
         if (value === undefined || value === null) {
             debug(`${LOG_PREFIX} no data for key "${key}" (${agent.name})`);
+            if (batchIndex < batch.length - 1) {
+                await yieldToUi();
+                ensureRunCurrent();
+            }
             continue;
         }
+        const hasUsableValue = typeof value === 'object' || String(value).trim().length > 0;
 
-        const storedItems = storeBatchedSidecarResult(agent, value, message, messageIndex);
+        let storedItems = storeBatchedSidecarResult(agent, value, message, messageIndex);
+        let stateRejected = getStateTransaction(message, agent.id)?.status === 'rejected';
+
+        // Bounded single repair when a validated update was rejected (opt-out via
+        // globalSettings.repairRejectedState = false). One corrective call per
+        // agent; a success commits the fixed state so it stores like any other.
+        if (!storedItems && stateRejected && getGlobalSettings().repairRejectedState !== false) {
+            const repair = await repairRejectedState(agent, message, messageIndex, opts);
+            if (repair.repaired) {
+                storedItems = repair.items;
+                stateRejected = false;
+            }
+        }
+
         if (storedItems) {
             storedCount++;
             buildSidecarDisplayData(agent, message, messageIndex, storedItems);
+        } else if (stateRejected) {
+            rejectedNames.push(agent.name);
         }
 
         recordAgentRun(messageIndex, {
@@ -404,14 +496,33 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
             agentName: agent.name,
             phase: 'post',
             originalText: null,
-            result: storedItems ? 'Batched sidecar: data stored' : 'Batched sidecar: storage failed',
+            result: storedItems
+                ? 'Batched sidecar: data stored'
+                : (stateRejected
+                    ? 'Batched sidecar: invalid state rejected'
+                    : ((!agent.mergeVariable?.enabled || !agent.mergeVariable?.variableName) && hasUsableValue
+                        ? 'Batched sidecar: response received'
+                        : 'Batched sidecar: storage failed')),
             mode: 'sidecar_batch',
         });
+        if ((!agent.mergeVariable?.enabled || !agent.mergeVariable?.variableName) && hasUsableValue) {
+            markActivationPolicyComplete(agent);
+        }
+        if (batchIndex < batch.length - 1) {
+            await yieldToUi();
+            ensureRunCurrent();
+        }
     }
 
     if (showNotifications) {
         toastr.clear();
-        if (storedCount > 0) {
+        if (rejectedNames.length > 0) {
+            toastr.warning(
+                `Invalid update rejected for ${rejectedNames.join(', ')}; previous state preserved.`,
+                'Agent Batch',
+                { timeOut: 8000 },
+            );
+        } else if (storedCount > 0) {
             toastr.success(`${storedCount}/${batch.length} agents stored`, 'Agent Batch', { timeOut: 3000 });
         } else {
             toastr.warning('No data extracted from batch', 'Agent Batch', { timeOut: 5000 });
@@ -452,6 +563,8 @@ async function buildBatchedPreGenPrompt(agents, contextText, generationType, pen
             const formatted = formatMergeVariableData(agent.mergeVariable);
             if (formatted) prompt += '\n\n' + formatted;
         }
+        const retentionPrompt = buildRetentionPrompt(agent.mergeVariable?.retention);
+        if (retentionPrompt) prompt += '\n\n' + retentionPrompt;
 
         // Per-agent rich context — only the sections this agent enabled. The
         // pending message is handled batch-wide below, so suppress it here to
@@ -612,17 +725,25 @@ function wrapInjection(agent, output) {
  */
 function persistPreGenOutput(agent, output) {
     const mv = agent.mergeVariable;
-    if (!mv?.enabled || !mv.variableName) return;
+    if (!mv?.enabled || !mv.variableName) return false;
     try {
         // Throwaway holder: storeBatchedSidecarResult also sets per-swipe data,
         // but at pre-gen there's no real message yet, so that write is discarded
         // here and redone against the rendered message later. The chat-variable
         // write (what injection + display read) is what matters now.
         const holder = { extra: {} };
-        storeBatchedSidecarResult(agent, output, holder, chat.length);
+        const items = storeBatchedSidecarResult(
+            agent,
+            output,
+            holder,
+            chat.length,
+            'pre_gen_sidecar',
+        );
         debug(`${LOG_PREFIX} persisted pre-gen output for "${agent.name}" → "${mv.variableName}"`);
+        return Boolean(items);
     } catch (err) {
         debug(`${LOG_PREFIX} persist pre-gen output failed for "${agent.name}":`, err?.message);
+        return false;
     }
 }
 
@@ -637,11 +758,21 @@ function persistPreGenOutput(agent, output) {
  */
 function injectPreGenResult(agent, response) {
     const text = String(response ?? '').trim();
-    if (!text) return;
+    if (!text) return false;
 
     // Persist for display (Director plan HUD) before stripping/wrapping —
     // the displayed plan should match the raw model output.
-    persistPreGenOutput(agent, text);
+    const stored = persistPreGenOutput(agent, text);
+    if (!agent.mergeVariable?.enabled || !agent.mergeVariable?.variableName) {
+        markActivationPolicyComplete(agent);
+    }
+
+    // A silent classifier still persists and validates its result, but leaves
+    // the authored writer prompt to deterministic consumers.
+    if (agent.injection?.injectResult === false) {
+        debug(`${LOG_PREFIX} kept pre-gen result private for "${agent.name}" (stored=${stored})`);
+        return stored;
+    }
 
     const wrapped = wrapInjection(agent, text);
     const key = PROMPT_KEY_PREFIX + agent.id;
@@ -654,6 +785,7 @@ function injectPreGenResult(agent, response) {
         agent.injection.role,
     );
     debug(`${LOG_PREFIX} injected pre-gen result for "${agent.name}" at depth ${agent.injection.depth}`);
+    return stored;
 }
 
 /**
@@ -767,6 +899,7 @@ function buildPreGenExecutionPlan(agents) {
  * @param {object} opts
  */
 async function runPreGenParallelGroup(groupAgents, generationType, contextText, pendingUserText, opts) {
+    const storedVariables = new Set();
     const batches = groupSidecarsByProfile(groupAgents);
     const batchPromises = [...batches.values()].map(batch =>
         executePreGenSidecarBatch(batch, contextText, generationType, pendingUserText, opts)
@@ -784,9 +917,12 @@ async function runPreGenParallelGroup(groupAgents, generationType, contextText, 
             continue;
         }
         for (const { agent, response } of settled.value) {
-            injectPreGenResult(agent, response);
+            if (injectPreGenResult(agent, response) && agent.mergeVariable?.variableName) {
+                storedVariables.add(agent.mergeVariable.variableName);
+            }
         }
     }
+    return storedVariables;
 }
 
 /**
@@ -813,11 +949,15 @@ async function runPreGenParallelGroup(groupAgents, generationType, contextText, 
  * @param {object} opts
  */
 async function runPreGenSequentialGroup(groupAgents, generationType, contextText, pendingUserText, opts) {
+    const storedVariables = new Set();
     const sorted = [...groupAgents].sort((a, b) => (a.injection?.order ?? 0) - (b.injection?.order ?? 0));
     for (const agent of sorted) {
         const result = await executePreGenSidecarAgent(agent, contextText, generationType, pendingUserText, opts);
-        injectPreGenResult(agent, result.response);
+        if (injectPreGenResult(agent, result.response) && agent.mergeVariable?.variableName) {
+            storedVariables.add(agent.mergeVariable.variableName);
+        }
     }
+    return storedVariables;
 }
 
 /**
@@ -844,24 +984,54 @@ export async function processPreGenAgents(activeAgents, generationType, contextT
     );
     if (preGenSidecars.length === 0) return;
 
-    recordAgents(preGenSidecars.length); // cost-hint accounting (pre-gen agents)
+    const runPlan = async agents => {
+        const storedVariables = new Set();
+        if (!agents.length) return storedVariables;
+        recordAgents(agents.length);
+        const plan = buildPreGenExecutionPlan(agents);
+        debug(`${LOG_PREFIX} running ${agents.length} pre-gen sidecar(s) across ${plan.length} group(s)`);
 
-    const plan = buildPreGenExecutionPlan(preGenSidecars);
-    debug(`${LOG_PREFIX} running ${preGenSidecars.length} pre-gen sidecar(s) across ${plan.length} group(s)`);
-
-    for (const group of plan) {
-        try {
-            if (group.executionMode === 'sequential') {
-                await runPreGenSequentialGroup(group.agents, generationType, contextText, pendingUserText, opts);
-            } else {
-                await runPreGenParallelGroup(group.agents, generationType, contextText, pendingUserText, opts);
+        for (const group of plan) {
+            try {
+                if (group.executionMode === 'sequential') {
+                    const stored = await runPreGenSequentialGroup(group.agents, generationType, contextText, pendingUserText, opts);
+                    stored.forEach(variable => storedVariables.add(variable));
+                } else {
+                    const stored = await runPreGenParallelGroup(group.agents, generationType, contextText, pendingUserText, opts);
+                    stored.forEach(variable => storedVariables.add(variable));
+                }
+            } catch (err) {
+                // A user stop / timeout aborts the whole remaining plan (the run
+                // scaffolding in the lifecycle catches it). Ordinary failures are
+                // contained per-group so one bad group can't block main generation.
+                if (isAbortError(err)) throw err;
+                console.error(`${LOG_PREFIX} pre-gen group "${group.id}" failed:`, err);
             }
-        } catch (err) {
-            // A user stop / timeout aborts the whole remaining plan (the run
-            // scaffolding in the lifecycle catches it). Ordinary failures are
-            // contained per-group so one bad group can't block main generation.
-            if (isAbortError(err)) throw err;
-            console.error(`${LOG_PREFIX} pre-gen group "${group.id}" failed:`, err);
         }
-    }
+        return storedVariables;
+    };
+
+    // Ordinary classifiers run first and commit their validated snapshots.
+    // State-gated specialists are evaluated only afterward, against that fresh
+    // same-generation state. This is intentionally a second stage: it avoids
+    // both the call and the specialized question when the gate is closed.
+    const ordinary = preGenSidecars.filter(agent => !hasStateGate(agent));
+    const deferred = preGenSidecars.filter(hasStateGate);
+    const freshlyStored = await runPlan(ordinary);
+
+    const allowed = deferred.filter(agent => {
+        const gate = agent.conditions.stateGate;
+        if (gate.requireFresh !== false && !freshlyStored.has(gate.variableName)) {
+            debug(`${LOG_PREFIX} skipped state-gated pre-gen agent "${agent.name}" because `
+                + `"${gate.variableName}" did not store valid state this turn`);
+            return false;
+        }
+        const result = evaluateStateGate(agent, readMergeArray);
+        if (!result.allowed) {
+            debug(`${LOG_PREFIX} skipped state-gated pre-gen agent "${agent.name}" `
+                + `(${agent.conditions.stateGate.variableName}.${agent.conditions.stateGate.path})`);
+        }
+        return result.allowed;
+    });
+    await runPlan(allowed);
 }

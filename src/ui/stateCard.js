@@ -25,19 +25,31 @@
 import {
     chat,
     chat_metadata,
-    this_chid,
     eventSource,
     event_types,
     saveSettingsDebounced,
 } from '../../../../../../script.js';
-import { selected_group } from '../../../../../group-chats.js';
 import { extension_settings } from '../../../../../extensions.js';
 import { MODULE_NAME, debug } from '../../index.js';
-import { getEnabledAgents } from '../data/store.js';
-import { makeDraggablePanel } from './draggablePanel.js';
+import { getEnabledAgents, getAgentById } from '../data/store.js';
+import { makeDraggablePanel, mountDraggablePanel } from './draggablePanel.js';
 import { registerPanelControl } from './modal.js';
+import { refreshSurfaceDock } from './surfaceDock.js';
+import { isStoryChatOpen } from './chatPresence.js';
+import { resolveSurfaceVisibility, setSurfaceVisibility } from './surfaceVisibilityState.js';
 import { onPostProcessComplete, findLastAssistantIndex } from '../core/lifecycle.js';
-import { resolveStateTraceDetailed } from '../modes/mergeVariable.js';
+import {
+    resolveStateTraceDetailed,
+    clearAgentChatState,
+    removeCollectionRecordFromAgentChatState,
+} from '../modes/mergeVariable.js';
+import { getActivePersonaName, projectActivePersona } from '../core/participants.js';
+import { SUPERAGENTS_EVENTS } from '../integration/events.js';
+import {
+    getResolvedStateCardStyleId,
+    initStateCardAppearance,
+    onStateCardStyleChanged,
+} from '../presentation/stateCardAppearance.js';
 
 const LOG_PREFIX = '[SuperAgents/stateCard]';
 const PANEL_ID = 'state-card';
@@ -55,7 +67,7 @@ const STALENESS_HORIZON = 6;
 // this module evaluates due to the index.js↔ui circular import, so building the
 // href at top level would yield ".../undefined/...". templateSync.js hardcodes
 // its base path for the same reason.
-const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/ui/stateCard.css';
+const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/ui/stateCard.css?v=0.42.7';
 
 // ============================================================================
 // STATE
@@ -65,12 +77,19 @@ const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/ui
 /** @type {ReturnType<typeof makeDraggablePanel>|null} */ let controller = null;
 let currentSchema = null;
 let currentVariable = DEFAULT_VARIABLE;
+/** window listener for SUPERAGENTS_EVENTS.STATE_COMMITTED (kept for teardown). */
+let stateCommitHandler = null;
+let appearanceUnsubscribe = null;
 
 // Debounce token for MESSAGE_RECEIVED / CHARACTER_MESSAGE_RENDERED triggers.
 // Multiple events fire in rapid succession; one trailing update() per burst.
 let refreshTimer = null;
+let renderDirty = true;
 function scheduleRefresh(delay = 150) {
+    renderDirty = true;
     if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = null;
+    if (!isOpen()) return;
     refreshTimer = setTimeout(() => {
         refreshTimer = null;
         update();
@@ -86,11 +105,7 @@ function scheduleRefresh(delay = 150) {
  * false on the Landing Page / empty state. Used to gate visibility so the
  * panel doesn't punch through the landing UI on first load.
  */
-function isInChat() {
-    // `this_chid` is undefined on Landing and a string index in a character chat;
-    // `selected_group` is null on Landing and a group id in a group chat.
-    return (this_chid != null) || !!selected_group;
-}
+const isInChat = isStoryChatOpen;
 
 // ============================================================================
 // VISIBILITY PERSISTENCE (own key — draggablePanel owns position separately)
@@ -133,6 +148,33 @@ function isCharExpanded(name) {
 /** Persist a character card's expanded/collapsed state. */
 function persistCharExpanded(name, expanded) {
     getCharExpandStore()[name] = !!expanded;
+    saveSettingsDebounced();
+}
+
+function persistCardsExpanded(names, expanded) {
+    const store = getCharExpandStore();
+    for (const name of names) store[name] = !!expanded;
+    saveSettingsDebounced();
+}
+
+// ── Per-component (section) collapse state ──────────────────────────────────
+// Each display component (Scene State, Relationships, Off-Screen, …) can be
+// folded independently, keyed by its merge-variable name so the choice survives
+// re-renders and reloads. Components default EXPANDED.
+function getCompCollapseStore() {
+    const root = extension_settings[MODULE_NAME] ?? (extension_settings[MODULE_NAME] = {});
+    if (!root.stateCardComponentCollapsed || typeof root.stateCardComponentCollapsed !== 'object') {
+        root.stateCardComponentCollapsed = {};
+    }
+    return root.stateCardComponentCollapsed;
+}
+/** True if this component's section was last left collapsed (default false). */
+function isCompCollapsed(key) {
+    return !!getCompCollapseStore()[key];
+}
+/** Persist a component section's collapsed state. */
+function persistCompCollapsed(key, collapsed) {
+    getCompCollapseStore()[key] = !!collapsed;
     saveSettingsDebounced();
 }
 
@@ -182,6 +224,8 @@ export function initStateCard() {
     panelEl = document.createElement('div');
     panelEl.id = 'sa-state-card-panel';
     panelEl.className = 'sa-sc-panel';
+    initStateCardAppearance();
+    panelEl.dataset.saStateCardStyle = getResolvedStateCardStyleId();
     panelEl.innerHTML = `
         <div class="sa-sc-header" title="Drag to move">
             <i class="fa-solid fa-grip-lines sa-sc-grip"></i>
@@ -193,7 +237,10 @@ export function initStateCard() {
             <div class="sa-sc-empty">No state data yet.</div>
         </div>
     `;
-    document.body.appendChild(panelEl);
+    mountDraggablePanel(panelEl);
+    appearanceUnsubscribe = onStateCardStyleChanged((resolvedStyleId) => {
+        if (panelEl) panelEl.dataset.saStateCardStyle = resolvedStyleId;
+    });
 
     // Floating-panel behaviour: drag by the header, snap to L/R edges, anchor
     // center-right by default (clear of the chat input bar).
@@ -207,9 +254,8 @@ export function initStateCard() {
         minH: 220,
     });
 
-    // Close button hides the panel (and remembers the choice, which also
-    // unchecks the Settings-tab toggle since that reads isOpen()).
-    panelEl.querySelector('.sa-sc-close')?.addEventListener('click', () => hide());
+    // Closing remembers this chat's choice; its Settings default remains intact.
+    panelEl.querySelector('.sa-sc-close')?.addEventListener('click', () => hide(false));
 
     // Collapse button folds the body away but keeps the panel "open" (no
     // visibility persistence change) so it stays a slim header bar in place.
@@ -218,8 +264,7 @@ export function initStateCard() {
     // Restore persisted collapsed state so a folded panel stays folded across reloads.
     applyCollapsed(isCollapsedPersisted());
 
-    // Register with the modal's Settings tab so the user gets a show/hide
-    // toggle + reset-position control. Wrap show/hide so visibility persists.
+    // Settings owns the persistent default plus the reset-position control.
     registerPanelControl({
         id: PANEL_ID,
         label: 'State Card',
@@ -229,8 +274,9 @@ export function initStateCard() {
             hide:          () => hide(),
             toggle:        () => (isOpen() ? hide() : show()),
             isOpen,
-            // Available only when an enabled agent supplies a state-card schema.
-            isAvailable:   () => !!getStateCardAgent(),
+            isDefaultVisible: isVisiblePersisted,
+            // Available only when at least one enabled agent supplies a component.
+            isAvailable:   () => hasDisplayComponents(),
             // Re-sync visibility when agents change (enable/disable/delete).
             reconcile:     () => reconcileVisibility(),
             resetPosition: () => controller?.resetPosition(),
@@ -246,7 +292,7 @@ export function initStateCard() {
     // the batch was processed last. MESSAGE_RECEIVED + CHARACTER_MESSAGE_RENDERED
     // are debounced fallback reads that catch the write once it lands, so
     // the panel never gets stuck on stale "no state yet" because of timing.
-    onPostProcessComplete(() => update());
+    onPostProcessComplete(() => scheduleRefresh(0));
     eventSource.on(event_types.MESSAGE_RECEIVED, () => scheduleRefresh(250));
     if (event_types.CHARACTER_MESSAGE_RENDERED) {
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => scheduleRefresh(150));
@@ -257,8 +303,29 @@ export function initStateCard() {
     // render belongs to the previous conversation. Reconcile visibility against
     // the new chat-active state; update() will resolve fresh state via the trace.
     eventSource.on(event_types.CHAT_CHANGED, () => {
+        renderDirty = true;
         setTimeout(reconcileVisibility, 200);
     });
+
+    // State-commit trigger. The listeners above cover the normal post-gen flow,
+    // but a component can commit OUTSIDE it: a manual /sa-run, or a tracker whose
+    // sidecar lands after onPostProcessComplete already fired (e.g. the Active
+    // Roster committing in a later/retried batch — observed ~30s behind the main
+    // batch). Those commits dispatch SUPERAGENTS_EVENTS.STATE_COMMITTED on the
+    // window but were previously invisible to the panel, so their section only
+    // appeared after the user toggled the panel off/on. Refresh on any commit so
+    // late/manual state lands on its own. Debounced with the other triggers.
+    stateCommitHandler = (event) => {
+        const variableName = event?.detail?.variableName;
+        // Ignore commits that cannot affect this panel. Older emitters may not
+        // include a variable name, so keep those as refresh-worthy for compat.
+        if (variableName && !getDisplayComponents().some(comp => comp.variable === variableName)) return;
+
+        // Commits from one batch can arrive nearly together. One trailing paint
+        // shows the final state without rebuilding the hidden or intermediate UI.
+        scheduleRefresh(60);
+    };
+    globalThis.addEventListener(SUPERAGENTS_EVENTS.STATE_COMMITTED, stateCommitHandler);
 
     // Initial reconciliation: only show on the Landing Page if the persisted
     // flag is set AND we're already in a chat. If ST loaded straight to a
@@ -270,43 +337,54 @@ export function initStateCard() {
 }
 
 /**
- * Bring panel visibility in line with persisted intent and chat presence.
- * Called on init and after every CHAT_CHANGED. The persisted "visible" flag
- * captures user intent; this function decides whether that intent applies
- * right now (we're in a chat) or has to wait (we're on Landing).
+ * Bring panel visibility in line with this chat's last state, falling back to
+ * the Settings default when the chat has no saved choice yet.
  */
 function reconcileVisibility() {
     if (!controller) return;
+    renderDirty = true;
     // Gate on both chat presence and a backing agent being enabled. Hiding for
     // either reason does NOT clear the persisted "visible" intent, so the panel
     // returns on its own once we're back in a chat AND its agent is enabled.
-    if (!isInChat() || !getStateCardAgent()) {
+    if (!isInChat() || !hasDisplayComponents()) {
         controller.hide();
+        refreshSurfaceDock();
         return;
     }
-    if (isVisiblePersisted()) {
+    if (resolveSurfaceVisibility(PANEL_ID, isVisiblePersisted())) {
         controller.show();
-        update();
+        if (renderDirty) update();
     } else {
-        update();
+        controller.hide();
+        renderDirty = true;
     }
+    refreshSurfaceDock();
 }
 
 // ============================================================================
 // SHOW / HIDE
 // ============================================================================
 
-export function show() {
+export function show(persist = true) {
     if (!controller) return;
+    if (persist) persistVisible(true);
+    if (isInChat()) setSurfaceVisibility(PANEL_ID, true);
+    if (!isInChat() || !hasDisplayComponents()) {
+        controller.hide();
+        refreshSurfaceDock();
+        return;
+    }
     controller.show();
-    persistVisible(true);
-    update();
+    if (renderDirty) update();
+    refreshSurfaceDock();
 }
 
-export function hide() {
+export function hide(persist = true) {
     if (!controller) return;
+    if (persist) persistVisible(false);
+    if (isInChat()) setSurfaceVisibility(PANEL_ID, false);
     controller.hide();
-    persistVisible(false);
+    refreshSurfaceDock();
 }
 
 export function isOpen() {
@@ -342,43 +420,33 @@ function toggleCollapsed() {
 // ============================================================================
 
 /**
- * Find the enabled agent that drives the state card (the one with a
- * stateCard schema). Returns null when none is active.
- * @returns {object|null}
+ * Collect every enabled agent that contributes a COMPONENT to the panel — one
+ * with a stateCard display schema and a merge variable to read data from, not
+ * explicitly hidden (`stateCard.display === false`). The panel is a neutral host
+ * that stacks these components as sections; each carries a display `order`
+ * (`stateCard.order`, falling back to `injection.order`) that decides its
+ * vertical position. Sorted ascending by order, then name for stable ties.
+ * @returns {Array<{agent:object,name:string,variable:string,schema:object,order:number}>}
  */
-function getStateCardAgent() {
-    return getEnabledAgents().find(a => a.stateCard && a.stateCard.schema) || null;
+function getDisplayComponents() {
+    return getEnabledAgents()
+        .filter(a => a.stateCard && a.stateCard.schema
+            && a.stateCard.enabled !== false
+            && a.stateCard.display !== false
+            && a.mergeVariable?.enabled && a.mergeVariable.variableName)
+        .map(a => ({
+            agent: a,
+            name: a.name || 'State',
+            variable: a.mergeVariable.variableName,
+            schema: a.stateCard.schema,
+            order: a.stateCard.order ?? a.injection?.order ?? 0,
+        }))
+        .sort((x, y) => (x.order - y.order) || x.name.localeCompare(y.name));
 }
 
-/**
- * Read the raw state JSON string to display, resolved via the BACKWARD TRACE.
- *
- * The panel shows state for the message the user is looking at — the latest
- * assistant message and its active swipe. resolveStateTrace walks backward from
- * there to the most recent tracked snapshot, so a swipe that never tracked its
- * own state shows the last real state before it (following the visible branch)
- * rather than whatever happens to be sitting in the global merge var.
- *
- * Falls back to the raw global var only when there is no assistant message yet
- * (e.g. a fresh chat mid-first-generation), so first-gen display still works.
- *
- * The state-card agent stores a single snapshot item whose `json` field holds
- * the full blob; fall back to the first non-underscore field if the schema
- * names it differently.
- * @returns {string|null}
- */
-function readStateJson() {
-    try {
-        const arr = readResolvedStateArray();
-        if (Array.isArray(arr) && arr.length > 0) {
-            const first = arr[0];
-            const blob = first.json ?? first[Object.keys(first).find(k => !k.startsWith('_'))];
-            return typeof blob === 'string' ? blob.trim() : null;
-        }
-        return null;
-    } catch {
-        return null;
-    }
+/** True when at least one display component exists (gates panel availability). */
+export function hasDisplayComponents() {
+    return getDisplayComponents().length > 0;
 }
 
 /**
@@ -393,11 +461,11 @@ function readStateJson() {
  * generation still populates the panel.
  * @returns {object[]|null}
  */
-function readResolvedStateArray() {
+function readResolvedStateArray(variableName = currentVariable) {
     const lastIdx = findLastAssistantIndex();
     if (lastIdx >= 0) {
         const swipeId = chat[lastIdx]?.swipe_id ?? 0;
-        const { items, distance } = resolveStateTraceDetailed(chat, lastIdx, swipeId, currentVariable);
+        const { items, distance } = resolveStateTraceDetailed(chat, lastIdx, swipeId, variableName);
         if (items !== null) {
             // Beyond the horizon → the freshest real state is too far back; show
             // empty rather than a fossil. Within it → accept (this is what holds
@@ -409,10 +477,32 @@ function readResolvedStateArray() {
         // raw var only as a last resort (covers the brief window between a fresh
         // extraction landing in the var and it being pinned per-swipe).
     }
-    const raw = chat_metadata?.variables?.[currentVariable];
+    const raw = chat_metadata?.variables?.[variableName];
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : null;
+}
+
+/**
+ * Read + parse the state blob for an arbitrary merge variable (e.g. the
+ * Relationship Ledger's `sa_relationship_ledger`), resolved via the same
+ * backward trace + staleness horizon as the main panel. Returns the parsed
+ * object, or null when there's no usable state. Used to pull relationship data
+ * into the display agent's cards.
+ * @returns {object|null}
+ */
+function readStateBlobFor(variableName) {
+    try {
+        const arr = readResolvedStateArray(variableName);
+        if (!Array.isArray(arr) || arr.length === 0) return null;
+        const first = arr[0];
+        const blob = first.json ?? first[Object.keys(first).find(k => !k.startsWith('_'))];
+        if (typeof blob !== 'string') return null;
+        const parsed = JSON.parse(blob.trim());
+        return (parsed && typeof parsed === 'object') ? parsed : null;
+    } catch {
+        return null;
+    }
 }
 
 // ============================================================================
@@ -420,9 +510,9 @@ function readResolvedStateArray() {
 // ============================================================================
 
 /**
- * Re-read the current state and re-render. No-op on DOM if the panel is hidden,
- * but still cheap. Resolves the active state-card agent each call so enabling/
- * disabling or swapping agents is picked up without a reload.
+ * Re-read the current state and re-render. Hidden panels are marked dirty and
+ * rebuilt only when shown. Resolves active components each time so enabling,
+ * disabling, or swapping agents is picked up without a reload.
  *
  * The "hold vs. blank" decision now lives in the backward trace + staleness
  * horizon (readResolvedStateArray), NOT in a cached-HTML crutch: recent state
@@ -432,37 +522,45 @@ function readResolvedStateArray() {
  */
 export function update() {
     if (!panelEl) return;
+    if (!isOpen()) {
+        renderDirty = true;
+        return;
+    }
+    renderDirty = false;
 
-    const agent = getStateCardAgent();
-    currentSchema = agent?.stateCard?.schema || null;
-    currentVariable = agent?.mergeVariable?.variableName || DEFAULT_VARIABLE;
-
-    if (!agent) {
-        renderNotice('No state-card agent enabled.', 'Enable one from the Library or Agents tab.');
+    const components = getDisplayComponents();
+    if (components.length === 0) {
+        renderNotice('No display components enabled.', 'Enable a tracker (State Card, Relationship Ledger, …) from the Library or Agents tab.');
         return;
     }
 
-    const raw = readStateJson();
-    if (!raw) {
+    // Build a section per component, in display order. A component whose state
+    // is empty or unreadable for the viewed message is skipped, so the panel
+    // never shows a bare header with nothing under it.
+    const sections = [];
+    for (const comp of components) {
+        let data = readStateBlobFor(comp.variable);
+        // Persona-scoped components (Relationship Ledger) store per-persona; show
+        // only the active persona's slice, mirroring what DE sees via the API.
+        if (comp.agent?.mergeVariable?.personaScoped) data = projectActivePersona(data);
+        if (!hasRecognizedStateShape(data)) continue;
+        const inner = hasMeaningfulState(data)
+            ? buildComponentBody(data, comp.schema, comp.variable)
+            : '<div class="sa-sc-empty sa-sc-component-empty">No tracked entries.</div>';
+        if (inner) {
+            const knowledgeCardKeys = data.facts && typeof data.facts === 'object'
+                ? Object.keys(data.facts).map(factId => `${comp.variable}::knowledge::${factId}`)
+                : [];
+            sections.push({ comp, inner, knowledgeCardKeys });
+        }
+    }
+
+    if (sections.length === 0) {
         renderNotice('No state data yet.', 'Generate a message to populate.');
         return;
     }
 
-    let parsed;
-    try {
-        parsed = JSON.parse(raw);
-    } catch (err) {
-        debug(`${LOG_PREFIX} state JSON parse failed:`, err);
-        renderNotice('State data could not be read.', 'The last extraction may have been malformed.');
-        return;
-    }
-
-    if (!hasMeaningfulState(parsed)) {
-        renderNotice('No state data yet.', 'Generate a message to populate.');
-        return;
-    }
-
-    renderCards(parsed, currentSchema);
+    renderSections(sections);
 }
 
 /**
@@ -475,10 +573,25 @@ export function update() {
 function hasMeaningfulState(data) {
     if (!data || typeof data !== 'object') return false;
     if (Array.isArray(data.worldEvents) && data.worldEvents.length > 0) return true;
+    if (data.users && typeof data.users === 'object' && Object.keys(data.users).length > 0) return true;
     if (data.user && typeof data.user === 'object' && Object.keys(data.user).length > 0) return true;
     if (data.characters && typeof data.characters === 'object' && Object.keys(data.characters).length > 0) return true;
+    if (data.relationships && typeof data.relationships === 'object' && Object.keys(data.relationships).length > 0) return true;
+    if (data.facts && typeof data.facts === 'object' && Object.keys(data.facts).length > 0) return true;
     if (data.scene && typeof data.scene === 'object' && Object.keys(data.scene).length > 0) return true;
     return false;
+}
+
+/**
+ * Distinguish a valid, deliberately empty tracker result from missing/malformed
+ * state. An empty `characters` object is meaningful for Active Roster: it says
+ * nobody currently belongs in the bounded working set and should render as an
+ * explicit empty section instead of making the component appear broken.
+ */
+function hasRecognizedStateShape(data) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return false;
+    return ['worldEvents', 'users', 'user', 'characters', 'relationships', 'facts', 'scene']
+        .some(key => Object.prototype.hasOwnProperty.call(data, key));
 }
 
 // ============================================================================
@@ -496,25 +609,63 @@ function renderNotice(main, hint) {
 }
 
 /**
- * Render the full panel body from parsed state data + schema.
- * @param {object} data  { worldEvents:[...], user:{...}, characters:{...} }
- * @param {object} schema  agent.stateCard.schema
+ * Project the user-stats card to show ONLY the currently-active persona.
+ *
+ * A chat may cycle through several player personas ({{user}} is just whoever is
+ * selected now). Scene State stores stats per-persona under `users` (keyed by
+ * persona name); here we pick the active persona's slice so the panel never
+ * shows a pile of retired personas. Falls back to the sole persona when the
+ * active one can't be matched, and still understands the legacy single `user`
+ * object from before this became persona-aware.
+ *
+ * @param {object} data    parsed component state
+ * @param {object} schema  the component's stateCard.schema
+ * @returns {{ label: string, data: object } | null}
  */
-function renderCards(data, schema) {
-    const body = bodyEl();
-    if (!body) return;
-    schema = schema || {};
+function pickActiveUserStats(data, schema = {}) {
+    // New persona-keyed shape: users = { personaName: {health,...} }.
+    if (data.users && typeof data.users === 'object' && !Array.isArray(data.users)) {
+        const keys = Object.keys(data.users).filter(k => data.users[k] && typeof data.users[k] === 'object');
+        if (keys.length === 0) return null;
+        const active = getActivePersonaName().toLowerCase();
+        // Match the active persona; if it isn't tracked yet, only auto-show when
+        // there's a single persona (no ambiguity about whose stats these are).
+        let key = keys.find(k => k.toLowerCase() === active);
+        if (!key && keys.length === 1) key = keys[0];
+        if (!key) return null;
+        return { label: key, data: data.users[key] };
+    }
+    // Legacy single-user shape (pre-persona-aware chats).
+    if (data.user && typeof data.user === 'object' && Object.keys(data.user).length > 0) {
+        return { label: schema.userLabel || 'You', data: data.user };
+    }
+    return null;
+}
 
+/**
+ * Build the inner HTML for ONE component's section from its parsed state data +
+ * schema. Returns a string of cards (world events, user, character cards, legacy
+ * scene) — no DOM writes. `compKey` namespaces per-character collapse state so
+ * the same character appearing in two components (e.g. Scene State and
+ * Relationships) folds independently.
+ * @param {object} data  { worldEvents?:[...], user?:{...}, characters?:{...} }
+ * @param {object} schema  the agent's stateCard.schema
+ * @param {string} compKey  the component's merge-variable name
+ * @returns {string}
+ */
+function buildComponentBody(data, schema, compKey) {
+    schema = schema || {};
     let html = '';
 
     if (Array.isArray(data.worldEvents) && data.worldEvents.length > 0) {
         html += buildWorldEventsCard(data.worldEvents, schema.worldEvents);
     }
 
-    if (data.user && typeof data.user === 'object') {
+    const activeUser = pickActiveUserStats(data, schema);
+    if (activeUser && Object.keys(activeUser.data).length > 0) {
         html += buildCard({
-            type: 'user', icon: '♦', label: 'You', data: data.user,
-            textFieldDefs: [], meterDefs: schema.userStats || [],
+            type: 'user', icon: '♦', label: activeUser.label, data: activeUser.data,
+            textFieldDefs: schema.userTextFields || [], meterDefs: schema.userStats || [],
         });
     }
 
@@ -524,29 +675,175 @@ function renderCards(data, schema) {
             const color = hashColor(name);
             const initial = name.charAt(0).toUpperCase();
             const avatarHtml = `<div class="sa-sc-avatar" style="background:${color}15;color:${color}">${esc(initial)}</div>`;
+            // Namespaced collapse key: "<variable>::<name>" so the same character
+            // in different components keeps independent open/closed state.
+            const cardKey = `${compKey}::${name}`;
             html += buildCard({
                 type: 'character', iconHtml: avatarHtml, label: name, data: charData,
                 textFieldDefs: schema.characterTextFields || [], meterDefs: schema.meters || [],
                 // Default collapsed; restore the user's last open/closed choice.
-                collapsed: !isCharExpanded(name),
-                cardName: name,
+                collapsed: !isCharExpanded(cardKey),
+                cardName: cardKey,
+            });
+        }
+    }
+
+    if (data.relationships && typeof data.relationships === 'object') {
+        for (const [edgeKey, edgeData] of Object.entries(data.relationships)) {
+            if (!edgeData || typeof edgeData !== 'object') continue;
+            const source = String(edgeData.source || '').trim();
+            const target = String(edgeData.target || '').trim();
+            const label = source && target ? `${source} → ${target}` : edgeKey;
+            const displayData = { ...edgeData };
+            delete displayData.source;
+            delete displayData.target;
+            const cardKey = `${compKey}::relationship::${edgeKey}`;
+            html += buildCard({
+                type: 'relationship', icon: '↔', label, data: displayData,
+                textFieldDefs: schema.relationshipTextFields || [],
+                meterDefs: schema.relationshipMeters || [],
+                collapsed: !isCharExpanded(cardKey),
+                cardName: cardKey,
+            });
+        }
+    }
+
+    if (data.facts && typeof data.facts === 'object') {
+        for (const [factId, factData] of Object.entries(data.facts)) {
+            if (!factData || typeof factData !== 'object') continue;
+            const summary = String(factData.summary || '').trim();
+            const displayData = { recordId: factId, ...factData };
+            delete displayData.summary;
+            displayData.perspectives = Array.isArray(factData.perspectives)
+                ? factData.perspectives.map((perspective) => {
+                    const character = String(perspective?.character || 'Unknown');
+                    const position = String(perspective?.position || 'unrecorded');
+                    const confidence = Number.isFinite(perspective?.confidence)
+                        ? ` (${perspective.confidence}%)`
+                        : '';
+                    const access = perspective?.access ? ` via ${perspective.access}` : '';
+                    const intent = perspective?.disclosureIntent
+                        ? `; intent: ${perspective.disclosureIntent}`
+                        : '';
+                    return `${character}: ${position}${confidence}${access}${intent}`;
+                })
+                : [];
+            const cardKey = `${compKey}::knowledge::${factId}`;
+            html += buildCard({
+                type: 'knowledge', icon: '◆', label: summary || factId, data: displayData,
+                textFieldDefs: schema.factTextFields || [],
+                meterDefs: schema.factMeters || [],
+                collapsed: !isCharExpanded(cardKey),
+                cardName: cardKey,
+                deleteRecordId: factId,
             });
         }
     }
 
     // Legacy v2 scene card (backwards compat).
-    if (data.scene && Object.keys(data.scene).length > 0 && !data.worldEvents && !data.user) {
+    if (data.scene && Object.keys(data.scene).length > 0 && !data.worldEvents && !data.user && !data.users) {
         html += buildCard({
             type: 'scene', icon: '◈', label: 'Scene', data: data.scene,
             textFieldDefs: schema.sceneFields || [], meterDefs: [],
         });
     }
 
-    body.innerHTML = html || '<div class="sa-sc-empty">State data is empty.</div>';
+    return html;
+}
 
-    // Character cards collapse on header click (world events + user are pinned).
-    // Persist the new state by character name so it survives the next re-render.
-    body.querySelectorAll('.sa-sc-card[data-type="character"] .sa-sc-card-header').forEach(header => {
+/**
+ * Render all component sections into the panel body and wire collapse handlers.
+ * Each section gets a titled, foldable header (the agent's name); a single
+ * component still gets its header so the panel reads consistently.
+ * @param {Array<{comp:object,inner:string,knowledgeCardKeys:string[]}>} sections
+ */
+function renderSections(sections) {
+    const body = bodyEl();
+    if (!body) return;
+
+    body.innerHTML = sections.map(({ comp, inner, knowledgeCardKeys }) => {
+        const collapsed = isCompCollapsed(comp.variable);
+        const allKnowledgeExpanded = knowledgeCardKeys.length > 0
+            && knowledgeCardKeys.every(isCharExpanded);
+        const knowledgeToggle = knowledgeCardKeys.length > 0
+            ? `<button class="sa-sc-knowledge-toggle" data-action="${allKnowledgeExpanded ? 'collapse' : 'expand'}" title="${allKnowledgeExpanded ? 'Collapse all knowledge records' : 'Expand all knowledge records'}" aria-label="${allKnowledgeExpanded ? 'Collapse all knowledge records' : 'Expand all knowledge records'}"><i class="fa-solid ${allKnowledgeExpanded ? 'fa-angles-up' : 'fa-angles-down'}"></i></button>`
+            : '';
+        return `<div class="sa-sc-component${collapsed ? ' sa-sc-comp-collapsed' : ''}" data-comp="${esc(comp.variable)}" data-agent-id="${esc(comp.agent?.id || '')}">
+            <div class="sa-sc-component-header">
+                <span class="sa-sc-component-title">${esc(comp.name)}</span>
+                <span class="sa-sc-component-header-right">
+                    ${knowledgeToggle}
+                    <button class="sa-sc-comp-clear" data-agent-id="${esc(comp.agent?.id || '')}" title="Clear ${esc(comp.name)} state (this chat)" aria-label="Clear state"><i class="fa-solid fa-eraser"></i></button>
+                    <span class="sa-sc-component-caret">▾</span>
+                </span>
+            </div>
+            <div class="sa-sc-component-body">${inner}</div>
+        </div>`;
+    }).join('') || '<div class="sa-sc-empty">State data is empty.</div>';
+
+    // Component header → fold the whole section (persisted per component).
+    body.querySelectorAll('.sa-sc-component > .sa-sc-component-header').forEach(header => {
+        header.addEventListener('click', () => {
+            const comp = header.closest('.sa-sc-component');
+            if (!comp) return;
+            const nowCollapsed = comp.classList.toggle('sa-sc-comp-collapsed');
+            const key = comp.getAttribute('data-comp');
+            if (key) persistCompCollapsed(key, nowCollapsed);
+        });
+    });
+
+    body.querySelectorAll('.sa-sc-knowledge-toggle').forEach(button => {
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const comp = button.closest('.sa-sc-component');
+            if (!comp) return;
+            const cards = [...comp.querySelectorAll('.sa-sc-card[data-type="knowledge"]')];
+            const expand = cards.some(card => card.classList.contains('sa-sc-collapsed'));
+            const keys = cards.map(card => card.getAttribute('data-char-name')).filter(Boolean);
+            persistCardsExpanded(keys, expand);
+            for (const card of cards) card.classList.toggle('sa-sc-collapsed', !expand);
+            button.dataset.action = expand ? 'collapse' : 'expand';
+            button.title = expand ? 'Collapse all knowledge records' : 'Expand all knowledge records';
+            button.setAttribute('aria-label', button.title);
+            const icon = button.querySelector('i');
+            if (icon) icon.className = `fa-solid ${expand ? 'fa-angles-up' : 'fa-angles-down'}`;
+        });
+    });
+
+    // Per-component clear (the hover-only eraser). stopPropagation so it doesn't
+    // also fold the section. Confirms first, then wipes this agent's chat state
+    // and re-renders — the now-empty component drops out of the panel.
+    body.querySelectorAll('.sa-sc-comp-clear').forEach(btn => {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const agent = getAgentById(btn.getAttribute('data-agent-id'));
+            if (!agent) return;
+            if (!confirm(`Clear "${agent.name}" stored state from THIS chat?\n\nThis wipes its tracked values and every per-message snapshot in the current chat. The agent stays enabled and repopulates on the next generation.`)) return;
+            clearAgentChatState(agent);
+            update();
+        });
+    });
+
+    body.querySelectorAll('.sa-sc-card-delete').forEach(button => {
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const component = button.closest('.sa-sc-component');
+            const card = button.closest('.sa-sc-card[data-type="knowledge"]');
+            const agent = getAgentById(component?.getAttribute('data-agent-id'));
+            const recordId = button.getAttribute('data-record-id') || '';
+            const label = card?.querySelector('.sa-sc-card-label')?.textContent?.trim() || recordId;
+            if (!agent || !recordId) return;
+            if (!confirm(`Delete knowledge record “${label}” from THIS chat?\n\nThis removes it from the live ledger and every stored branch snapshot. A future tracker run may recreate it if the information remains relevant to the story.`)) return;
+            const result = removeCollectionRecordFromAgentChatState(agent, 'facts', recordId);
+            if (!result.removed) return;
+            delete getCharExpandStore()[`${component?.getAttribute('data-comp')}::knowledge::${recordId}`];
+            update();
+        });
+    });
+
+    // Character, relationship, and knowledge cards collapse on their own header
+    // click (world events + user are pinned). Namespaced keys survive re-render.
+    body.querySelectorAll('.sa-sc-card[data-type="character"] .sa-sc-card-header, .sa-sc-card[data-type="relationship"] .sa-sc-card-header, .sa-sc-card[data-type="knowledge"] .sa-sc-card-header').forEach(header => {
         header.addEventListener('click', () => {
             const card = header.closest('.sa-sc-card');
             if (!card) return;
@@ -582,7 +879,10 @@ function buildWorldEventsCard(events, config) {
 // CARD BUILDER
 // ============================================================================
 
-function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs, collapsed = false, cardName = null }) {
+function buildCard({
+    type, icon, iconHtml, label, data, textFieldDefs, meterDefs,
+    collapsed = false, cardName = null, deleteRecordId = null,
+}) {
     const textFields = [];
     const meterFields = [];
     const listFields = [];
@@ -630,7 +930,7 @@ function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs
             const max = def?.max || 100;
             const pct = Math.min(100, Math.max(0, (value / max) * 100));
             const wrapClass = useDual ? 'sa-sc-meter-col' : 'sa-sc-meter';
-            metersHtml += `<div class="${wrapClass}">
+            metersHtml += `<div class="${wrapClass}" data-meter-key="${esc(key)}" style="--sa-sc-meter-color:${color}">
                 <div class="sa-sc-meter-head">
                     <span class="sa-sc-meter-label"><span class="sa-sc-meter-dot" style="background:${color}"></span>${esc(meterLabel)}</span>
                     <span class="sa-sc-meter-num">${Math.round(value)}</span>
@@ -641,15 +941,16 @@ function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs
         if (useDual) metersHtml += '</div>';
     }
 
-    // ── Compact meter strip (character cards only — shown when collapsed) ──
+    // ── Compact meter strip (collapsible cards only — shown when collapsed) ──
     let compactHtml = '';
-    if (type === 'character' && meterFields.length > 0) {
+    const isCollapsible = type === 'character' || type === 'relationship' || type === 'knowledge';
+    if (isCollapsible && meterFields.length > 0) {
         const compactMeters = meterFields.map(({ key, value }) => {
             const def = meterDefs.find(m => m.key === key);
             const color = def?.color || '#A0A8B0';
             const max = def?.max || 100;
             const pct = Math.min(100, Math.max(0, (value / max) * 100));
-            return `<div class="sa-sc-compact-meter">
+            return `<div class="sa-sc-compact-meter" data-meter-key="${esc(key)}" style="--sa-sc-meter-color:${color}">
                 <div class="sa-sc-compact-track"><div class="sa-sc-compact-fill" style="width:${pct}%;background:${color}"></div></div>
             </div>`;
         }).join('');
@@ -657,10 +958,13 @@ function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs
     }
 
     const iconContent = iconHtml ? iconHtml : `<span class="sa-sc-card-icon">${icon || '◈'}</span>`;
-    const isPinned = type !== 'character';
+    const isPinned = !isCollapsible;
     const collapseIcon = isPinned ? '' : '<span class="sa-sc-collapse-icon">▾</span>';
+    const deleteButton = deleteRecordId
+        ? `<button class="sa-sc-card-delete" data-record-id="${esc(deleteRecordId)}" title="Delete this knowledge record" aria-label="Delete this knowledge record"><i class="fa-solid fa-trash-can"></i></button>`
+        : '';
     const pinnedClass = isPinned ? ' sa-sc-pinned' : '';
-    // Character cards may start collapsed (persisted per name). Pinned cards never collapse.
+    // Character, relationship, and knowledge cards may start collapsed.
     const collapsedClass = (!isPinned && collapsed) ? ' sa-sc-collapsed' : '';
     const nameAttr = cardName ? ` data-char-name="${esc(cardName)}"` : '';
 
@@ -668,6 +972,7 @@ function buildCard({ type, icon, iconHtml, label, data, textFieldDefs, meterDefs
         <div class="sa-sc-card-header">
             ${iconContent}
             <span class="sa-sc-card-label">${esc(label)}</span>
+            ${deleteButton}
             ${collapseIcon}
         </div>
         ${compactHtml}
@@ -698,6 +1003,13 @@ export function destroyStateCard() {
         clearTimeout(refreshTimer);
         refreshTimer = null;
     }
+    renderDirty = true;
+    if (stateCommitHandler) {
+        globalThis.removeEventListener(SUPERAGENTS_EVENTS.STATE_COMMITTED, stateCommitHandler);
+        stateCommitHandler = null;
+    }
+    appearanceUnsubscribe?.();
+    appearanceUnsubscribe = null;
     controller?.destroy();
     controller = null;
     panelEl = null;

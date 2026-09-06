@@ -1,0 +1,32 @@
+#sa-weather-cycle-phase-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    transition: background 420ms ease, opacity 420ms ease;
+}
+
+#sa-weather-cycle-phase-overlay[data-phase="afternoon"],
+#sa-weather-cycle-phase-overlay[data-phase="twilight"] {
+    opacity: 1;
+}
+
+.sa-weather-cycle-settings-note {
+    margin: 0 0 10px;
+    opacity: 0.72;
+    font-size: 0.9em;
+}
+
+#sa-weather-cycle-lighting-reset {
+    margin-top: 6px;
+    padding: 7px 12px;
+    border: 1px solid rgb(255 255 255 / 14%);
+    border-radius: 9px;
+    background: rgb(20 20 28 / 90%);
+    color: inherit;
+    cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    #sa-weather-cycle-phase-overlay { transition: none; }
+}

@@ -10,6 +10,8 @@
  */
 
 import { normalizeRegexScript } from '../render/regexProcessor.js';
+import { normalizeRetentionConfig } from './stateRetention.js';
+import { normalizeValidationConfig } from './stateValidation.js';
 
 // ----------------------------------------------------------------------
 // Constants
@@ -72,6 +74,9 @@ export function createDefaultAgent() {
             // Borrowed from Director's <director>\n{{outline}}\n</director> idea:
             // a tag boundary keeps a planner's plan from being read as dialogue.
             template: '',
+            // False turns a pre-gen sidecar into a silent classifier: its
+            // stored state remains available without injecting the raw result.
+            injectResult: true,
         },
         postProcess: {
             enabled: false,
@@ -90,12 +95,35 @@ export function createDefaultAgent() {
         regexScripts: [],
         connectionProfile: '',
         maxTokens: DEFAULT_MAX_TOKENS,
+        everyN: 1,
+        everyNCadence: 'new-replies',
+        reuseSnapshotBetweenRuns: false,
+        activationPolicy: {
+            mode: 'always',
+        },
+        scope: {
+            mode: 'any',
+            characterBindings: [],
+            tagBindings: [],
+            groupBindings: [],
+        },
         enabled: false,
+        paused: false,
         conditions: {
             triggerKeywords: [],
             triggerPatterns: [],
             triggerProbability: 100,
-            generationTypes: ['normal', 'continue', 'impersonate'],
+            generationTypes: ['normal', 'continue', 'impersonate', 'swipe'],
+            generationTypesVersion: 2,
+            stateGate: {
+                enabled: false,
+                variableName: '',
+                jsonField: 'json',
+                path: '',
+                operator: 'eq',
+                value: 'true',
+                requireFresh: true,
+            },
         },
         groupId: null,
         sourceTemplateId: '',
@@ -103,6 +131,7 @@ export function createDefaultAgent() {
         mergeVariable: defaultMergeVariable(),
         stateCard: null,
         phoneConfig: null,
+        feedConfig: null,
         sidecarCall: defaultSidecarCall(),
     };
 }
@@ -130,15 +159,42 @@ function defaultMergeVariable() {
         extractPattern: '',
         fieldNames: [],
         keyFields: [],
-        mode: 'accumulate',
+        mode: 'snapshot',
         resolveField: '',
         resolveAction: 'RESOLVED',
         stripFromResponse: true,
         injectFormatted: true,
+        autoInject: true,
+        macroName: '',
         formatHeader: '',
         formatItem: '',
         formatEmpty: 'No data tracked.',
+        mainContext: {
+            enabled: false,
+            mode: 'full',
+            maxDetailedEntries: 12,
+            presencePath: '',
+            formatHeader: null,
+            formatItem: null,
+            formatEmpty: null,
+        },
+        retention: normalizeRetentionConfig(),
+        validation: normalizeValidationConfig(),
     };
+}
+
+/**
+ * Sanitize a user-entered custom macro suffix (the X in {{sa_X}}). Lowercase;
+ * allow only letters, digits, underscore, and dash; drop everything else. Empty
+ * string means "no custom macro". Note: SillyTavern's proven macro charset is
+ * effectively [a-z0-9_]; dashes are permitted here per user request but may not
+ * resolve under ST's macro engine.
+ */
+function sanitizeMacroName(raw) {
+    return String(raw ?? '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '');
 }
 
 function defaultSidecarCall() {
@@ -148,6 +204,13 @@ function defaultSidecarCall() {
         responseKey: '',
         includeHistory: false,
         historyMessageCount: 20,
+        // Optional wider window for the first run of a persistent tracker.
+        // Once the tracker has stored state, historyMessageCount takes over.
+        genesisHistoryCount: 0,
+        // Optional post-generation gate evaluated against the response that was
+        // just generated. Unlike ordinary activation conditions, this runs late
+        // enough to see tags emitted by the assistant.
+        currentMessagePattern: '',
         // Rich context: the "what the main chat sees" inputs (card, persona,
         // World Info, Summary, Author's Note, the pending user message). All
         // off by default so a plain tracker pays nothing; a Director turns the
@@ -186,25 +249,69 @@ function defaultRichContext() {
 export function normalizeMergeVariable(raw) {
     const d = defaultMergeVariable();
     if (!raw || typeof raw !== 'object') return d;
+    const mode = raw.mode === 'accumulate' ? 'accumulate' : 'snapshot';
+    const fieldNames = Array.isArray(raw.fieldNames)
+        ? raw.fieldNames.map(f => String(f ?? '').trim()).filter(Boolean)
+        : d.fieldNames;
+    const validation = normalizeValidationConfig(raw.validation);
 
+    // A JSON validation field must name an actual stored field. The editor once
+    // defaulted this control to "json" even for legacy multi-capture trackers,
+    // which made otherwise valid World State items validate against a missing
+    // JSON slot. Clear that impossible configuration during normalization.
+    if (validation.jsonField && !fieldNames.includes(validation.jsonField)) {
+        validation.jsonField = '';
+    }
+
+    const mainContextSource = raw.mainContext && typeof raw.mainContext === 'object'
+        ? raw.mainContext
+        : {};
     return {
         enabled: Boolean(raw.enabled),
+        personaScoped: Boolean(raw.personaScoped),
         variableName: typeof raw.variableName === 'string' ? raw.variableName.trim() : d.variableName,
         extractPattern: typeof raw.extractPattern === 'string' ? raw.extractPattern : d.extractPattern,
-        fieldNames: Array.isArray(raw.fieldNames)
-            ? raw.fieldNames.map(f => String(f ?? '').trim()).filter(Boolean)
-            : d.fieldNames,
-        keyFields: Array.isArray(raw.keyFields)
+        fieldNames,
+        keyFields: mode === 'snapshot' ? [] : Array.isArray(raw.keyFields)
             ? raw.keyFields.map(f => String(f ?? '').trim()).filter(Boolean)
             : d.keyFields,
-        mode: raw.mode === 'snapshot' ? 'snapshot' : 'accumulate',
+        mode,
         resolveField: typeof raw.resolveField === 'string' ? raw.resolveField.trim() : d.resolveField,
         resolveAction: typeof raw.resolveAction === 'string' ? raw.resolveAction.trim() : d.resolveAction,
         stripFromResponse: raw.stripFromResponse !== false,
         injectFormatted: raw.injectFormatted !== false,
+        // Auto-inject the formatted state into the MAIN chat prompt each turn.
+        // Independent of injectFormatted (which feeds the tracker its own output):
+        // turn this off to place the state yourself via the {{sa_…}}/{{agent_…}}
+        // macro instead. Defaults on, so existing agents are unchanged.
+        autoInject: raw.autoInject !== false,
+        // Optional custom macro suffix → registers {{sa_<macroName>}}.
+        macroName: sanitizeMacroName(raw.macroName),
         formatHeader: typeof raw.formatHeader === 'string' ? raw.formatHeader : d.formatHeader,
         formatItem: typeof raw.formatItem === 'string' ? raw.formatItem : d.formatItem,
         formatEmpty: typeof raw.formatEmpty === 'string' ? raw.formatEmpty : d.formatEmpty,
+        mainContext: {
+            enabled: Boolean(mainContextSource.enabled),
+            mode: mainContextSource.mode === 'knowledge' ? 'knowledge' : 'full',
+            maxDetailedEntries: Math.max(
+                1,
+                Math.min(24, Number(mainContextSource.maxDetailedEntries) || 12),
+            ),
+            presencePath: typeof mainContextSource.presencePath === 'string'
+                ? mainContextSource.presencePath.trim()
+                : '',
+            formatHeader: typeof mainContextSource.formatHeader === 'string'
+                ? mainContextSource.formatHeader
+                : null,
+            formatItem: typeof mainContextSource.formatItem === 'string'
+                ? mainContextSource.formatItem
+                : null,
+            formatEmpty: typeof mainContextSource.formatEmpty === 'string'
+                ? mainContextSource.formatEmpty
+                : null,
+        },
+        retention: normalizeRetentionConfig(raw.retention),
+        validation,
     };
 }
 
@@ -228,6 +335,12 @@ function normalizeSidecarCall(raw) {
         historyMessageCount: Number.isFinite(Number(raw.historyMessageCount))
             ? clamp(Number(raw.historyMessageCount), 1, 100)
             : d.historyMessageCount,
+        genesisHistoryCount: Number.isFinite(Number(raw.genesisHistoryCount))
+            ? clamp(Number(raw.genesisHistoryCount), 0, 100)
+            : d.genesisHistoryCount,
+        currentMessagePattern: typeof raw.currentMessagePattern === 'string'
+            ? raw.currentMessagePattern.trim()
+            : d.currentMessagePattern,
         richContext: normalizeRichContext(raw.richContext),
         display: {
             enabled: Boolean(rawDisplay.enabled),
@@ -304,6 +417,25 @@ function normalizeConditions(raw) {
     const d = createDefaultAgent().conditions;
     if (!raw || typeof raw !== 'object') return d;
 
+    const generationTypes = Array.isArray(raw.generationTypes)
+        ? raw.generationTypes.map(t => String(t ?? '').trim()).filter(Boolean)
+        : [...d.generationTypes];
+
+    // Before Swipe was its own option, ST's swipe/regenerate events were
+    // treated as "normal". Preserve that behavior once for existing agents,
+    // then let the editor's explicit checkbox remain authoritative.
+    const generationTypesVersion = Number(raw.generationTypesVersion) || 1;
+    if (generationTypesVersion < 2
+        && generationTypes.includes('normal')
+        && !generationTypes.includes('swipe')) {
+        generationTypes.push('swipe');
+    }
+
+    const stateGate = raw.stateGate && typeof raw.stateGate === 'object'
+        ? raw.stateGate
+        : {};
+    const stateGateOperators = new Set(['eq', 'neq', 'exists', 'not_exists', 'contains']);
+
     return {
         ...d,
         ...raw,
@@ -316,9 +448,66 @@ function normalizeConditions(raw) {
         triggerProbability: Number.isFinite(Number(raw.triggerProbability))
             ? clamp(Number(raw.triggerProbability), 0, 100)
             : d.triggerProbability,
-        generationTypes: Array.isArray(raw.generationTypes)
-            ? raw.generationTypes.map(t => String(t ?? '').trim()).filter(Boolean)
-            : d.generationTypes,
+        generationTypes,
+        generationTypesVersion: 2,
+        stateGate: {
+            enabled: Boolean(stateGate.enabled),
+            variableName: typeof stateGate.variableName === 'string'
+                ? stateGate.variableName.trim()
+                : '',
+            jsonField: typeof stateGate.jsonField === 'string'
+                ? stateGate.jsonField.trim()
+                : 'json',
+            path: typeof stateGate.path === 'string' ? stateGate.path.trim() : '',
+            operator: stateGateOperators.has(stateGate.operator) ? stateGate.operator : 'eq',
+            value: typeof stateGate.value === 'string'
+                ? stateGate.value
+                : JSON.stringify(stateGate.value ?? true),
+            requireFresh: stateGate.requireFresh !== false,
+        },
+    };
+}
+
+function normalizeEveryN(raw, fallback = 1) {
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0
+        ? clamp(Math.floor(value), 1, 100000)
+        : fallback;
+}
+
+function normalizeContinuityGuard(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    return {
+        ...raw,
+        enabled: Boolean(raw.enabled),
+        everyN: normalizeEveryN(raw.everyN, 5),
+        requiresStateCard: raw.requiresStateCard !== false,
+        detectVariable: typeof raw.detectVariable === 'string'
+            ? raw.detectVariable.trim()
+            : 'sa_state_card',
+        repairContextVariable: typeof raw.repairContextVariable === 'string'
+            ? raw.repairContextVariable.trim()
+            : 'sa_narrative_engine',
+    };
+}
+
+function normalizeScope(raw) {
+    const modes = new Set(['any', 'character', 'tag', 'group']);
+    const cleanList = value => Array.isArray(value)
+        ? [...new Set(value.map(entry => String(entry ?? '').trim()).filter(Boolean))]
+        : [];
+    return {
+        mode: modes.has(raw?.mode) ? raw.mode : 'any',
+        characterBindings: cleanList(raw?.characterBindings),
+        tagBindings: cleanList(raw?.tagBindings),
+        groupBindings: cleanList(raw?.groupBindings),
+    };
+}
+
+function normalizeActivationPolicy(raw) {
+    const modes = new Set(['always', 'until-state', 'once-per-chat', 'once-per-branch']);
+    return {
+        mode: modes.has(raw?.mode) ? raw.mode : 'always',
     };
 }
 
@@ -337,6 +526,15 @@ export function normalizeAgent(raw = {}) {
     // "feed the agent its own output" toggles, so the guard below can see both.
     const mergeVariable = normalizeMergeVariable(raw.mergeVariable);
     const sidecarCall = normalizeSidecarCall(raw.sidecarCall);
+    const postProcess = normalizePostProcess(raw.postProcess);
+    const continuityGuard = normalizeContinuityGuard(raw.continuityGuard);
+
+    // The lifecycle routes sidecars first and returns before rewrite handling.
+    // Persist the route users will actually get instead of allowing a checked
+    // rewrite control that can never run.
+    if (sidecarCall.enabled && postProcess.rewriteEnabled) {
+        postProcess.rewriteEnabled = false;
+    }
 
     // ── Mutual exclusion: carry-output feedback vs self-memory ──
     // Both read the SAME per-swipe history of this agent's output. Carry-output
@@ -368,8 +566,12 @@ export function normalizeAgent(raw = {}) {
         author: typeof raw.author === 'string' ? raw.author : d.author,
         prompt: typeof raw.prompt === 'string' ? raw.prompt : d.prompt,
         phase: VALID_PHASES.includes(raw.phase) ? raw.phase : d.phase,
-        injection: { ...d.injection, ...(raw.injection ?? {}) },
-        postProcess: normalizePostProcess(raw.postProcess),
+        injection: {
+            ...d.injection,
+            ...(raw.injection ?? {}),
+            injectResult: raw.injection?.injectResult !== false,
+        },
+        postProcess,
         regexScripts: Array.isArray(raw.regexScripts)
             ? raw.regexScripts.map(s => normalizeRegexScript(s ?? {}))
             : d.regexScripts,
@@ -377,7 +579,13 @@ export function normalizeAgent(raw = {}) {
             ? raw.connectionProfile
             : d.connectionProfile,
         maxTokens: Number.isFinite(Number(raw.maxTokens)) ? Number(raw.maxTokens) : d.maxTokens,
+        everyN: normalizeEveryN(raw.everyN, continuityGuard?.everyN ?? d.everyN),
+        everyNCadence: raw.everyNCadence === 'all-attempts' ? 'all-attempts' : 'new-replies',
+        reuseSnapshotBetweenRuns: raw.reuseSnapshotBetweenRuns === true,
+        activationPolicy: normalizeActivationPolicy(raw.activationPolicy),
+        scope: normalizeScope(raw.scope),
         enabled: Boolean(raw.enabled),
+        paused: Boolean(raw.paused),
         conditions: normalizeConditions(raw.conditions),
         groupId: typeof raw.groupId === 'string' ? raw.groupId : null,
         sourceTemplateId: typeof raw.sourceTemplateId === 'string'
@@ -389,6 +597,8 @@ export function normalizeAgent(raw = {}) {
         mergeVariable,
         stateCard: raw.stateCard && typeof raw.stateCard === 'object' ? raw.stateCard : null,
         phoneConfig: raw.phoneConfig && typeof raw.phoneConfig === 'object' ? raw.phoneConfig : null,
+        feedConfig: raw.feedConfig && typeof raw.feedConfig === 'object' ? raw.feedConfig : null,
+        continuityGuard,
         sidecarCall,
     };
 }

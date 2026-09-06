@@ -68,6 +68,41 @@ function parseBullets(rawContent) {
     }).filter(b => b.detail);
 }
 
+const RELEVANCE_PRIORITY = [
+    'quiet shift',
+    'opportunity',
+    'alliance forming',
+    'complication',
+    'rising tension',
+    'threat',
+    'countdown',
+    'imminent',
+];
+
+function parseStructuredState(rawContent) {
+    try {
+        const parsed = JSON.parse(rawContent);
+        const entries = Object.entries(parsed?.characters || {})
+            .filter(([, state]) => state && state.status !== 'present' && state.attention !== 'dormant');
+        if (!entries.length) return null;
+
+        const locations = [...new Set(entries.map(([, state]) => state.location).filter(Boolean))];
+        const scope = locations.length === 1 ? locations[0] : locations.length ? 'Multiple locations' : 'Background';
+        const relevance = entries
+            .map(([, state]) => String(state.relevance || 'quiet shift').toLowerCase())
+            .sort((a, b) => RELEVANCE_PRIORITY.indexOf(b) - RELEVANCE_PRIORITY.indexOf(a))[0]
+            || 'quiet shift';
+        const bullets = entries.map(([subject, state]) => {
+            const parts = [state.activity];
+            if (state.nextAction) parts.push(`Next: ${state.nextAction}`);
+            return { subject, detail: parts.filter(Boolean).join(' — ') };
+        }).filter(item => item.detail);
+        return { scope, relevance, bullets };
+    } catch {
+        return null;
+    }
+}
+
 // ============================================================================
 // MAIN RENDER FUNCTION
 // ============================================================================
@@ -79,26 +114,32 @@ function parseBullets(rawContent) {
  * @param {HTMLElement} el — the data container element
  */
 export function renderParallelOffscreen(el) {
-    const scope     = el.dataset.scope ?? '';
-    const relevance = el.dataset.relevance ?? '';
     const rawContent = el.textContent ?? '';
 
     if (!rawContent.trim()) return;
 
+    const structured = parseStructuredState(rawContent);
+    const scope = structured?.scope ?? el.dataset.scope ?? '';
+    const relevance = structured?.relevance ?? el.dataset.relevance ?? '';
+
     const { icon, color, label } = getRelevanceData(relevance);
-    const bullets = parseBullets(rawContent);
+    // Pull semantic accents toward the theme's foreground color. This keeps
+    // the relevance label readable on both pale and dark chat bubbles while
+    // preserving its category color.
+    const readableAccent = `color-mix(in srgb, ${color} 65%, var(--SmartThemeBodyColor, #fff) 35%)`;
+    const bullets = structured?.bullets ?? parseBullets(rawContent);
 
     if (bullets.length === 0) return;
 
     // ── Header line ──
     // Scope + relevance badge, collapsible
     const headerHtml = `<div style="display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none">`
-        + `<i class="fa-solid fa-globe" style="font-size:9px;color:rgba(200,205,215,0.3)"></i>`
-        + `<span style="font-size:10.5px;color:rgba(200,205,215,0.4);font-style:italic;letter-spacing:0.02em">`
+        + `<i class="fa-solid fa-globe" style="font-size:9px;color:var(--sa-text-muted,rgba(200,205,215,0.45))"></i>`
+        + `<span style="font-size:10.5px;color:var(--sa-text-secondary,rgba(200,205,215,0.65));font-style:italic;letter-spacing:0.02em">`
             + `${escHtml(scope)}`
         + `</span>`
         + `<span style="display:inline-flex;align-items:center;gap:4px;font-size:9px;padding:1px 6px;border-radius:3px;`
-            + `background:${hexToRgba(color, 0.1)};color:${color};border:0.5px solid ${hexToRgba(color, 0.2)};opacity:0.7">`
+            + `background:${hexToRgba(color, 0.1)};color:${readableAccent};border:0.5px solid ${hexToRgba(color, 0.25)}">`
             + `<i class="fa-solid ${icon}" style="font-size:8px"></i>`
             + `${escHtml(label)}`
         + `</span>`
@@ -107,10 +148,10 @@ export function renderParallelOffscreen(el) {
     // ── Bullet items ──
     const bulletsHtml = bullets.map(b => {
         const subjectSpan = b.subject
-            ? `<span style="color:rgba(200,205,215,0.5);font-weight:500">${escHtml(b.subject)}:</span> `
+            ? `<span style="color:var(--sa-text-body,rgba(200,205,215,0.8));font-weight:500">${escHtml(b.subject)}:</span> `
             : '';
-        return `<div style="display:flex;align-items:baseline;gap:6px;padding:1px 0;font-size:10.5px;color:rgba(200,205,215,0.35);line-height:1.55">`
-            + `<span style="color:${hexToRgba(color, 0.3)};font-size:7px;flex-shrink:0;margin-top:3px">●</span>`
+        return `<div style="display:flex;align-items:baseline;gap:6px;padding:1px 0;font-size:10.5px;color:var(--sa-text-secondary,rgba(200,205,215,0.65));line-height:1.55">`
+            + `<span style="color:${readableAccent};font-size:7px;flex-shrink:0;margin-top:3px">●</span>`
             + `<span>${subjectSpan}${escHtml(b.detail)}</span>`
             + `</div>`;
     }).join('');

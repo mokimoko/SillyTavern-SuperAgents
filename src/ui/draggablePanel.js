@@ -19,9 +19,10 @@
  *   - Position persisted per-panel under extension_settings[MODULE_NAME].panels
  *     and re-clamped on window resize.
  *
- * This module owns only the drag/position concern. Each consumer builds its
- * own DOM and calls makeDraggablePanel(el, opts); the helper returns a small
- * controller ({ show, hide, toggle, isOpen, resetPosition, destroy }).
+ * This module owns the shared floating-panel shell concerns. Each consumer
+ * builds its own DOM, mounts it with mountDraggablePanel(), then calls
+ * makeDraggablePanel(el, opts); the helper returns a small controller
+ * ({ show, hide, toggle, isOpen, resetPosition, bringToFront, destroy }).
  */
 
 import { saveSettingsDebounced } from '../../../../../../script.js';
@@ -34,6 +35,50 @@ const LOG_PREFIX = '[SuperAgents/panel]';
 const EDGE_GAP = 20;          // default px gap from viewport edges
 const SNAP_THRESHOLD = 24;    // snap if a panel edge is within this many px
 const SNAP_GAP = 10;          // px gap from the edge after snapping
+const PANEL_Z_BASE = 4000;
+const PANEL_Z_CEILING = 4999;
+let topPanelZ = PANEL_Z_BASE;
+
+function numericZ(el) {
+    const inline = Number.parseInt(el?.style?.zIndex, 10);
+    if (Number.isFinite(inline)) return inline;
+    const computed = Number.parseInt(globalThis.getComputedStyle?.(el)?.zIndex, 10);
+    return Number.isFinite(computed) ? computed : PANEL_Z_BASE;
+}
+
+/** Raise one floating surface without crossing into modal/toast overlay layers. */
+export function bringPanelToFront(el) {
+    if (!el?.style) return PANEL_Z_BASE;
+    const openPanels = [...(globalThis.document?.querySelectorAll?.('.sa-panel-open') || [])];
+    const highest = openPanels.reduce((max, panel) => Math.max(max, numericZ(panel)), topPanelZ);
+
+    if (highest >= PANEL_Z_CEILING) {
+        const ordered = openPanels
+            .filter(panel => panel !== el)
+            .sort((a, b) => numericZ(a) - numericZ(b));
+        ordered.forEach((panel, index) => { panel.style.zIndex = String(PANEL_Z_BASE + index); });
+        topPanelZ = PANEL_Z_BASE + ordered.length;
+    } else {
+        topPanelZ = highest;
+    }
+
+    topPanelZ += 1;
+    el.style.zIndex = String(topPanelZ);
+    return topPanelZ;
+}
+
+/**
+ * Mount a floating panel in ST's top-settings stacking context. The holder is
+ * above #top-bar but contains the native left/right drawers, allowing CSS to
+ * order SuperAgents between them. Fall back to body for nonstandard ST shells.
+ * @param {HTMLElement} el
+ * @returns {HTMLElement}
+ */
+export function mountDraggablePanel(el) {
+    const host = document.getElementById('top-settings-holder') || document.body;
+    host.appendChild(el);
+    return el;
+}
 
 // ============================================================================
 // POSITION PERSISTENCE
@@ -400,6 +445,7 @@ function wireResize(el, cfg, persist) {
  *   isOpen: () => boolean,
  *   resetPosition: () => void,
  *   reposition: () => void,
+ *   bringToFront: () => void,
  *   destroy: () => void,
  * }}
  */
@@ -436,6 +482,9 @@ export function makeDraggablePanel(el, opts = {}) {
     applyPosition(el, cfg.id, cfg.defaultAnchor);
     wireDrag(el, cfg, handle, (x, y) => writePanelPosition(cfg.id, x, y));
 
+    const onActivate = () => bringPanelToFront(el);
+    el.addEventListener('pointerdown', onActivate, true);
+
     const onResize = () => {
         if (cfg.resizable) applySize(el, cfg.id, { minW: cfg.minW, minH: cfg.minH });
         applyPosition(el, cfg.id, cfg.defaultAnchor);
@@ -454,6 +503,7 @@ export function makeDraggablePanel(el, opts = {}) {
             el.classList.add('sa-panel-open');
             if (cfg.resizable) applySize(el, cfg.id, { minW: cfg.minW, minH: cfg.minH });
             applyPosition(el, cfg.id, cfg.defaultAnchor);
+            bringPanelToFront(el);
         },
         hide() {
             el.classList.remove('sa-panel-open');
@@ -481,8 +531,12 @@ export function makeDraggablePanel(el, opts = {}) {
         reposition() {
             applyPosition(el, cfg.id, cfg.defaultAnchor);
         },
+        bringToFront() {
+            bringPanelToFront(el);
+        },
         destroy() {
             window.removeEventListener('resize', onResize);
+            el.removeEventListener('pointerdown', onActivate, true);
             el.remove();
         },
     };

@@ -1,0 +1,84 @@
+{
+    "id": "tpl-social-feed",
+    "name": "Social Feed / Moments",
+    "description": "A shared off-scene social surface for posts, comments, and reactions. Characters share pieces of lives that continue beyond the current scene; Dynamic Events can ask them to consider posting when something socially meaningful changes.",
+    "icon": "fa-solid fa-newspaper",
+    "category": "custom",
+    "tags": ["feed", "social", "moments", "off-screen", "relationships", "diegetic"],
+    "version": 4,
+    "author": "",
+    "prompt": "### {{app_name}} Publisher\n\nYou manage {{app_name}}, an in-world social app. Evaluate whether {{author}} would publish something now. The app should make characters feel socially embedded: they have friends, duties, tastes, private boundaries, and lives that do not revolve around {{user}}.\n\nRECENT SCENE\n{{recent_scene}}\n\nRECENT {{app_name}} ACTIVITY\n{{feed_history}}\n\nDECISION RULES\n- Publish only if there is something {{author}} would plausibly choose to share. Silence and privacy are meaningful; do not turn every state change into content.\n- Write the post in {{author}}'s actual voice. It may be mundane, funny, indirect, aesthetic, strategic, needy, proud, or guarded. Do not summarize tracker fields.\n- Respect audience boundaries. Use public for broadly visible posts, shared for the normal social circle, and selected for a deliberately limited circle.\n- A post can reveal an edge of an independent life without mentioning {{user}}. Never force romantic availability or make all social attention point toward {{user}}.\n- NEVER author a post, comment, reaction, like, or any other action as {{user}}. {{user}} is controlled exclusively by the human. Other established characters and NPCs may post or comment when plausible.\n- Generate comments only from established people who plausibly know the author and would actually respond. Zero comments is normal. Maximum three.\n- Do not invent a major milestone that is absent from scene or persistent state.\n\nOUTPUT\nReturn one JSON object only. No markdown.\n\nWithhold:\n{\"result\":\"withhold\",\"continuity\":\"brief private reason\"}\n\nPublish:\n{\"result\":\"publish\",\"post\":{\"author\":\"{{author}}\",\"content\":\"post text\",\"audience\":\"public|shared|selected\"},\"comments\":[{\"author\":\"name\",\"content\":\"comment\"}],\"continuity\":\"brief note about what this expression establishes\"}",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 1,
+        "role": 0,
+        "order": 105,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": false,
+        "maxTokens": 512,
+        "responseKey": "feed_post",
+        "display": {
+            "enabled": false,
+            "position": "top",
+            "hookClass": "",
+            "dataMap": {},
+            "contentField": ""
+        }
+    },
+    "mergeVariable": {
+        "enabled": false,
+        "mode": "snapshot",
+        "variableName": "",
+        "extractPattern": "",
+        "fieldNames": [],
+        "keyFields": [],
+        "stripFromResponse": false,
+        "injectFormatted": false,
+        "formatHeader": "",
+        "formatItem": "",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 512,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerPatterns": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue", "swipe"]
+    },
+    "feedConfig": {
+        "appName": "Twatter",
+        "maxStoredPosts": 80,
+        "maxInjectedPosts": 6,
+        "contextPosts": 8,
+        "maxComments": 3,
+        "maxTokens": 512,
+        "ambientProbability": 30,
+        "minRepliesBetweenPosts": 3,
+        "injectionDepth": 1,
+        "stateContext": {
+            "enabled": true,
+            "includeStateSources": true,
+            "includeStateTracks": true,
+            "maxChars": 6000
+        }
+    }
+}

@@ -24,10 +24,10 @@
 // ============================================================================
 
 const OPTIONS = [
-    { key: 'variation', label: 'Variation', color: 'rgba(110,165,255,0.7)' },
-    { key: 'opposite',  label: 'Opposite',  color: 'rgba(255,140,100,0.7)' },
-    { key: 'outside',   label: 'Outside',   color: 'rgba(110,200,150,0.7)' },
-    { key: 'wildcard',  label: 'Wildcard',  color: 'rgba(190,140,255,0.7)' },
+    { key: 'variation', label: 'Variation', color: 'color-mix(in srgb, rgb(110,165,255) 65%, var(--SmartThemeBodyColor, #fff) 35%)' },
+    { key: 'opposite',  label: 'Opposite',  color: 'color-mix(in srgb, rgb(255,140,100) 65%, var(--SmartThemeBodyColor, #fff) 35%)' },
+    { key: 'outside',   label: 'Outside',   color: 'color-mix(in srgb, rgb(110,200,150) 65%, var(--SmartThemeBodyColor, #fff) 35%)' },
+    { key: 'wildcard',  label: 'Wildcard',  color: 'color-mix(in srgb, rgb(190,140,255) 65%, var(--SmartThemeBodyColor, #fff) 35%)' },
 ];
 
 // ============================================================================
@@ -92,7 +92,7 @@ function injectStyles() {
             cursor: pointer;
         }
         .dm-menu-rendered:not([data-dm-selected]) [data-dm-option]:hover {
-            background: rgba(255,255,255,0.03);
+            background: var(--sa-surface-rail-hot, rgba(255,255,255,0.03));
         }
         .dm-menu-rendered[data-dm-selected] [data-dm-option] {
             opacity: 0.35;
@@ -100,7 +100,7 @@ function injectStyles() {
         }
         .dm-menu-rendered[data-dm-selected] [data-dm-option].dm-selected {
             opacity: 1;
-            background: rgba(255,255,255,0.04);
+            background: var(--sa-surface-input, rgba(255,255,255,0.04));
         }
     `;
     document.head.appendChild(style);
@@ -209,7 +209,7 @@ export function renderDirectionMenu(el) {
         const isLast = i === presentKeys.length - 1;
         const borderBottom = isLast
             ? ''
-            : 'border-bottom:0.5px solid rgba(180,185,195,0.04);';
+            : 'border-bottom:0.5px solid var(--sa-border-faint,rgba(180,185,195,0.04));';
 
         const row = document.createElement('div');
         row.setAttribute('data-dm-option', opt.key);
@@ -217,7 +217,7 @@ export function renderDirectionMenu(el) {
         row.setAttribute('data-dm-text', text);
         row.style.cssText = `padding:8px 12px;display:flex;gap:10px;align-items:flex-start;transition:background 0.15s, opacity 0.2s;${borderBottom}`;
         row.innerHTML = `<span style="font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.07em;color:${opt.color};flex-shrink:0;width:58px;padding-top:2px">${opt.label}</span>`
-            + `<span style="font-size:12.5px;color:rgba(200,205,215,0.78);line-height:1.55">${escHtml(text)}</span>`;
+            + `<span style="font-size:12.5px;color:var(--sa-text-body,rgba(200,205,215,0.8));line-height:1.55">${escHtml(text)}</span>`;
 
         rowEls.push(row);
     }
@@ -228,11 +228,11 @@ export function renderDirectionMenu(el) {
     const menu = document.createElement('div');
     menu.className = 'dm-menu-rendered';
     menu.style.cssText = 'margin:10px 0 0;border-radius:6px;overflow:hidden;'
-        + 'border:0.5px solid rgba(180,185,195,0.08);'
+        + 'border:0.5px solid var(--sa-border-mid,rgba(180,185,195,0.08));'
         + 'font-family:system-ui,-apple-system,sans-serif';
 
     const header = document.createElement('div');
-    header.style.cssText = 'padding:5px 12px 4px;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:rgba(200,205,215,0.3);border-bottom:0.5px solid rgba(180,185,195,0.06)';
+    header.style.cssText = 'padding:5px 12px 4px;font-size:10px;text-transform:uppercase;letter-spacing:0.08em;color:var(--sa-text-muted,rgba(200,205,215,0.45));border-bottom:0.5px solid var(--sa-border-soft,rgba(180,185,195,0.06))';
     header.textContent = 'Where does the scene go?';
     menu.appendChild(header);
 

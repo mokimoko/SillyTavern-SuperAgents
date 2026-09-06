@@ -1,0 +1,147 @@
+{
+    "id": "tpl-social-web-ledger",
+    "name": "Social Web Ledger",
+    "description": "Tracks directional, canon-backed relationships exclusively between autonomous non-player characters. Every current or previously used player persona is excluded; character-to-persona relationships belong only to Relationship Ledger.",
+    "icon": "fa-solid fa-diagram-project",
+    "category": "tracker",
+    "tags": ["tracker", "relationships", "social-web", "npc", "persistent", "state"],
+    "version": 6,
+    "author": "mokimoko",
+    "prompt": "### Social Web Ledger — Post-Generation NPC Relationship Tracker\n\nROLE: Maintain a bounded, directional social graph among established named non-player characters. Track only relationships that matter to current or durable story continuity. Output ONLY the ledger block. No prose, commentary, or explanation.\n\nOWNERSHIP BOUNDARY:\n- This ledger owns NPC-to-NPC relationships. Never create an edge whose source or target is {{user}}; the Relationship Ledger owns character-to-persona relationships.\n- Secret contents and knowledge ownership belong in a dedicated knowledge tracker. This ledger may record that withheld information creates pressure, but must not duplicate or reveal the protected information.\n- Current goals and off-screen actions belong in Active Roster. Record their relational consequence here, not the whole plan.\n\nDIRECTIONAL EDGES:\n- Relationship direction matters. Mina→Fenris describes Mina's stance toward Fenris; Fenris→Mina may differ and should exist only when that distinct perspective matters.\n- Use the stable key format Source→Target with exact established names and no spaces around the arrow. Preserve every existing key exactly.\n- Do not create both directions automatically. Add the reverse edge only when canon supports a distinct, narratively relevant perspective.\n\nOUTPUT FORMAT (compact JSON):\n[SOCIAL_WEB]\n{\"relationships\":{\"Mina→Fenris\":{\"source\":\"Mina\",\"target\":\"Fenris\",\"bondTypes\":[\"siblings\",\"political allies\"],\"closeness\":65,\"trust\":70,\"tension\":35,\"obligation\":80,\"pressure\":45,\"powerBalance\":\"situational\",\"publicStance\":\"Respectful alliance\",\"privateStance\":\"Protective but increasingly suspicious\",\"visibility\":\"shared\",\"currentPressure\":\"Fenris appears to be withholding something important\",\"lastShift\":\"Mina covered for Fenris before the council\",\"durability\":\"structural\",\"attention\":\"active\",\"milestones\":[\"Mina covered for Fenris before the council\"],\"significantEvents\":[]}}}\n[/SOCIAL_WEB]\n\nGRAPH SCOPE:\n1. Keep at most 24 edges. Fewer is better. This is a useful social graph, not a cast list.\n2. Add an edge only when the relationship is established by the card, scenario, lore, or visible story. Mere co-presence does not establish a relationship.\n3. Preserve structural and durable edges even while dormant. Contextual edges may leave the graph after they cease to matter, but never delete canon merely because someone is off-screen.\n4. Copy existing values forward unless the latest scene provides evidence for change. Normal meter changes are 0–10 points; pressure may change by up to 15.\n5. Set attention=active when this edge has a live consequence, unresolved pressure, or plausible near-term influence. Use dormant for a durable edge that should be remembered but not selected for current events.\n\nFIELDS:\n- source, target: exact established character names. Neither may be {{user}}.\n- bondTypes: concise canonical roles or ties such as siblings, friends, rivals, commander/subordinate, creditor/debtor, political allies, ex-partners. Multiple ties may coexist.\n- closeness: shared familiarity and personal access, not necessarily warmth.\n- trust: source's confidence in target's honesty, reliability, and safety.\n- tension: active friction, resentment, competition, fear, attraction, or unresolved contradiction. Do not assume its cause.\n- obligation: how strongly source believes they owe, must protect, serve, answer to, or act for target.\n- pressure: how strongly this relationship is currently pushing on decisions or events.\n- powerBalance: equal, source-holds-power, target-holds-power, contested, situational, or unknown.\n- publicStance: what observers would reasonably think this relationship is.\n- privateStance: source's actual current posture toward target. Do not expose this to characters who lack access.\n- visibility: public, shared, private, or hidden; describes access to the relationship's private reality, not whether the people have ever met.\n- currentPressure: one concise unresolved relational demand, contradiction, or consequence. Use \"None established\" when there is none.\n- lastShift: the most recent meaningful change. Preserve it until a later change replaces it.\n- durability: structural, durable, or contextual.\n- attention: active or dormant.\n- milestones: short canon facts that permanently change what the relationship can mean. Preserve every prior milestone.\n- significantEvents: up to 8 concise relationship-defining events; retain the most consequential.\n\nRULES:\n- Do not infer friendship, romance, hostility, kinship, or alliance from genre convention.\n- Scores describe pressures; they do not create events, consent, forgiveness, betrayal, reconciliation, or disclosure.\n- Public and private stances may differ sharply without either being false.\n- Affection and attraction are intentionally not universal meters here. If relevant, express their established social consequence through bondTypes, stance, tension, pressure, and canon milestones.\n- Output valid compact JSON and only the required block.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 88,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 4096,
+        "responseKey": "social_web_ledger",
+        "includeHistory": true,
+        "historyMessageCount": 8,
+        "genesisHistoryCount": 20
+    },
+    "mergeVariable": {
+        "retention": {
+            "enabled": false,
+            "collectionPath": "relationships",
+            "excludePlayerPersonas": true,
+            "participantFields": ["source", "target"]
+        },
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 1,
+            "invariants": [
+                { "type": "maxDelta", "path": "relationships.*.closeness", "maximum": 10 },
+                { "type": "maxDelta", "path": "relationships.*.trust", "maximum": 10 },
+                { "type": "maxDelta", "path": "relationships.*.tension", "maximum": 10 },
+                { "type": "maxDelta", "path": "relationships.*.obligation", "maximum": 10 },
+                { "type": "maxDelta", "path": "relationships.*.pressure", "maximum": 15 },
+                { "type": "appendOnlySet", "path": "relationships.*.milestones" }
+            ],
+            "schema": {
+                "type": "object",
+                "required": ["relationships"],
+                "properties": {
+                    "relationships": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["source", "target", "bondTypes", "closeness", "trust", "tension", "obligation", "pressure", "powerBalance", "publicStance", "privateStance", "visibility", "currentPressure", "lastShift", "durability", "attention", "milestones", "significantEvents"],
+                            "properties": {
+                                "source": { "type": "string", "minLength": 1, "maxLength": 120 },
+                                "target": { "type": "string", "minLength": 1, "maxLength": 120 },
+                                "bondTypes": { "type": "array", "maxItems": 6, "items": { "type": "string", "minLength": 1, "maxLength": 80 } },
+                                "closeness": { "type": "number", "minimum": 0, "maximum": 100 },
+                                "trust": { "type": "number", "minimum": 0, "maximum": 100 },
+                                "tension": { "type": "number", "minimum": 0, "maximum": 100 },
+                                "obligation": { "type": "number", "minimum": 0, "maximum": 100 },
+                                "pressure": { "type": "number", "minimum": 0, "maximum": 100 },
+                                "powerBalance": { "type": "string", "enum": ["equal", "source-holds-power", "target-holds-power", "contested", "situational", "unknown"] },
+                                "publicStance": { "type": "string", "minLength": 1, "maxLength": 180 },
+                                "privateStance": { "type": "string", "minLength": 1, "maxLength": 180 },
+                                "visibility": { "type": "string", "enum": ["public", "shared", "private", "hidden"] },
+                                "currentPressure": { "type": "string", "minLength": 1, "maxLength": 240 },
+                                "lastShift": { "type": "string", "minLength": 1, "maxLength": 240 },
+                                "durability": { "type": "string", "enum": ["structural", "durable", "contextual"] },
+                                "attention": { "type": "string", "enum": ["active", "dormant"] },
+                                "milestones": { "type": "array", "maxItems": 24, "items": { "type": "string", "maxLength": 160 } },
+                                "significantEvents": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 220 } }
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_social_web",
+        "extractPattern": "\\[SOCIAL_WEB\\]\\s*([\\s\\S]*?)\\s*\\[\\/SOCIAL_WEB\\]",
+        "fieldNames": ["json"],
+        "keyFields": [],
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "formatHeader": "CURRENT NPC-ONLY SOCIAL WEB — preserve and update only NPC-to-NPC edges. Delete any edge whose source or target is a current or previously used player persona; Relationship Ledger is the sole owner of character-to-persona state:",
+        "formatItem": "{{json}}",
+        "formatEmpty": "FIRST RUN — establish only canon-backed NPC-to-NPC relationships that matter to durable or current story continuity. An empty relationships object is valid. Never create an edge involving {{user}}, the literal name User, or any current/inactive player persona; both NPC→persona and persona→NPC directions belong exclusively to Relationship Ledger.",
+        "mainContext": {
+            "presencePath": "relationships",
+            "formatHeader": "CURRENT NPC SOCIAL WEB:",
+            "formatItem": "<npc_social_web>\nRead-only authorial reference. Every edge is directional. Public and private stances may differ; private or hidden information is not automatically known to the viewpoint character or other NPCs. Scores create context, not guaranteed behavior.\n\n{{#each json.relationships}}- {{source}} → {{target}} [{{bondTypes}}; {{visibility}}; {{attention}}]\n  Closeness {{closeness}}/100 | Trust {{trust}}/100 | Tension {{tension}}/100 | Obligation {{obligation}}/100 | Pressure {{pressure}}/100\n  Power: {{powerBalance}}\n  Public stance: {{publicStance}}\n  Private stance: {{privateStance}}\n  Current pressure: {{currentPressure}}\n  Last shift: {{lastShift}} | Durability: {{durability}}\n{{#if milestones}}  Milestones: {{milestones}}\n{{/if}}{{#if significantEvents}}  Significant events: {{significantEvents}}\n{{/if}}{{/each}}</npc_social_web>",
+            "formatEmpty": ""
+        }
+    },
+    "regexScripts": [],
+    "stateCard": {
+        "enabled": true,
+        "order": 40,
+        "schema": {
+            "relationshipTextFields": [
+                { "key": "powerBalance", "label": "Power", "type": "badge", "badgeColor": "#C4956A" },
+                { "key": "publicStance", "label": "Public stance" },
+                { "key": "privateStance", "label": "Private stance" },
+                { "key": "visibility", "label": "Visibility", "type": "badge", "badgeColor": "#AFA9EC" },
+                { "key": "currentPressure", "label": "Current pressure" },
+                { "key": "lastShift", "label": "Last shift" },
+                { "key": "durability", "label": "Durability", "type": "badge", "badgeColor": "#8890A0" },
+                { "key": "attention", "label": "Attention", "type": "badge", "badgeColor": "#6A9DC0" }
+            ],
+            "relationshipMeters": [
+                { "key": "closeness", "label": "Closeness", "color": "#7F77DD", "max": 100 },
+                { "key": "trust", "label": "Trust", "color": "#5DCAA5", "max": 100 },
+                { "key": "tension", "label": "Tension", "color": "#D4537E", "max": 100 },
+                { "key": "obligation", "label": "Obligation", "color": "#D19A52", "max": 100 },
+                { "key": "pressure", "label": "Pressure", "color": "#C0554D", "max": 100 }
+            ]
+        }
+    },
+    "connectionProfile": "",
+    "maxTokens": 4096,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-social-web-ledger"
+}

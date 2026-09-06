@@ -34,6 +34,7 @@ import {
 } from './profiles.js';
 import { recordCall } from './callStats.js';
 import { debug } from '../../index.js';
+import { getEffectiveConnectionProfile } from '../data/store.js';
 
 const LOG_PREFIX = '[SuperAgents/llm]';
 
@@ -229,7 +230,8 @@ async function cmrsSendOnce(ctx, profileId, messages, maxTokens, stream, onChunk
  * @param {object} opts
  * @param {string} opts.systemPrompt    Required.
  * @param {string} opts.userContent     Required.
- * @param {string} [opts.profileRef]    Connection profile name or ID. '' = current.
+ * @param {string} [opts.profileRef]    Connection profile name or ID. Empty inherits
+ *                                      the enabled SuperAgents default, then current.
  * @param {number} [opts.maxTokens]     Defaults to 8192.
  * @param {boolean} [opts.includeHistory] If true, prepend `<scene_context>` block.
  * @param {string} [opts.history]       Text to wrap in `<scene_context>` if included.
@@ -258,6 +260,7 @@ export async function callAgentLLM({
     timeoutMs = DEFAULT_CALL_TIMEOUT_MS,
 } = {}) {
     const ctx = getContext();
+    profileRef = getEffectiveConnectionProfile(profileRef);
 
     if (typeof systemPrompt !== 'string' || typeof userContent !== 'string') {
         console.error(`${LOG_PREFIX} ${callerName}: systemPrompt and userContent must be strings`);

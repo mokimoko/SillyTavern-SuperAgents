@@ -8,8 +8,9 @@
  * and NO text reconstruction in v0 — see RECAST_DIFF_GAMEPLAN.md §"v0".
  *
  * Visibility test (gameplan §1, as amended during recon):
- *   a run record exists whose mode === 'rewrite', originalText is non-null,
- *   originalText !== result, AND result.trim() === message.mes.trim().
+ *   its source agent is enabled, a run record exists whose mode === 'rewrite',
+ *   originalText is non-null, originalText !== result, AND
+ *   result.trim() === message.mes.trim(). Paused counts as enabled.
  * The final clause is the swipe/staleness guard: agentRuns carries no
  * _swipeId, so we can't ask "was this recorded on the current swipe?". But if
  * the user swiped away (or hand-edited), message.mes no longer matches the
@@ -33,6 +34,7 @@ import { eventSource, event_types } from '../../../../../events.js';
 import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../../../popup.js';
 import { getRunRecords, revertAgentRewrite } from '../core/idempotency.js';
 import { onPostProcessComplete } from '../core/lifecycle.js';
+import { getAgentById, getEnabledAgents, onStoreChange } from '../data/store.js';
 import { refreshMessage } from '../render/renderer.js';
 import { renderInlineHtml, escapeHtml } from '../render/diffEngine.js';
 
@@ -63,6 +65,7 @@ function pickDiffableRecord(mesId) {
     let best = null;
     for (const record of Object.values(records)) {
         if (!record || record.mode !== 'rewrite') continue;
+        if (!getAgentById(record.agentId)?.enabled) continue;
         if (record.originalText == null || record.result == null) continue;
         if (record.originalText === record.result) continue;       // no-op change
         if (String(record.result).trim() !== current) continue;    // stale / swiped / edited
@@ -213,6 +216,7 @@ let delegationBound = false;
 /** @type {MutationObserver|null} */
 let chatObserver = null;
 let syncPending = false;
+let enabledAgentSignature = '';
 
 /**
  * Debounced re-sync after any chat DOM mutation. ST's updateMessageBlock (used
@@ -228,6 +232,17 @@ function scheduleSyncAll() {
         syncPending = false;
         syncAllVisible();
     });
+}
+
+function getEnabledAgentSignature() {
+    return getEnabledAgents().map(agent => agent.id).sort().join('\u0000');
+}
+
+function onStoreChanged() {
+    const nextSignature = getEnabledAgentSignature();
+    if (nextSignature === enabledAgentSignature) return;
+    enabledAgentSignature = nextSignature;
+    scheduleSyncAll();
 }
 
 /** Start observing #chat for message rebuilds. Idempotent. */
@@ -312,6 +327,8 @@ function onPostProcess(messageIndex) {
  * do a first pass over already-visible messages.
  */
 export function initDiffButtons() {
+    enabledAgentSignature = getEnabledAgentSignature();
+    onStoreChange(onStoreChanged);
     let attempts = 0;
     const tryBind = () => {
         bindDelegation();

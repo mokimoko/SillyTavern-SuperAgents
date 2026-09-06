@@ -50,6 +50,10 @@ import {
     getAgentById,
     getGroupById,
     getGlobalSettings,
+    isAgentsPaused,
+    onAgentsPauseChange,
+    onAgentPauseChange,
+    onStoreChange,
 } from '../data/store.js';
 import {
     normalizeGenType,
@@ -72,9 +76,12 @@ import { executeRewriteAgent } from '../modes/rewrite.js';
 import { executeExtractAgent, executeAppendAgent } from '../modes/postProcess.js';
 import { processAgentRegex, clearAgentData } from '../render/regexProcessor.js';
 import { refreshMessage } from '../render/renderer.js';
-import { executePhoneEvaluation } from '../phone/phoneAgent.js';
+import { executePhoneEvaluation, queuePhoneEvaluation } from '../phone/phoneAgent.js';
+import { executeFeedEvaluation, queueFeedEvaluation } from '../feed/feedAgent.js';
 import { ownsCounterItself } from './everyN.js';
 import { runGuardManually } from '../modes/continuityGuardRunner.js';
+import { markActivationPolicyComplete } from './activationPolicy.js';
+import { restoreRetainedSnapshots } from './snapshotReuse.js';
 
 const LOG_PREFIX = '[SuperAgents/lifecycle]';
 const PROMPT_KEY_PREFIX = 'sa_agent_';
@@ -93,6 +100,15 @@ let isGenerationInProgress = false;
 let isAgentRunInProgress = false;
 let generationStopRequested = false;
 
+// A MESSAGE_RECEIVED event is only eligible for automatic post-processing
+// when it belongs to the generation currently armed by
+// GENERATION_AFTER_COMMANDS. Chat hydration (including a brand-new card's
+// greeting) can emit MESSAGE_RECEIVED without a generation; treating that as a
+// normal turn makes every post agent run merely because a chat was opened.
+// The revision also invalidates async work when the user changes/deletes chats.
+let lifecycleRevision = 0;
+let pendingPostGenClaimed = false;
+
 /**
  * AbortController for the agent run currently in flight (post-gen batch or a
  * manual single run). cancelAgentRun() fires it; every callAgentLLM in the run
@@ -101,6 +117,11 @@ let generationStopRequested = false;
  * @type {AbortController|null}
  */
 let activeRunController = null;
+
+// MESSAGE_RECEIVED can be emitted again while the first handler is still
+// waiting for streaming to settle. Coalesce by message identity so one visible
+// response can never start duplicate post-agent batches.
+const postGenJobs = new WeakMap();
 
 /** Listeners notified when a run starts/stops, so the UI can show/hide stop. */
 const runStateListeners = [];
@@ -159,6 +180,14 @@ function runOpts() {
 /** Snapshot of which agents activated for the current generation. */
 let pendingSnapshot = null;
 
+/**
+ * Last activation set captured when pause begins. It is reused for reference
+ * injection only; the `paused` marker prevents that turn from executing later
+ * even if the user resumes before the main model finishes replying.
+ */
+let frozenSnapshot = null;
+let enabledAgentIds = new Set();
+
 /** Callbacks fired after post-gen processing completes (messageIndex). */
 const postProcessListeners = [];
 
@@ -177,6 +206,47 @@ function isStreamingStillActive(messageIndex) {
     return !sp.isFinished || isGenerationInProgress;
 }
 
+function isReceivedMessageCurrent(revision, snapshot, messageIndex, message) {
+    return revision === lifecycleRevision
+        && snapshot === pendingSnapshot
+        && chat[messageIndex] === message;
+}
+
+/** Drop registered prompt fragments as soon as their source agent turns off. */
+function clearDisabledAgentPrompts() {
+    const enabledKeys = new Set();
+    for (const agent of getEnabledAgents()) {
+        enabledKeys.add(PROMPT_KEY_PREFIX + agent.id);
+        enabledKeys.add(PROMPT_KEY_PREFIX + agent.id + '_ctx');
+    }
+    for (const key of Object.keys(extension_prompts)) {
+        if (key.startsWith(PROMPT_KEY_PREFIX) && !enabledKeys.has(key)) {
+            delete extension_prompts[key];
+        }
+    }
+}
+
+function onLifecycleStoreChanged() {
+    const nextEnabledIds = new Set(getEnabledAgents().map(agent => agent.id));
+    clearDisabledAgentPrompts();
+
+    const removedIds = [...enabledAgentIds].filter(id => !nextEnabledIds.has(id));
+    enabledAgentIds = nextEnabledIds;
+    if (!removedIds.length) return;
+
+    const keepEnabled = (snapshot) => {
+        if (!snapshot) return;
+        for (const key of ['activeAgentIds', 'runnableAgentIds', 'retainedSnapshotAgentIds']) {
+            if (Array.isArray(snapshot[key])) {
+                snapshot[key] = snapshot[key].filter(id => nextEnabledIds.has(id));
+            }
+        }
+    };
+    keepEnabled(pendingSnapshot);
+    if (frozenSnapshot !== pendingSnapshot) keepEnabled(frozenSnapshot);
+    cancelAgentRun();
+}
+
 // ============================================================================
 // PRE-GEN EVENT HANDLERS
 // ============================================================================
@@ -188,9 +258,11 @@ function isStreamingStillActive(messageIndex) {
 function onGenerationStarted() {
     if (isAgentRunInProgress) return;
 
+    lifecycleRevision += 1;
     isGenerationInProgress = true;
     generationStopRequested = false;
     pendingSnapshot = null;
+    pendingPostGenClaimed = false;
     resetTurn(); // zero the per-turn call/agent counters for the cost hint
 
     for (const key of Object.keys(extension_prompts)) {
@@ -212,22 +284,43 @@ function onGenerationStarted() {
 async function onGenerationAfterCommands(generationType, _options, dryRun) {
     if (dryRun || isAgentRunInProgress) return;
 
-    pendingSnapshot = buildActivationSnapshot(generationType, _options);
+    pendingPostGenClaimed = false;
+    const paused = isAgentsPaused();
+    pendingSnapshot = paused
+        ? {
+            ...(frozenSnapshot || {
+                generationType: normalizeGenType(generationType),
+                activeAgentIds: getEnabledAgents().map(agent => agent.id),
+                runnableAgentIds: [],
+                pendingUserText: '',
+            }),
+            runnableAgentIds: [],
+            paused: true,
+        }
+        : buildActivationSnapshot(generationType, _options);
     const activeAgents = getSnapshotAgents(pendingSnapshot);
+    const runnableIds = new Set(pendingSnapshot.runnableAgentIds ?? pendingSnapshot.activeAgentIds ?? []);
+    const retainedSnapshotIds = new Set(pendingSnapshot.retainedSnapshotAgentIds ?? []);
+    const runnableAgents = activeAgents.filter(agent => agent.enabled && runnableIds.has(agent.id) && !agent.paused);
+    const retainedSnapshotAgents = activeAgents.filter(agent => retainedSnapshotIds.has(agent.id));
     const genType = normalizeGenType(generationType);
+
+    if (!paused && retainedSnapshotAgents.length) {
+        restoreRetainedSnapshots(retainedSnapshotAgents);
+    }
 
     // Per-turn memory baseline. Freeze the value a memory agent feeds back into
     // itself so a swipe/regenerate re-rolls against the PREVIOUS turn's value
     // (as the first attempt did), not the discarded attempt's output. A fresh
     // turn captures the current live value; a re-roll restores it before pre-gen
-    // reads. Uses the RAW generation type (normalizeGenType collapses regenerate
-    // → normal, which would lose the distinction). continue/impersonate/quiet
-    // are untouched — they don't re-roll the last turn.
+    // reads. Uses the RAW generation type so both of ST's reroll spellings are
+    // recognized here. continue/impersonate/quiet are untouched — they don't
+    // re-roll the last turn.
     const rawGenType = String(generationType ?? '').trim().toLowerCase();
     const isReroll = rawGenType === 'swipe' || rawGenType === 'regenerate';
-    if (isReroll || rawGenType === 'normal' || rawGenType === '') {
+    if (!paused && (isReroll || rawGenType === 'normal' || rawGenType === '')) {
         const memVars = new Set(
-            activeAgents
+            runnableAgents
                 .filter(a => (a.phase === 'pre' || a.phase === 'both')
                     && a.mergeVariable?.enabled
                     && a.mergeVariable.injectFormatted
@@ -245,7 +338,7 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
     // Director on a heavy model) the same way they'd stop a generation. Static
     // pre-gen prompts and sidecar-context injection below make no LLM calls and
     // don't need the run scaffolding.
-    const hasPreGenLLM = activeAgents.some(a =>
+    const hasPreGenLLM = runnableAgents.some(a =>
         (a.phase === 'pre' || a.phase === 'both') && a.sidecarCall?.enabled,
     );
 
@@ -256,34 +349,39 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
     // so rich-context planners see what the user just typed.
     const contextText = buildPreGenContext();
 
-    if (hasPreGenLLM) {
-        activeRunController = new AbortController();
-        generationStopRequested = false;
-        setRunActive(true);
-        beginSelfGeneration();
-        try {
-            await processPreGenAgents(activeAgents, genType, contextText, pendingSnapshot.pendingUserText, runOpts());
-        } catch (err) {
-            if (!isAbortError(err)) console.error(`${LOG_PREFIX} pre-gen pass failed:`, err);
-        } finally {
-            endSelfGeneration();
-            activeRunController = null;
-            setRunActive(false);
+    if (!paused) {
+        if (hasPreGenLLM) {
+            activeRunController = new AbortController();
+            generationStopRequested = false;
+            setRunActive(true);
+            beginSelfGeneration();
+            try {
+                await processPreGenAgents(runnableAgents, genType, contextText, pendingSnapshot.pendingUserText, runOpts());
+            } catch (err) {
+                if (!isAbortError(err)) console.error(`${LOG_PREFIX} pre-gen pass failed:`, err);
+            } finally {
+                endSelfGeneration();
+                activeRunController = null;
+                setRunActive(false);
+            }
+        } else {
+            await processPreGenAgents(runnableAgents, genType, contextText, pendingSnapshot.pendingUserText);
         }
-    } else {
-        await processPreGenAgents(activeAgents, genType, contextText, pendingSnapshot.pendingUserText);
     }
 
     // --- Static pre-gen prompts (no LLM; skip sidecars, they already ran) ---
     const preAgents = activeAgents.filter(a =>
-        (a.phase === 'pre' || a.phase === 'both') && !a.sidecarCall?.enabled,
+        a.enabled
+        && !retainedSnapshotIds.has(a.id)
+        && (a.phase === 'pre' || a.phase === 'both')
+        && !a.sidecarCall?.enabled,
     );
     for (const agent of preAgents) {
         let expanded = substituteParams(agent.prompt).trim();
         if (!expanded) continue;
 
         if (agent.mergeVariable?.enabled && agent.mergeVariable.injectFormatted && agent.mergeVariable.variableName) {
-            const formatted = formatMergeVariableData(agent.mergeVariable);
+            const formatted = formatMergeVariableData(agent.mergeVariable, { projectPersona: true });
             if (formatted) expanded += '\n\n' + formatted;
         }
 
@@ -296,6 +394,7 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
             agent.injection.scan,
             agent.injection.role,
         );
+        if (!paused && runnableIds.has(agent.id)) markActivationPolicyComplete(agent);
         debug(`${LOG_PREFIX} injected pre-gen prompt for "${agent.name}" at depth ${agent.injection.depth}`);
     }
 
@@ -303,14 +402,20 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
     // Sidecar agents don't inject their full prompt (the narrative model
     // shouldn't emit structured tags), but their tracked state SHOULD be
     // available for contextual awareness (e.g. current time/location).
+    //
+    // Gated by mergeVariable.autoInject (default on): turn it off to keep the
+    // state out of the automatic chat context and instead place it yourself via
+    // the {{sa_<name>}} / {{agent_<var>}} macro at an exact spot in your preset.
     const sidecarContextAgents = activeAgents.filter(a =>
+        a.enabled &&
         a.sidecarCall?.enabled &&
         a.mergeVariable?.enabled &&
         a.mergeVariable.injectFormatted &&
+        a.mergeVariable.autoInject !== false &&
         a.mergeVariable.variableName,
     );
     for (const agent of sidecarContextAgents) {
-        const formatted = formatMergeVariableData(agent.mergeVariable);
+        const formatted = formatMergeVariableData(agent.mergeVariable, { projectPersona: true });
         if (!formatted?.trim()) continue;
 
         const key = PROMPT_KEY_PREFIX + agent.id + '_ctx';
@@ -342,11 +447,37 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
  * @param {number} messageIndex
  */
 async function onMessageReceived(messageIndex) {
-    if (isAgentRunInProgress) return;
-
     const idx = Number(messageIndex);
     const message = chat[idx];
     if (!message || message.is_user || message.is_system) return;
+    const existingJob = postGenJobs.get(message);
+    if (existingJob) {
+        debug(`${LOG_PREFIX} coalesced duplicate post-gen entry for message ${idx}`);
+        return existingJob;
+    }
+    if (!pendingSnapshot) {
+        debug(`${LOG_PREFIX} ignored message ${idx}: no generation snapshot (chat load/greeting)`);
+        return;
+    }
+    if (pendingPostGenClaimed) {
+        debug(`${LOG_PREFIX} ignored duplicate post-gen entry for message ${idx}`);
+        return;
+    }
+    if (isAgentRunInProgress || isAgentsPaused() || pendingSnapshot.paused) return;
+
+    const revision = lifecycleRevision;
+    const snapshot = pendingSnapshot;
+    pendingPostGenClaimed = true;
+
+    const job = processReceivedMessage(idx, message, revision, snapshot).finally(() => {
+        if (postGenJobs.get(message) === job) postGenJobs.delete(message);
+    });
+    postGenJobs.set(message, job);
+    return job;
+}
+
+async function processReceivedMessage(idx, message, revision, snapshot) {
+    if (isAgentsPaused() || !isReceivedMessageCurrent(revision, snapshot, idx, message)) return;
 
     // Cooperative coexistence note (Step 8): if another generation-driving
     // extension is mid-pass on this turn, log it. We don't hard-block — ST's
@@ -358,8 +489,9 @@ async function onMessageReceived(messageIndex) {
     }
 
     if (!isStreamingStillActive(idx)) {
-        if (generationStopRequested) return;
-        await processPostGenAgents(idx);
+        if (generationStopRequested || isAgentsPaused()
+            || !isReceivedMessageCurrent(revision, snapshot, idx, message)) return;
+        await processPostGenAgents(idx, message, revision, snapshot);
         return;
     }
 
@@ -370,6 +502,12 @@ async function onMessageReceived(messageIndex) {
     await new Promise((resolve) => {
         const checkInterval = setInterval(() => {
             attempts++;
+
+            if (!isReceivedMessageCurrent(revision, snapshot, idx, message)) {
+                clearInterval(checkInterval);
+                resolve();
+                return;
+            }
 
             const stillStreaming = isStreamingStillActive(idx);
             const deadlineHit = attempts >= STREAM_POLL_MAX_ATTEMPTS;
@@ -385,8 +523,9 @@ async function onMessageReceived(messageIndex) {
         }, STREAM_POLL_INTERVAL_MS);
     });
 
-    if (generationStopRequested) return;
-    await processPostGenAgents(idx);
+    if (generationStopRequested || isAgentsPaused()
+        || !isReceivedMessageCurrent(revision, snapshot, idx, message)) return;
+    await processPostGenAgents(idx, message, revision, snapshot);
 }
 
 // ============================================================================
@@ -447,6 +586,29 @@ function buildExecutionPlan(agents) {
 }
 
 /**
+ * Evaluate an optional sidecar-only trigger against the response that was just
+ * generated. Ordinary conditions are resolved before generation and therefore
+ * cannot reliably see assistant-emitted protocol tags.
+ *
+ * Invalid patterns fail open: a typo must not silently disable an agent.
+ */
+function matchesCurrentResponse(agent, message) {
+    const pattern = String(agent.sidecarCall?.currentMessagePattern || '').trim();
+    if (!agent.sidecarCall?.enabled || !pattern) return true;
+
+    try {
+        const slashMatch = pattern.match(/^\/(.+)\/([gimsuy]*)$/);
+        const regex = slashMatch
+            ? new RegExp(slashMatch[1], slashMatch[2])
+            : new RegExp(pattern, 'i');
+        return regex.test(String(message?.mes || ''));
+    } catch (err) {
+        console.warn(`${LOG_PREFIX} invalid current-response pattern for "${agent.name}"; running without the gate`, err);
+        return true;
+    }
+}
+
+/**
  * Execute all agents within one group.
  *
  * Sequential groups: every agent runs one at a time in injection order, so a
@@ -492,7 +654,11 @@ async function executeGroup(group, message, messageIndex, generationType) {
             if (result.status === 'fulfilled' && result.value?.dataStored) {
                 metadataChanged = true;
             } else if (result.status === 'rejected') {
-                console.error(`${LOG_PREFIX} sidecar batch failed:`, result.reason);
+                if (isAbortError(result.reason)) {
+                    debug(`${LOG_PREFIX} sidecar batch cancelled`);
+                } else {
+                    console.error(`${LOG_PREFIX} sidecar batch failed:`, result.reason);
+                }
             }
         }
     }
@@ -511,7 +677,7 @@ async function executeGroup(group, message, messageIndex, generationType) {
 /**
  * Execute one agent's post-processing pipeline, routing to the right mode.
  *
- * Phone agents (Step 9) are not ported yet — guarded and skipped with a note.
+ * Phone agents route to their diegetic text evaluator and do not alter chat prose.
  *
  * @param {object} agent
  * @param {object} message
@@ -522,15 +688,29 @@ async function executeGroup(group, message, messageIndex, generationType) {
 async function executeSingleAgent(agent, message, messageIndex, generationType) {
     let chatChanged = false;
     let metadataChanged = false;
+    let routeCompleted = true;
 
     // Phone agents — diegetic texting. The evaluation decides whether the
     // character texts {{user}} this turn and stores any texts to the thread;
     // the chat message itself is never modified, so neither flag flips.
     if (agent.phoneConfig != null) {
         try {
-            await executePhoneEvaluation(agent, message, messageIndex, false);
+            await queuePhoneEvaluation({ agent, message, messageIndex, behavior: 'ambient', source: 'ambient' });
+            markActivationPolicyComplete(agent);
         } catch (err) {
             console.error(`${LOG_PREFIX} phone evaluation failed for "${agent.name}":`, err);
+        }
+        return { chatChanged, metadataChanged };
+    }
+
+    // Feed posts are an off-scene surface: evaluation may publish to its own
+    // branch-aware store, but it never modifies the assistant chat message.
+    if (agent.feedConfig != null) {
+        try {
+            await queueFeedEvaluation({ agent, message, messageIndex, behavior: 'ambient', source: 'ambient' });
+            markActivationPolicyComplete(agent);
+        } catch (err) {
+            console.error(`${LOG_PREFIX} feed evaluation failed for "${agent.name}":`, err);
         }
         return { chatChanged, metadataChanged };
     }
@@ -546,6 +726,7 @@ async function executeSingleAgent(agent, message, messageIndex, generationType) 
     // a rewrite may append structured tags that still need extraction.
     if (agent.postProcess.rewriteEnabled) {
         const result = await executeRewriteAgent(agent, message, messageIndex, generationType, runOpts());
+        routeCompleted = result.completed === true;
         if (result.changed) chatChanged = true;
     }
 
@@ -567,6 +748,10 @@ async function executeSingleAgent(agent, message, messageIndex, generationType) 
     if (agent.mergeVariable?.enabled) {
         const mergeResult = executeMergeVariable(agent, message, messageIndex);
         if (mergeResult.changed) chatChanged = true;
+    }
+
+    if (routeCompleted && (!agent.mergeVariable?.enabled || !agent.mergeVariable?.variableName)) {
+        markActivationPolicyComplete(agent);
     }
 
     return { chatChanged, metadataChanged };
@@ -595,10 +780,17 @@ async function executeSingleAgent(agent, message, messageIndex, generationType) 
  *
  * @param {number} messageIndex
  */
-async function processPostGenAgents(messageIndex) {
-    const snapshot = pendingSnapshot ?? buildActivationSnapshot('normal');
+async function processPostGenAgents(messageIndex, expectedMessage, revision, snapshot) {
+    if (isAgentsPaused() || snapshot?.paused
+        || !isReceivedMessageCurrent(revision, snapshot, messageIndex, expectedMessage)) return;
     const activeAgents = getSnapshotAgents(snapshot);
-    const postAgents = activeAgents.filter(a => a.phase === 'post' || a.phase === 'both');
+    const runnableIds = new Set(snapshot.runnableAgentIds ?? snapshot.activeAgentIds ?? []);
+    const runnableAgents = activeAgents.filter(agent => agent.enabled && runnableIds.has(agent.id) && !agent.paused);
+    const candidatePostAgents = runnableAgents.filter(a => a.phase === 'post' || a.phase === 'both');
+    const postAgents = [];
+    for (const agent of candidatePostAgents) {
+        if (matchesCurrentResponse(agent, expectedMessage)) postAgents.push(agent);
+    }
 
     if (postAgents.length === 0) return;
 
@@ -613,10 +805,12 @@ async function processPostGenAgents(messageIndex) {
     beginSelfGeneration();
     let chatChanged = false;
     let metadataChanged = false;
+    const startedAt = globalThis.performance?.now?.() ?? Date.now();
+    let finalizationStartedAt = startedAt;
 
     try {
-        const message = chat[messageIndex];
-        if (!message) return;
+        const message = expectedMessage;
+        if (!isReceivedMessageCurrent(revision, snapshot, messageIndex, message)) return;
 
         // 1. Group-aware execution
         const executionPlan = buildExecutionPlan(postAgents);
@@ -625,10 +819,18 @@ async function processPostGenAgents(messageIndex) {
             const result = await executeGroup(group, message, messageIndex, snapshot.generationType);
             if (result.chatChanged) chatChanged = true;
             if (result.metadataChanged) metadataChanged = true;
+            if (!isReceivedMessageCurrent(revision, snapshot, messageIndex, message)) {
+                generationStopRequested = true;
+                break;
+            }
         }
+        finalizationStartedAt = globalThis.performance?.now?.() ?? Date.now();
+
+        if (generationStopRequested
+            || !isReceivedMessageCurrent(revision, snapshot, messageIndex, message)) return;
 
         // 2. Regex extraction pass (all active agents with regexScripts)
-        const regexAgents = activeAgents.filter(a =>
+        const regexAgents = runnableAgents.filter(a =>
             Array.isArray(a.regexScripts) && a.regexScripts.length > 0,
         );
         for (const agent of regexAgents) {
@@ -657,6 +859,12 @@ async function processPostGenAgents(messageIndex) {
             a.sidecarCall?.enabled && a.sidecarCall?.display?.enabled,
         );
         for (const agent of sidecarDisplayAgents) {
+            const existing = message.extra?.saAgentData?.[agent.id];
+            const hasCurrentDisplay = existing?._swipeId === (message.swipe_id ?? 0)
+                && Array.isArray(existing.scripts) && existing.scripts.length > 0;
+            const regexMayHaveReplacedIt = Array.isArray(agent.regexScripts)
+                && agent.regexScripts.length > 0;
+            if (hasCurrentDisplay && !regexMayHaveReplacedIt) continue;
             buildSidecarDisplayData(agent, message, messageIndex);
         }
 
@@ -683,15 +891,25 @@ async function processPostGenAgents(messageIndex) {
             }
         }
     } catch (err) {
-        console.error(`${LOG_PREFIX} post-gen processing failed:`, err);
+        if (isAbortError(err)
+            || !isReceivedMessageCurrent(revision, snapshot, messageIndex, expectedMessage)) {
+            debug(`${LOG_PREFIX} post-gen message ${messageIndex} cancelled`);
+        } else {
+            console.error(`${LOG_PREFIX} post-gen processing failed:`, err);
+        }
     } finally {
+        const finishedAt = globalThis.performance?.now?.() ?? Date.now();
+        debug(`${LOG_PREFIX} post-gen message ${messageIndex}: ${Math.round(finishedAt - startedAt)}ms total, `
+            + `${Math.round(finishedAt - finalizationStartedAt)}ms synchronous finalization`);
         endSelfGeneration();
         activeRunController = null;
         setRunActive(false);
 
         // Cost hint (gameplan §6): one concise, non-blocking line per turn
         // showing agents-run vs actual calls, so batching savings are visible.
-        if (getGlobalSettings().showCostHint) {
+        if (!generationStopRequested
+            && isReceivedMessageCurrent(revision, snapshot, messageIndex, expectedMessage)
+            && getGlobalSettings().showCostHint) {
             const hint = formatTurnHint();
             if (hint) toastr.info(hint, 'SuperAgents', { timeOut: 4000 });
         }
@@ -714,6 +932,19 @@ function onGenerationStopped() {
     isGenerationInProgress = false;
 }
 
+function onChatChanged() {
+    // Invalidate first so a streaming-wait callback or a just-resolved model
+    // promise cannot continue against the newly selected chat. cancelAgentRun
+    // alone is insufficient before the post-gen AbortController exists.
+    lifecycleRevision += 1;
+    generationStopRequested = true;
+    isGenerationInProgress = false;
+    pendingSnapshot = null;
+    pendingPostGenClaimed = false;
+    frozenSnapshot = null;
+    cancelAgentRun();
+}
+
 // ============================================================================
 // MESSAGE EDIT HANDLER
 // ============================================================================
@@ -733,7 +964,7 @@ async function onMessageEdited(messageIndex) {
     let changed = false;
 
     const regexAgents = allEnabled.filter(a =>
-        Array.isArray(a.regexScripts) && a.regexScripts.length > 0,
+        !a.paused && Array.isArray(a.regexScripts) && a.regexScripts.length > 0,
     );
     for (const agent of regexAgents) {
         clearAgentData(message, agent.id);
@@ -937,6 +1168,29 @@ export async function runAgentOnLastMessage(agentId) {
 }
 
 /**
+ * Manually run every member of a group on the most recent assistant message.
+ * Like the per-agent play button, this is an explicit run: saved enabled state
+ * and automatic activation rules are not consulted. The global pause and each
+ * member's individual pause still apply.
+ *
+ * @param {string} groupId
+ * @returns {Promise<{changed:boolean, errors?:Array<{agentId:string,error:string}>, skipped?:boolean}>}
+ */
+export async function runGroupOnLastMessage(groupId) {
+    const targetIdx = findLastAssistantIndex();
+    if (targetIdx < 0) {
+        toastr.warning('No assistant message to run the group on.');
+        return { changed: false, skipped: true };
+    }
+    const result = await runGroupOnMessage(groupId, targetIdx);
+    if (result?.errors?.length) {
+        const noun = result.errors.length === 1 ? 'agent failed' : 'agents failed';
+        toastr.error(`${result.errors.length} group ${noun}.`);
+    }
+    return result;
+}
+
+/**
  * Reroll a pre-gen agent (e.g. the Director): re-run its pre-gen planner for
  * the upcoming turn with self-memory BLINDFOLDED this once, so a plan the user
  * disliked doesn't anchor the retry. Distinct from runAgentOnLastMessage —
@@ -951,6 +1205,10 @@ export async function runAgentOnLastMessage(agentId) {
  * @returns {Promise<{changed:boolean, error?:string, skipped?:boolean}>}
  */
 export async function rerollAgentPreGen(agentId) {
+    if (isAgentsPaused()) {
+        toastr.info('SuperAgents are paused. Resume them before rerolling an agent.');
+        return { changed: false, skipped: true };
+    }
     if (isAgentRunInProgress) {
         toastr.warning('Another agent is currently running.');
         return { changed: false, skipped: true };
@@ -960,6 +1218,14 @@ export async function rerollAgentPreGen(agentId) {
     if (!agent) {
         toastr.error('Agent not found.');
         return { changed: false };
+    }
+    if (!agent.enabled) {
+        toastr.info('This agent is off. Enable it before rerolling.');
+        return { changed: false, skipped: true };
+    }
+    if (agent.paused) {
+        toastr.info('This agent is paused. Resume it before rerolling.');
+        return { changed: false, skipped: true };
     }
     if (!agent.sidecarCall?.enabled || (agent.phase !== 'pre' && agent.phase !== 'both')) {
         toastr.info('Reroll applies to pre-gen planners only.', agent.name);
@@ -1009,6 +1275,10 @@ export async function rerollAgentPreGen(agentId) {
  * @returns {Promise<{changed:boolean, error?:string, textsGenerated?:number}>}
  */
 export async function runAgentOnMessage(agentId, messageIndex) {
+    if (isAgentsPaused()) {
+        toastr.info('SuperAgents are paused. Resume them before running an agent.');
+        return { changed: false, skipped: true };
+    }
     if (isAgentRunInProgress) {
         toastr.warning('Another agent is currently running.');
         return { changed: false };
@@ -1019,6 +1289,14 @@ export async function runAgentOnMessage(agentId, messageIndex) {
         toastr.error('Agent not found.');
         return { changed: false };
     }
+    if (!agent.enabled) {
+        toastr.info('This agent is off. Enable it before running.');
+        return { changed: false, skipped: true };
+    }
+    if (agent.paused) {
+        toastr.info('This agent is paused. Resume it before running.');
+        return { changed: false, skipped: true };
+    }
 
     const message = chat[messageIndex];
     if (!message || message.is_user || message.is_system) {
@@ -1026,103 +1304,204 @@ export async function runAgentOnMessage(agentId, messageIndex) {
         return { changed: false };
     }
 
-    isAgentRunInProgress = true;   // set immediately so re-entrancy guard holds
+    beginManualRun();
+    try {
+        return await executeManualAgent(agent, message, messageIndex);
+    } catch (err) {
+        return manualRunError(agent, err);
+    } finally {
+        endManualRun();
+    }
+}
+
+/**
+ * Manually run a configured group on one assistant message. Sequential groups
+ * honor member injection order. Parallel groups run sidecars concurrently,
+ * then run message-mutating and external-surface agents one at a time, matching
+ * the safety boundary used by automatic group execution.
+ *
+ * Off agents never run. Paused agents remain enabled but are skipped so their
+ * frozen state and presentation stay intact.
+ *
+ * @param {string} groupId
+ * @param {number} messageIndex
+ * @returns {Promise<{changed:boolean, errors:Array<{agentId:string,error:string}>, skippedCount:number}>}
+ */
+export async function runGroupOnMessage(groupId, messageIndex) {
+    if (isAgentsPaused()) {
+        toastr.info('SuperAgents are paused. Resume them before running a group.');
+        return { changed: false, errors: [], skippedCount: 0, skipped: true };
+    }
+    if (isAgentRunInProgress) {
+        toastr.warning('Another agent is currently running.');
+        return { changed: false, errors: [], skippedCount: 0 };
+    }
+
+    const group = getGroupById(groupId);
+    if (!group) {
+        toastr.error('Group not found.');
+        return { changed: false, errors: [], skippedCount: 0 };
+    }
+
+    const message = chat[messageIndex];
+    if (!message || message.is_user || message.is_system) {
+        toastr.warning('No valid assistant message at that index.');
+        return { changed: false, errors: [], skippedCount: 0 };
+    }
+
+    const members = (group.agentIds || []).map(getAgentById).filter(Boolean);
+    const runnable = members.filter(agent => agent.enabled && !agent.paused);
+    const skippedCount = members.length - runnable.length;
+    if (!runnable.length) {
+        const reason = !members.length
+            ? 'This group has no agents.'
+            : members.some(agent => agent.enabled)
+                ? 'Every enabled agent in this group is paused.'
+                : 'Every agent in this group is off.';
+        toastr.info(reason, group.name || 'Group');
+        return { changed: false, errors: [], skippedCount, skipped: true };
+    }
+    if (skippedCount > 0) {
+        toastr.info(`Skipped ${skippedCount} off or paused group agent${skippedCount === 1 ? '' : 's'}.`, group.name || 'Group');
+    }
+
+    beginManualRun();
+    try {
+        const results = [];
+        const errors = [];
+        const runMember = async (agent) => {
+            if (generationStopRequested) return;
+            try {
+                const result = await executeManualAgent(agent, message, messageIndex);
+                results.push(result);
+            } catch (err) {
+                const result = manualRunError(agent, err);
+                results.push(result);
+                if (result.error) errors.push({ agentId: agent.id, error: result.error });
+            }
+        };
+
+        if (group.executionMode === 'sequential') {
+            const ordered = [...runnable].sort((a, b) => (a.injection?.order ?? 100) - (b.injection?.order ?? 100));
+            for (const agent of ordered) await runMember(agent);
+        } else {
+            const sidecars = runnable.filter(agent => agent.sidecarCall?.enabled);
+            const remaining = runnable.filter(agent => !agent.sidecarCall?.enabled);
+            const batches = [...groupSidecarsByProfile(sidecars).values()];
+            await Promise.all(batches.map(async (batch) => {
+                try {
+                    const result = await executeSidecarBatch(batch, message, messageIndex, 'normal', runOpts());
+                    results.push(result);
+                    if (result.dataStored) {
+                        saveChatDebounced();
+                        refreshMessage(messageIndex);
+                    }
+                } catch (err) {
+                    if (isAbortError(err)) {
+                        debug(`${LOG_PREFIX} manual group batch cancelled`);
+                        results.push({ changed: false, cancelled: true });
+                        return;
+                    }
+                    console.error(`${LOG_PREFIX} manual group batch failed:`, err);
+                    const error = err?.message || String(err);
+                    for (const agent of batch) errors.push({ agentId: agent.id, error });
+                    results.push({ changed: false, error });
+                }
+            }));
+            for (const agent of remaining) await runMember(agent);
+        }
+
+        return {
+            changed: results.some(result => result?.changed || result?.dataStored),
+            errors,
+            skippedCount,
+        };
+    } finally {
+        endManualRun();
+    }
+}
+
+function beginManualRun() {
+    isAgentRunInProgress = true;
     activeRunController = new AbortController();
     generationStopRequested = false;
-    setRunActive(true);            // notify UI (and re-affirm the flag via setter)
-    beginSelfGeneration();   // manual run drives its own LLM call — mark it ours
-    try {
-        // Continuity Guard — its real work is post-gen detection, not any of the
-        // phone/sidecar/rewrite/postProcess modes below, so the generic dispatch
-        // would fall through to "no post-processing configured" and no-op. Route
-        // it to its own manual-run entry, which forces an open-pass flag on the
-        // targeted message. ownsCounterItself() identifies the guard structurally.
-        if (ownsCounterItself(agent)) {
-            const res = runGuardManually(messageIndex);
-            const notify = getGlobalSettings().showNotifications;
-            if (!res.ready) {
-                // Preconditions unmet: no enabled State Card agent, or
-                // sa_state_card holds no roster. Always surface this — it's a
-                // "why did nothing happen" answer, not chatter.
-                toastr.info('Guard needs an enabled State Card with tracked state.', agent.name);
-            } else if (res.hadFinding) {
-                // A real suspicion was flagged. The flag itself is the signal;
-                // a toast would be redundant, so stay quiet.
-            } else if (notify) {
-                // Clean forced sweep — nothing suspicious. Confirm the "all
-                // clear" only when the user has notifications enabled.
-                toastr.info('Checked — no continuity issues found.', agent.name, { timeOut: 3000 });
-            }
-            return { changed: res.flagged };
+    setRunActive(true);
+    beginSelfGeneration();
+}
+
+function endManualRun() {
+    endSelfGeneration();
+    activeRunController = null;
+    setRunActive(false);
+}
+
+function manualRunError(agent, err) {
+    if (isAbortError(err)) {
+        debug(`${LOG_PREFIX} manual run of "${agent.name}" cancelled`);
+        return { changed: false, cancelled: true };
+    }
+    console.error(`${LOG_PREFIX} manual run of "${agent.name}" failed:`, err);
+    return { changed: false, error: err?.message || String(err) };
+}
+
+/** Execute one agent using the exact route behind its individual play button. */
+async function executeManualAgent(agent, message, messageIndex) {
+    // Continuity Guard has its own deterministic manual sweep.
+    if (ownsCounterItself(agent)) {
+        const res = runGuardManually(messageIndex);
+        const notify = getGlobalSettings().showNotifications;
+        if (!res.ready) {
+            toastr.info('Guard needs an enabled State Card with tracked state.', agent.name);
+        } else if (!res.hadFinding && notify) {
+            toastr.info('Checked — no continuity issues found.', agent.name, { timeOut: 3000 });
         }
+        return { changed: res.flagged };
+    }
 
-        // Phone agents — force an evaluation (skips trigger/probability gates)
-        // so the play button always asks the character whether they'd text now.
-        if (agent.phoneConfig != null) {
-            const result = await executePhoneEvaluation(agent, message, messageIndex, true);
-            return { changed: false, textsGenerated: result?.textsGenerated ?? 0 };
-        }
+    // Manual phone/feed runs deliberately bypass their ambient trigger gates.
+    if (agent.phoneConfig != null) {
+        const result = await executePhoneEvaluation(agent, message, messageIndex, true);
+        return { changed: false, textsGenerated: result?.textsGenerated ?? 0 };
+    }
+    if (agent.feedConfig != null) {
+        const result = await executeFeedEvaluation(
+            agent, message, messageIndex, 'publish', message.name, '', true,
+        );
+        return { changed: false, postsGenerated: result?.postsGenerated ?? 0 };
+    }
 
-        // Sidecar — LLM call, data stored, message untouched
-        if (agent.sidecarCall?.enabled) {
-            const result = await executeSidecarAgent(agent, message, messageIndex, 'normal', runOpts());
-            if (result.dataStored) {
-                saveChatDebounced();
-                refreshMessage(messageIndex);
-            }
-            return result;
-        }
-
-        let result;
-
-        // Rewrite — explicit, or implicit for a post-phase agent with a prompt
-        // (makes /agent-run intuitive with prompt-only rewrite templates).
-        if (agent.postProcess.rewriteEnabled || (agent.phase === 'post' && agent.prompt.trim())) {
-            const effectiveAgent = agent.postProcess.rewriteEnabled ? agent : {
-                ...agent,
-                postProcess: { ...agent.postProcess, rewriteEnabled: true },
-            };
-            result = await executeRewriteAgent(effectiveAgent, message, messageIndex, 'normal', runOpts());
-        } else if (agent.postProcess.enabled) {
-            switch (agent.postProcess.type) {
-                case 'extract':
-                    result = executeExtractAgent(agent, message, messageIndex);
-                    break;
-                case 'append':
-                    result = executeAppendAgent(agent, message, messageIndex);
-                    break;
-                default:
-                    result = { changed: false };
-            }
-        } else {
-            toastr.info('This agent has no post-processing configured.', agent.name);
-            result = { changed: false };
-        }
-
-        if (result.changed) {
+    if (agent.sidecarCall?.enabled) {
+        const result = await executeSidecarAgent(agent, message, messageIndex, 'normal', runOpts());
+        if (result.dataStored) {
             saveChatDebounced();
-            const context = getContext();
-            if (typeof context?.updateMessageBlock === 'function') {
-                context.updateMessageBlock(messageIndex, message);
-            }
             refreshMessage(messageIndex);
         }
-
         return result;
-    } catch (err) {
-        // An abort here is a deliberate stop, not a failure. The mode that was
-        // running already cleared its own toast; just report it as unchanged.
-        if (isAbortError(err)) {
-            debug(`${LOG_PREFIX} manual run of "${agent.name}" cancelled`);
-            return { changed: false, cancelled: true };
-        }
-        console.error(`${LOG_PREFIX} manual run of "${agent.name}" failed:`, err);
-        return { changed: false, error: err?.message };
-    } finally {
-        endSelfGeneration();
-        activeRunController = null;
-        setRunActive(false);
     }
+
+    let result;
+    if (agent.postProcess.rewriteEnabled) {
+        result = await executeRewriteAgent(agent, message, messageIndex, 'normal', runOpts());
+    } else if (agent.postProcess.enabled) {
+        switch (agent.postProcess.type) {
+            case 'extract': result = executeExtractAgent(agent, message, messageIndex); break;
+            case 'append': result = executeAppendAgent(agent, message, messageIndex); break;
+            default: result = { changed: false };
+        }
+    } else {
+        toastr.info('This agent has no post-processing configured.', agent.name);
+        result = { changed: false };
+    }
+
+    if (result.changed) {
+        saveChatDebounced();
+        const context = getContext();
+        if (typeof context?.updateMessageBlock === 'function') {
+            context.updateMessageBlock(messageIndex, message);
+        }
+        refreshMessage(messageIndex);
+    }
+    return result;
 }
 
 /** @returns {boolean} whether an agent run is currently in progress. */
@@ -1148,11 +1527,56 @@ export function onPostProcessComplete(fn) {
  * the renderer's DOM re-render.
  */
 export function initLifecycle() {
+    if (initLifecycle.initialized) return;
+    initLifecycle.initialized = true;
+    // A response that began in one chat must never be allowed to finish against
+    // another chat's metadata. Every lifecycle-owned LLM call receives this
+    // controller's signal, so changing chats cancels the whole active pass.
+    eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
     eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, onGenerationAfterCommands);
     eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
     eventSource.on(event_types.GENERATION_STOPPED, onGenerationStopped);
     eventSource.on(event_types.MESSAGE_RECEIVED, onMessageReceived);
+    enabledAgentIds = new Set(getEnabledAgents().map(agent => agent.id));
+    onStoreChange(onLifecycleStoreChanged);
+    onAgentsPauseChange((paused) => {
+        if (!paused) {
+            frozenSnapshot = null;
+            return;
+        }
+        frozenSnapshot = {
+            ...(pendingSnapshot || {
+                generationType: 'normal',
+                activeAgentIds: getEnabledAgents().map(agent => agent.id),
+                runnableAgentIds: [],
+                pendingUserText: '',
+            }),
+            activeAgentIds: [...(pendingSnapshot?.activeAgentIds || getEnabledAgents().map(agent => agent.id))],
+            runnableAgentIds: [],
+            paused: true,
+        };
+        pendingSnapshot = { ...frozenSnapshot };
+        generationStopRequested = true;
+        cancelAgentRun();
+    });
+    onAgentPauseChange((agent, paused) => {
+        if (!paused) return;
+        const freezeInSnapshot = (snapshot) => {
+            if (!snapshot) return;
+            const activeIds = new Set(snapshot.activeAgentIds || []);
+            activeIds.add(agent.id);
+            snapshot.activeAgentIds = [...activeIds];
+            snapshot.runnableAgentIds = (snapshot.runnableAgentIds
+                ?? snapshot.activeAgentIds)
+                .filter(id => id !== agent.id);
+        };
+        freezeInSnapshot(pendingSnapshot);
+        if (frozenSnapshot !== pendingSnapshot) freezeInSnapshot(frozenSnapshot);
+        // If this agent is currently inside a lifecycle-owned call, abort the
+        // pass so it cannot commit a late result after becoming frozen.
+        cancelAgentRun();
+    });
 
     if (event_types.MESSAGE_EDITED) {
         eventSource.on(event_types.MESSAGE_EDITED, onMessageEdited);

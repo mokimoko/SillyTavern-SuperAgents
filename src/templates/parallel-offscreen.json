@@ -1,13 +1,13 @@
 {
     "id": "tpl-parallel-offscreen",
-    "name": "Parallel Off-Screen",
-    "description": "Tracks what absent characters, factions, and individuals are doing off-screen between scenes. Runs as a separate post-gen analysis call. Focuses on specific people and their actions — not macro world events.",
+    "name": "Active Roster",
+    "description": "Maintains a validated, branch-aware active roster of characters whose independent goals and off-screen actions may currently affect the story, with bounded retention and automatic relevance decay.",
     "icon": "fa-solid fa-binoculars",
     "category": "tracker",
-    "tags": ["offscreen", "npcs", "characters", "parallel", "absent", "micro"],
-    "version": 5,
+    "tags": ["offscreen", "npcs", "characters", "parallel", "agency", "social", "state"],
+    "version": 13,
     "author": "",
-    "prompt": "### Parallel Off-Screen — Post-Generation Tracker\nThe world doesn't pause while the main scene plays out. Analyze the scene that just played out and report what specific absent characters, factions, and individuals are doing off-screen — concrete actions by named people that may later intersect with the story.\n\nOutput this block:\n\n[PARALLEL|Scope|Relevance]\n- Subject: development\n- Subject: development\n- Subject: development\n[/PARALLEL]\n\nField guide:\n- Scope: Where this is happening — a specific location name, \"Multiple locations\", or \"Background\"\n- Relevance: One tag — \"rising tension\", \"opportunity\", \"complication\", \"threat\", \"alliance forming\", \"quiet shift\", \"countdown\", or \"imminent\" (use \"imminent\" ONLY when an off-screen thread is about to collide with the main scene)\n\nRules:\n- Output ONLY the [PARALLEL] block. Nothing else — no prose, no explanation, no commentary.\n- 2-4 bullet points. Each names a SPECIFIC character, faction, or individual and describes what they are doing RIGHT NOW.\n- This tracker is for INDIVIDUAL ACTIONS — named people making plans, traveling, scheming, preparing, meeting, arguing. NOT for macro world-scale events like wars, weather, plagues, market shifts, or political upheaval. Those belong in the world events layer.\n- Prioritize characters who are absent from the current scene but have been established in the story.\n- Maintain continuity with the previous off-screen state. If you reported someone traveling last turn, they should arrive or still be en route. Don't drop threads.\n- Off-screen developments start below the current scene's intensity and build naturally over time. Not everything is urgent.\n- Be specific and directional: plans forming, rumors spreading, resources being gathered, loyalties shifting, threats approaching. No vague filler.\n- You may rotate which characters appear each turn. Not every absent character needs tracking every single message.\n- Do NOT output a PARALLEL block if nothing meaningful is happening off-screen. Output nothing rather than filling it with noise.",
+    "prompt": "### Active Roster — Character Agency Tracker\n\nROLE: Maintain a bounded working set of established named characters whose independent lives may currently affect the story. This is not a permanent NPC database. Output ONLY the state block.\n\nOUTPUT FORMAT (compact JSON):\n[PARALLEL_STATE]\n{\"characters\":{\"Name\":{\"status\":\"off-screen\",\"location\":\"University library\",\"activity\":\"Comparing the archive index against the missing volume\",\"goal\":\"Learn who removed the volume\",\"nextAction\":\"Ask Mina whether she saw the records clerk\",\"availability\":\"busy\",\"contactIntent\":\"maybe\",\"visibility\":\"private\",\"relevance\":\"quiet shift\",\"socialTargets\":[\"Mina\"],\"continuity\":\"Began searching after discovering the gap two scenes ago.\",\"changed\":true,\"attention\":\"active\"}}}\n[/PARALLEL_STATE]\n\nACTIVE ROSTER:\n1. Keep only characters with a current goal, unresolved loop, plausible near-term action, or meaningful connection to what may happen next. Eight entries is the absolute maximum; fewer or none is often correct.\n2. Omit incidental, resolved, dormant, and no-longer-relevant characters. Removal does not erase canon: Phone history, chat history, and durable memory can restore continuity if they matter again.\n3. Do not copy an entry forward merely because it existed previously. Waiting, resting, remaining unavailable, or receiving no reply may persist briefly, then should leave the active roster when it has no new consequence.\n4. Update only what the latest scene, established plans, and plausible elapsed time support. Do not manufacture activity to keep an entry alive.\n5. Set changed=true only for a meaningful new development. Paraphrasing, 'still waiting,' 'still not texting,' and continuing the same activity are changed=false. Set attention=active for retained entries; runtime retention may mark an unchanged entry dormant before removing it.\n\nFIELDS:\n- status: present, off-screen, approaching-scene, or unknown.\n- location, activity, goal, nextAction: concise current facts and intentions supported by canon.\n- availability: available, limited, busy, unreachable, or unknown.\n- contactIntent: none, maybe, likely, or urgent; this never forces a message.\n- visibility: hidden, private, shared, or public according to plausible information access.\n- relevance: quiet shift, opportunity, complication, rising tension, alliance forming, threat, countdown, or imminent.\n- socialTargets: established people or groups directly involved.\n- continuity: one concise note needed for the next update.\n- changed: whether a meaningful development occurred since the prior state.\n- attention: active for retained entries; dormant entries should normally be omitted.\n\nBOUNDARIES:\n- {{user}} is never a tracked character. Never create a roster entry keyed to {{user}}; track only other established named characters.\n- Give characters duties, friendships, conflicts, routines, and opportunities not centered on {{user}}. Advance NPC-to-NPC plans as readily as NPC-to-user plans.\n- Never decide {{user}}'s action, response, feelings, consent, or knowledge.\n- Do not complete major irreversible events off-screen without setup and enough elapsed time.\n- Hidden state is authorial continuity, not automatic player knowledge.\n- Output valid compact JSON and only the required block.",
     "phase": "post",
     "injection": {
         "position": 1,
@@ -33,35 +33,92 @@
         "enabled": true,
         "maxTokens": 2048,
         "responseKey": "parallel_offscreen",
+        "includeHistory": true,
+        "historyMessageCount": 6,
+        "genesisHistoryCount": 16,
         "display": {
             "enabled": true,
             "position": "bottom",
             "hookClass": "parallel-hud-data",
-            "dataMap": {
-                "scope": "data-scope",
-                "relevance": "data-relevance"
-            },
-            "contentField": "content"
+            "dataMap": {},
+            "contentField": "json"
         }
     },
     "mergeVariable": {
+        "retention": {
+            "enabled": true,
+            "collectionPath": "characters",
+            "excludeParticipants": true,
+            "maxEntries": 8,
+            "dormantAfter": 2,
+            "pruneAfter": 5,
+            "changeField": "changed",
+            "attentionField": "attention",
+            "protectedWhen": [
+                { "path": "status", "values": ["approaching-scene"] },
+                { "path": "relevance", "values": ["countdown", "imminent"] },
+                { "path": "contactIntent", "values": ["urgent"] }
+            ]
+        },
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 1,
+            "invariants": [],
+            "schema": {
+                "type": "object",
+                "required": ["characters"],
+                "properties": {
+                    "characters": {
+                        "type": "object",
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["status", "location", "activity", "goal", "nextAction", "availability", "contactIntent", "visibility", "relevance", "socialTargets", "continuity", "changed", "attention"],
+                            "properties": {
+                                "status": { "type": "string", "enum": ["present", "off-screen", "approaching-scene", "unknown"] },
+                                "location": { "type": "string", "minLength": 1, "maxLength": 160 },
+                                "activity": { "type": "string", "minLength": 1, "maxLength": 240 },
+                                "goal": { "type": "string", "minLength": 1, "maxLength": 240 },
+                                "nextAction": { "type": "string", "minLength": 1, "maxLength": 240 },
+                                "availability": { "type": "string", "enum": ["available", "limited", "busy", "unreachable", "unknown"] },
+                                "contactIntent": { "type": "string", "enum": ["none", "maybe", "likely", "urgent"] },
+                                "visibility": { "type": "string", "enum": ["hidden", "private", "shared", "public"] },
+                                "relevance": { "type": "string", "enum": ["quiet shift", "opportunity", "complication", "rising tension", "alliance forming", "threat", "countdown", "imminent"] },
+                                "socialTargets": { "type": "array", "maxItems": 12, "items": { "type": "string", "maxLength": 120 } },
+                                "continuity": { "type": "string", "minLength": 1, "maxLength": 320 },
+                                "changed": { "type": "boolean" },
+                                "attention": { "type": "string", "enum": ["active", "dormant"] }
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }
+        },
         "enabled": true,
         "mode": "snapshot",
         "variableName": "sa_parallel",
-        "extractPattern": "\\[PARALLEL\\|([^|]+)\\|([^\\]]+)\\]\\n([\\s\\S]*?)\\[\\/PARALLEL\\]",
-        "fieldNames": ["scope", "relevance", "content"],
-        "keyFields": ["scope"],
-        "stripFromResponse": false,
+        "extractPattern": "\\[PARALLEL_STATE\\]\\s*([\\s\\S]*?)\\s*\\[\\/PARALLEL_STATE\\]",
+        "fieldNames": ["json", "scope", "relevance", "content"],
+        "keyFields": [],
+        "stripFromResponse": true,
         "injectFormatted": true,
-        "formatHeader": "Previous off-screen developments (these are about specific individuals and their actions — NOT macro world events):",
-        "formatItem": "[{{scope}} — {{relevance}}]\n{{content}}",
-        "formatEmpty": "No off-screen developments tracked yet."
+        "formatHeader": "CURRENT ACTIVE PARALLEL CHARACTER STATE — keep only characters with a live thread and advance only what canon and elapsed time support:",
+        "formatItem": "{{json}}{{scope}}\n{{relevance}}\n{{content}}",
+        "formatEmpty": "FIRST RUN — establish only named characters with a current independent goal, unresolved loop, or plausible near-term action. Track no more than eight; an empty characters object is valid.",
+        "mainContext": {
+            "presencePath": "characters",
+            "formatHeader": "CURRENT PARALLEL CHARACTER STATE:",
+            "formatItem": "<parallel_character_state>\nAuthorial reference for independent character threads. Listed intentions are not guaranteed actions. Respect visibility: do not give viewpoint characters private or hidden information, force a listed next action, or move anyone into the scene without canonical support.\n\n{{#each json.characters}}- {{@key}} [{{status}}; {{visibility}}; {{attention}}]\n  Location: {{location}}\n  Current activity: {{activity}}\n  Independent goal: {{goal}}\n  Intended next action: {{nextAction}}\n  Availability: {{availability}} | Contact intent: {{contactIntent}} | Relevance: {{relevance}}\n{{#if socialTargets}}  Social targets: {{socialTargets}}\n{{/if}}  Continuity: {{continuity}}\n{{/each}}</parallel_character_state>",
+            "formatEmpty": ""
+        }
     },
     "regexScripts": [
         {
             "id": "po-strip-inline-tags",
-            "scriptName": "Strip Parallel Tags from Narrative",
-            "findRegex": "/\\[PARALLEL\\|[^\\]]*\\][\\s\\S]*?\\[\\/PARALLEL\\]/g",
+            "scriptName": "Strip Parallel State from Narrative",
+            "findRegex": "/\\[PARALLEL_STATE\\][\\s\\S]*?\\[\\/PARALLEL_STATE\\]/g",
             "replaceString": "",
             "trimStrings": [],
             "placement": [2],
@@ -75,6 +132,26 @@
             "stripFromMes": false
         }
     ],
+    "stateCard": {
+        "enabled": true,
+        "order": 30,
+        "schema": {
+            "characterTextFields": [
+                { "key": "status", "label": "Status", "type": "badge", "badgeColor": "#8890A0" },
+                { "key": "location", "label": "Location" },
+                { "key": "activity", "label": "Current activity" },
+                { "key": "goal", "label": "Independent goal" },
+                { "key": "nextAction", "label": "Next intended action" },
+                { "key": "availability", "label": "Availability", "type": "badge", "badgeColor": "#6A9DC0" },
+                { "key": "contactIntent", "label": "Contact intent", "type": "badge", "badgeColor": "#6AAF8B" },
+                { "key": "visibility", "label": "Visibility", "type": "badge", "badgeColor": "#AFA9EC" },
+                { "key": "relevance", "label": "Relevance", "type": "badge", "badgeColor": "#C4956A" },
+                { "key": "attention", "label": "Attention", "type": "badge", "badgeColor": "#8890A0" },
+                { "key": "continuity", "label": "Continuity" }
+            ],
+            "meters": []
+        }
+    },
     "connectionProfile": "",
     "maxTokens": 2048,
     "enabled": false,

@@ -46,10 +46,10 @@ export function renderDirectorPlan(el) {
     const summary = document.createElement('summary');
     summary.style.cssText = [
         'padding:5px 10px',
-        'background:rgba(255,255,255,0.02)',
-        'border:1px solid rgba(255,255,255,0.06)',
-        'border-left:2px solid rgba(255,255,255,0.18)',
-        'color:rgba(255,255,255,0.42)',
+        'background:var(--sa-surface-input,rgba(255,255,255,0.02))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
+        'border-left:2px solid var(--sa-border-strong,rgba(255,255,255,0.18))',
+        'color:var(--sa-text-secondary,rgba(255,255,255,0.65))',
         `font-family:${MONO}`,
         'font-size:10px',
         'font-weight:500',
@@ -65,25 +65,25 @@ export function renderDirectorPlan(el) {
     // Hover: lift the whole thing slightly so it reads as interactive without
     // being loud. Scoped to this element via inline listeners (no global CSS).
     summary.addEventListener('mouseenter', () => {
-        summary.style.color = 'rgba(255,255,255,0.7)';
-        summary.style.borderLeftColor = 'rgba(255,255,255,0.35)';
+        summary.style.color = 'var(--sa-text-primary,rgba(255,255,255,0.85))';
+        summary.style.borderLeftColor = 'var(--sa-text-muted,rgba(255,255,255,0.45))';
     });
     summary.addEventListener('mouseleave', () => {
-        summary.style.color = 'rgba(255,255,255,0.42)';
-        summary.style.borderLeftColor = 'rgba(255,255,255,0.18)';
+        summary.style.color = 'var(--sa-text-secondary,rgba(255,255,255,0.65))';
+        summary.style.borderLeftColor = 'var(--sa-border-strong,rgba(255,255,255,0.18))';
     });
 
     const body = document.createElement('div');
     body.style.cssText = [
         'padding:9px 12px',
-        'background:rgba(0,0,0,0.18)',
-        'border:1px solid rgba(255,255,255,0.06)',
+        'background:var(--sa-surface-info,rgba(0,0,0,0.18))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
         'border-top:none',
-        'border-left:2px solid rgba(255,255,255,0.12)',
+        'border-left:2px solid var(--sa-border-mid,rgba(255,255,255,0.12))',
         `font-family:${SANS}`,
         'font-size:12px',
         'line-height:1.6',
-        'color:rgba(255,255,255,0.68)',
+        'color:var(--sa-text-body,rgba(255,255,255,0.8))',
         'white-space:pre-wrap',
         'word-break:break-word',
     ].join(';');

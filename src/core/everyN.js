@@ -5,7 +5,8 @@
  * them differently:
  *
  *   • General throttle (activation.js): a GATE. An agent with everyN > 1 only
- *     fires on every Nth eligible new message; it no-ops in between.
+ *     fires on every Nth eligible reply. Its cadence setting decides whether
+ *     swipes reuse the reply's decision or advance the counter again.
  *
  *   • Continuity Guard (continuityGuardRunner.js): a FLOOR. The guard runs its
  *     deterministic detector on EVERY message; everyN only governs the
@@ -27,6 +28,7 @@ import { debug } from '../../index.js';
 
 const LOG_PREFIX = '[SuperAgents/everyN]';
 const STORE_KEY = 'saEveryNCounters';   // chat_metadata[STORE_KEY] = { [agentId]: int }
+const DECISION_STORE_KEY = 'saEveryNGateDecisions';
 const DEFAULT_EVERY_N = 1;               // 1 → fire every message (no throttling)
 
 // ============================================================================
@@ -52,6 +54,11 @@ export function hasThrottle(agent) {
     return getEveryN(agent) > 1;
 }
 
+/** How rerolls interact with the throttle. */
+export function getEveryNCadence(agent) {
+    return agent?.everyNCadence === 'all-attempts' ? 'all-attempts' : 'new-replies';
+}
+
 // ============================================================================
 // COUNTER STORE (per-agent, per-chat)
 // ============================================================================
@@ -62,6 +69,24 @@ function store() {
         chat_metadata[STORE_KEY] = {};
     }
     return chat_metadata[STORE_KEY];
+}
+
+function decisionStore() {
+    if (!chat_metadata || typeof chat_metadata !== 'object') return null;
+    if (!chat_metadata[DECISION_STORE_KEY] || typeof chat_metadata[DECISION_STORE_KEY] !== 'object') {
+        chat_metadata[DECISION_STORE_KEY] = {};
+    }
+    return chat_metadata[DECISION_STORE_KEY];
+}
+
+function rememberGateDecision(agentId, allowed) {
+    const decisions = decisionStore();
+    if (decisions) decisions[agentId] = Boolean(allowed);
+}
+
+function previousGateDecision(agentId) {
+    const decisions = decisionStore();
+    return typeof decisions?.[agentId] === 'boolean' ? decisions[agentId] : null;
 }
 
 /** Current counter value for an agent (0 if unset). */
@@ -121,6 +146,38 @@ export function advanceGeneralGate(agent) {
     }
     debug(`${LOG_PREFIX} ${agent.name || agent.id}: throttled (${count}/${n})`);
     return false;
+}
+
+/**
+ * Apply the general gate for one generation. Ordinary replies advance the
+ * counter. With the default cadence, a swipe/regenerate reuses the most recent
+ * reply's run/skip decision; the opt-in cadence treats each reroll as a fresh
+ * counter step. Other generation types remain ungated.
+ */
+export function evaluateGeneralGate(agent, rawGenerationType) {
+    const n = getEveryN(agent);
+    if (n <= 1) {
+        resetAgentCounter(agent.id);
+        rememberGateDecision(agent.id, true);
+        return true;
+    }
+
+    const rawType = String(rawGenerationType ?? '').trim().toLowerCase();
+    const isReroll = rawType === 'swipe' || rawType === 'regenerate';
+    if (isReroll && getEveryNCadence(agent) === 'new-replies') {
+        const prior = previousGateDecision(agent.id);
+        const allowed = prior ?? false;
+        debug(`${LOG_PREFIX} ${agent.name || agent.id}: reroll reuses ${allowed ? 'OPEN' : 'SKIP'} decision`);
+        return allowed;
+    }
+
+    const counts = rawType === '' || rawType === 'normal' || rawType === 'continue'
+        || (isReroll && getEveryNCadence(agent) === 'all-attempts');
+    if (!counts) return true;
+
+    const allowed = advanceGeneralGate(agent);
+    rememberGateDecision(agent.id, allowed);
+    return allowed;
 }
 
 /**

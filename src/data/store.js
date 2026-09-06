@@ -19,6 +19,7 @@ import {
     normalizeGroup,
     generateId,
 } from './normalize.js';
+import { reconcileGroupMembership } from './groupMembership.js';
 
 const LOG_PREFIX = '[SuperAgents/store]';
 
@@ -32,11 +33,30 @@ let agents = [];
 /** @type {object[]} */
 let groups = [];
 
+/** Subscribers used by lightweight integrations such as UIBedazzler. */
+const agentsPauseListeners = new Set();
+const agentPauseListeners = new Set();
+const storeChangeListeners = new Set();
+
 /** Global agent settings (per-extension, not per-agent). */
 let globalSettings = {
+    agentsPaused: false,            // global execution gate; individual enabled flags stay untouched
+    enabledSetDisabled: false,      // true after the active enabled set was explicitly switched off
+    enabledSetSnapshot: [],         // IDs to restore; agents already off are intentionally absent
+    useDefaultConnection: false,    // route blank-profile agents through the shared default below
     connectionProfile: '',          // default profile when an agent has none
     defaultExecutionMode: 'parallel',
     showNotifications: true,
+    showNotificationsLauncher: true, // show the Notifications button in Story Apps
+    showCalendarLauncher: true,      // show the Calendar button in Story Apps
+    calendarStorySync: true,        // accept validated hidden Calendar directives from story replies
+    weatherCycleIntegration: false, // mirror eligible World State snapshots into st-weather-cycle
+    weatherCycleAfternoonSkyColor: '#ffe09d',
+    weatherCycleAfternoonGlowColor: '#e59548',
+    weatherCycleAfternoonIntensity: 0.18,
+    weatherCycleTwilightSkyColor: '#3e4989',
+    weatherCycleTwilightGlowColor: '#ee8053',
+    weatherCycleTwilightIntensity: 0.20,
     showCostHint: true,             // per-turn agents-vs-calls hint (gameplan §6)
     defaultMaxTokens: 8192,
     batchByProfile: true,           // group sidecars by profile into one envelope
@@ -48,6 +68,29 @@ let globalSettings = {
                                     // button while an agent run is active. false =
                                     // use the separate #sa_stop button instead.
 };
+
+const WEATHER_PHASE_DEFAULTS = Object.freeze({
+    weatherCycleAfternoonSkyColor: '#ffe09d',
+    weatherCycleAfternoonGlowColor: '#e59548',
+    weatherCycleAfternoonIntensity: 0.18,
+    weatherCycleTwilightSkyColor: '#3e4989',
+    weatherCycleTwilightGlowColor: '#ee8053',
+    weatherCycleTwilightIntensity: 0.20,
+});
+
+function normalizeWeatherPhaseSettings() {
+    for (const [key, fallback] of Object.entries(WEATHER_PHASE_DEFAULTS)) {
+        if (key.endsWith('Color')) {
+            const value = String(globalSettings[key] ?? '').trim();
+            globalSettings[key] = /^#[\da-f]{6}$/i.test(value) ? value : fallback;
+            continue;
+        }
+        const value = Number(globalSettings[key]);
+        globalSettings[key] = Number.isFinite(value)
+            ? Math.min(1, Math.max(0, value))
+            : fallback;
+    }
+}
 
 // ----------------------------------------------------------------------
 // Persistence
@@ -61,11 +104,16 @@ function getRoot() {
 }
 
 function persist() {
+    // Sibling modules intentionally mutate the live arrays before calling this
+    // function (template sync/import). Keep membership and group-owned phase
+    // consistent at that final write boundary as well as in the CRUD helpers.
+    reconcileGroupMembership(agents, groups, { includeAgentFallback: false });
     const root = getRoot();
     root.agents = agents.map(a => ({ ...a }));
     root.groups = groups.map(g => ({ ...g }));
     root.globalSettings = { ...globalSettings };
     saveSettingsDebounced();
+    notifyStoreChange();
 }
 
 /**
@@ -84,6 +132,22 @@ export function loadFromSettings() {
     if (root.globalSettings && typeof root.globalSettings === 'object') {
         globalSettings = { ...globalSettings, ...root.globalSettings };
     }
+    globalSettings.agentsPaused = Boolean(globalSettings.agentsPaused);
+    globalSettings.useDefaultConnection = Boolean(globalSettings.useDefaultConnection);
+    globalSettings.connectionProfile = String(globalSettings.connectionProfile ?? '').trim();
+    globalSettings.weatherCycleIntegration = Boolean(globalSettings.weatherCycleIntegration);
+    normalizeWeatherPhaseSettings();
+    globalSettings.enabledSetDisabled = Boolean(globalSettings.enabledSetDisabled);
+    globalSettings.enabledSetSnapshot = Array.isArray(globalSettings.enabledSetSnapshot)
+        ? [...new Set(globalSettings.enabledSetSnapshot.map(id => String(id ?? '').trim()).filter(Boolean))]
+        : [];
+    if (!globalSettings.enabledSetDisabled) globalSettings.enabledSetSnapshot = [];
+
+    // Groups historically stored the same relationship in two places. The UI
+    // edits group.agentIds, while the executor reads agent.groupId. Reconcile on
+    // every load so old and partially-saved configurations repair themselves.
+    const membership = reconcileGroupMembership(agents, groups);
+    if (membership.changed) persist();
 
     debug(`${LOG_PREFIX} loaded ${agents.length} agents, ${groups.length} groups`);
 }
@@ -97,7 +161,13 @@ export function getAgents() {
     return [...agents];
 }
 
-/** @returns {object[]} enabled agents, sorted by injection order */
+/**
+ * Enabled agents, sorted by injection order.
+ *
+ * Global pause is intentionally NOT applied here. Enabledness also controls
+ * presentation and reference context (Story Apps, State Card, injections),
+ * which remain visible as a frozen snapshot while execution is paused.
+ */
 export function getEnabledAgents() {
     return agents
         .filter(a => a.enabled)
@@ -123,23 +193,46 @@ export function getAgentByName(name) {
 export function saveAgent(agent) {
     const normalized = normalizeAgent(agent);
     const idx = agents.findIndex(a => a.id === normalized.id);
+    const groupWasProvided = Object.prototype.hasOwnProperty.call(agent ?? {}, 'groupId');
+    if (idx >= 0 && !groupWasProvided) normalized.groupId = agents[idx].groupId;
     if (idx >= 0) {
         agents[idx] = normalized;
     } else {
         agents.push(normalized);
     }
+
+    if (groupWasProvided) {
+        for (const group of groups) {
+            group.agentIds = group.agentIds.filter(id => id !== normalized.id);
+        }
+        const target = groups.find(group => group.id === normalized.groupId);
+        if (target) target.agentIds.push(normalized.id);
+    }
+    reconcileGroupMembership(agents, groups, { includeAgentFallback: false });
     persist();
     return normalized;
 }
 
-/** Delete an agent and remove it from any groups. */
-export function deleteAgent(id) {
+/** Delete agents and remove them from any groups. Returns the number deleted. */
+export function deleteAgents(ids) {
+    const idSet = new Set(ids || []);
+    if (!idSet.size) return 0;
     const before = agents.length;
-    agents = agents.filter(a => a.id !== id);
+    agents = agents.filter(a => !idSet.has(a.id));
     for (const group of groups) {
-        group.agentIds = group.agentIds.filter(aid => aid !== id);
+        group.agentIds = group.agentIds.filter(aid => !idSet.has(aid));
     }
-    if (agents.length !== before) persist();
+    const deletedCount = before - agents.length;
+    if (deletedCount) {
+        reconcileGroupMembership(agents, groups, { includeAgentFallback: false });
+        persist();
+    }
+    return deletedCount;
+}
+
+/** Delete one agent and remove it from any groups. */
+export function deleteAgent(id) {
+    return deleteAgents([id]);
 }
 
 /**
@@ -152,6 +245,117 @@ export function toggleAgent(id) {
     agent.enabled = !agent.enabled;
     persist();
     return agent.enabled;
+}
+
+/** True when one agent is frozen but still logically enabled. */
+export function isAgentPaused(id) {
+    return Boolean(getAgentById(id)?.paused);
+}
+
+/** Pause/resume one agent without changing its enabled state. */
+export function setAgentPaused(id, paused) {
+    const agent = getAgentById(id);
+    if (!agent) return null;
+    const next = Boolean(paused);
+    if (agent.paused === next) return next;
+    agent.paused = next;
+    persist();
+    for (const fn of agentPauseListeners) {
+        try {
+            fn(agent, next);
+        } catch (err) {
+            console.warn(`${LOG_PREFIX} agent-pause listener failed:`, err);
+        }
+    }
+    return next;
+}
+
+/** Toggle one agent's frozen state. */
+export function toggleAgentPaused(id) {
+    const agent = getAgentById(id);
+    return agent ? setAgentPaused(id, !agent.paused) : null;
+}
+
+/** Subscribe to individual agent pause changes. Returns an unsubscribe function. */
+export function onAgentPauseChange(fn) {
+    if (typeof fn !== 'function') return () => {};
+    agentPauseListeners.add(fn);
+    return () => agentPauseListeners.delete(fn);
+}
+
+/** Subscribe to persisted agent/config changes. Returns an unsubscribe function. */
+export function onStoreChange(fn) {
+    if (typeof fn !== 'function') return () => {};
+    storeChangeListeners.add(fn);
+    return () => storeChangeListeners.delete(fn);
+}
+
+function notifyStoreChange() {
+    for (const fn of storeChangeListeners) {
+        try {
+            fn();
+        } catch (err) {
+            console.warn(`${LOG_PREFIX} store-change listener failed:`, err);
+        }
+    }
+}
+
+/** Set a collection of agents to the same enabled state. Returns changed count. */
+export function setAgentsEnabled(ids, enabled) {
+    const idSet = new Set(ids || []);
+    const nextEnabled = Boolean(enabled);
+    let changedCount = 0;
+    for (const agent of agents) {
+        if (!idSet.has(agent.id) || agent.enabled === nextEnabled) continue;
+        agent.enabled = nextEnabled;
+        changedCount++;
+    }
+    if (changedCount) persist();
+    return changedCount;
+}
+
+/** Read the reversible active-set power state used by the flyout. */
+export function getEnabledSetState() {
+    const liveIds = new Set(agents.map(agent => agent.id));
+    const savedIds = globalSettings.enabledSetSnapshot.filter(id => liveIds.has(id));
+    return {
+        disabled: globalSettings.enabledSetDisabled,
+        count: globalSettings.enabledSetDisabled
+            ? savedIds.length
+            : agents.filter(agent => agent.enabled).length,
+    };
+}
+
+/**
+ * Disable the currently enabled set, or restore exactly that saved set.
+ * Agents that were already disabled are never enabled by this operation.
+ */
+export function toggleEnabledAgentSet() {
+    if (globalSettings.enabledSetDisabled) {
+        const savedIds = new Set(globalSettings.enabledSetSnapshot);
+        let changedCount = 0;
+        for (const agent of agents) {
+            if (!savedIds.has(agent.id) || agent.enabled) continue;
+            agent.enabled = true;
+            changedCount++;
+        }
+        const savedCount = savedIds.size;
+        globalSettings.enabledSetDisabled = false;
+        globalSettings.enabledSetSnapshot = [];
+        persist();
+        return { disabled: false, changedCount, savedCount };
+    }
+
+    const enabledIds = agents.filter(agent => agent.enabled).map(agent => agent.id);
+    if (!enabledIds.length) return { disabled: false, changedCount: 0, savedCount: 0 };
+    const enabledIdSet = new Set(enabledIds);
+    for (const agent of agents) {
+        if (enabledIdSet.has(agent.id)) agent.enabled = false;
+    }
+    globalSettings.enabledSetDisabled = true;
+    globalSettings.enabledSetSnapshot = enabledIds;
+    persist();
+    return { disabled: true, changedCount: enabledIds.length, savedCount: enabledIds.length };
 }
 
 /**
@@ -191,12 +395,21 @@ export function getGroupById(id) {
 
 export function saveGroup(group) {
     const normalized = normalizeGroup(group);
+    const selectedIds = new Set(normalized.agentIds);
+
+    // Membership is exclusive. Selecting an agent here moves it out of any
+    // other group; deselecting it clears the derived agent.groupId below.
+    for (const existingGroup of groups) {
+        if (existingGroup.id === normalized.id) continue;
+        existingGroup.agentIds = existingGroup.agentIds.filter(id => !selectedIds.has(id));
+    }
     const idx = groups.findIndex(g => g.id === normalized.id);
     if (idx >= 0) {
         groups[idx] = normalized;
     } else {
         groups.push(normalized);
     }
+    reconcileGroupMembership(agents, groups, { includeAgentFallback: false });
     persist();
     return normalized;
 }
@@ -204,7 +417,10 @@ export function saveGroup(group) {
 export function deleteGroup(id) {
     const before = groups.length;
     groups = groups.filter(g => g.id !== id);
-    if (groups.length !== before) persist();
+    if (groups.length !== before) {
+        reconcileGroupMembership(agents, groups, { includeAgentFallback: false });
+        persist();
+    }
 }
 
 /**
@@ -237,10 +453,65 @@ export function getGlobalSettings() {
     return { ...globalSettings };
 }
 
+/** Resolve an agent's explicit profile or the enabled SuperAgents default. */
+export function getEffectiveConnectionProfile(agentProfile = '') {
+    const explicit = String(agentProfile ?? '').trim();
+    if (explicit) return explicit;
+    if (!globalSettings.useDefaultConnection) return '';
+    return String(globalSettings.connectionProfile ?? '').trim();
+}
+
 export function setGlobalSettings(update) {
     if (!update || typeof update !== 'object') return;
+    const wasPaused = globalSettings.agentsPaused;
     Object.assign(globalSettings, update);
+    globalSettings.agentsPaused = Boolean(globalSettings.agentsPaused);
+    globalSettings.useDefaultConnection = Boolean(globalSettings.useDefaultConnection);
+    globalSettings.connectionProfile = String(globalSettings.connectionProfile ?? '').trim();
+    globalSettings.weatherCycleIntegration = Boolean(globalSettings.weatherCycleIntegration);
+    normalizeWeatherPhaseSettings();
     persist();
+    if (globalSettings.agentsPaused !== wasPaused) notifyAgentsPauseChange();
+}
+
+/** True when all agent execution is globally paused. */
+export function isAgentsPaused() {
+    return globalSettings.agentsPaused;
+}
+
+/**
+ * Pause or resume all agent execution without changing any agent's own
+ * enabled flag. Resuming therefore restores the exact active set from before.
+ */
+export function setAgentsPaused(paused) {
+    const next = Boolean(paused);
+    if (globalSettings.agentsPaused === next) return next;
+    globalSettings.agentsPaused = next;
+    persist();
+    notifyAgentsPauseChange();
+    return next;
+}
+
+/** Toggle the global execution gate and return the new paused state. */
+export function toggleAgentsPaused() {
+    return setAgentsPaused(!globalSettings.agentsPaused);
+}
+
+/** Subscribe to pause/resume changes. Returns an unsubscribe function. */
+export function onAgentsPauseChange(fn) {
+    if (typeof fn !== 'function') return () => {};
+    agentsPauseListeners.add(fn);
+    return () => agentsPauseListeners.delete(fn);
+}
+
+function notifyAgentsPauseChange() {
+    for (const fn of agentsPauseListeners) {
+        try {
+            fn(globalSettings.agentsPaused);
+        } catch (err) {
+            console.warn(`${LOG_PREFIX} pause listener failed:`, err);
+        }
+    }
 }
 
 // ----------------------------------------------------------------------

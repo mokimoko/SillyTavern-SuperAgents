@@ -52,6 +52,7 @@ import {
     executeMergeVariable,
     storeSidecarResult,
     storeBatchedSidecarResult,
+    getStateTransaction,
 } from './src/modes/mergeVariable.js';
 import {
     executeSidecarAgent,
@@ -80,6 +81,8 @@ import {
     initLifecycle,
     runAgentOnMessage,
     runAgentOnLastMessage,
+    runGroupOnMessage,
+    runGroupOnLastMessage,
     isAgentRunActive,
     cancelAgentRun,
     onRunStateChange,
@@ -116,6 +119,12 @@ import {
     saveAgent,
     deleteAgent,
     toggleAgent,
+    getEnabledSetState,
+    toggleEnabledAgentSet,
+    isAgentPaused,
+    setAgentPaused,
+    toggleAgentPaused,
+    onAgentPauseChange,
     createDefaultAgent,
     // groups
     getGroups,
@@ -127,11 +136,22 @@ import {
     // settings
     getGlobalSettings,
     setGlobalSettings,
+    isAgentsPaused,
+    setAgentsPaused,
+    toggleAgentsPaused,
+    onAgentsPauseChange,
     // template instantiation (checkpoint helper)
     instantiateTemplate,
 } from './src/data/store.js';
 import { syncFromTemplates, listBuiltInTemplates } from './src/data/templateSync.js';
 import { importAgents, exportAllAgents, exportAgent } from './src/data/importExport.js';
+import { createPublicIntegrationApi } from './src/integration/publicApi.js';
+import { initWeatherCycleIntegration } from './src/integration/weatherCycle.js';
+import {
+    createPresentationIntegrationApi,
+    getActiveSurfacePresentation,
+    initPresentationProfiles,
+} from './src/presentation/presentationState.js';
 
 // Render layer
 import { initRenderer, registerRenderHook, refreshMessage } from './src/render/renderer.js';
@@ -145,6 +165,8 @@ import { renderSoundtrackSuggester } from './src/render/hooks/soundtrackSuggeste
 import { renderArtPrompt } from './src/render/hooks/artPromptGenerator.js';
 import { renderActorInterview } from './src/render/hooks/actorInterview.js';
 import { renderCommentarySection } from './src/render/hooks/commentarySection.js';
+import { renderGenericOutput } from './src/render/hooks/genericOutput.js';
+import { renderWishLedger } from './src/render/hooks/wishLedger.js';
 import { renderContinuityGuard, initContinuityGuardDelegation } from './src/render/hooks/continuityGuard.js';
 import { initContinuityGuardRunner } from './src/modes/continuityGuardRunner.js';
 
@@ -154,20 +176,84 @@ import { resolveAgentIcon, resolveGroupIcon } from './src/ui/iconResolver.js';
 import { initRunIndicator } from './src/ui/runIndicator.js';
 import { initNativeStopButton } from './src/ui/nativeStopButton.js';
 import { initDiffButtons } from './src/ui/diffButton.js';
+import { initWorldStateEditor } from './src/ui/worldStateEditor.js';
+import { initSurfaceDock } from './src/ui/surfaceDock.js';
 import {
     initStateCard,
     show as showStateCard,
     hide as hideStateCard,
+    isOpen as isStateCardOpen,
+    hasDisplayComponents as hasStateCardComponents,
     update as updateStateCard,
 } from './src/ui/stateCard.js';
 
 // Phone module (Step 9): diegetic texting logic + floating messenger panel
-import { initPhoneAgent } from './src/phone/phoneAgent.js';
+import {
+    getAllThreads as getPhoneThreads,
+    getThread as getPhoneThread,
+    getTotalUnread as getPhoneUnread,
+    initPhoneAgent,
+    isPhoneEnabled,
+    onPhoneActivity,
+    requestCharacterText,
+} from './src/phone/phoneAgent.js';
 import {
     initPhonePanel,
     show as showPhone,
     hide as hidePhone,
+    isOpen as isPhoneOpen,
+    openThread as openPhoneThread,
 } from './src/phone/phonePanel.js';
+
+// Shared social Feed: branch-aware artifact logic + editorial floating panel
+import {
+    getFeedPost,
+    getFeedConfig,
+    getFeedState,
+    initFeedAgent,
+    isFeedEnabled,
+    listFeedPosts,
+    onFeedActivity,
+    requestCharacterPost,
+} from './src/feed/feedAgent.js';
+import {
+    initFeedPanel,
+    show as showFeed,
+    hide as hideFeed,
+    isOpen as isFeedOpen,
+    openPost as openFeedPost,
+} from './src/feed/feedPanel.js';
+
+// Calendar presentation over setting-neutral, branch-aware Commitments.
+import {
+    createCommitmentsIntegrationApi,
+    getCommitment,
+    initCommitments,
+    listCommitments,
+    onCommitmentActivity,
+} from './src/commitments/commitments.js';
+import {
+    getUnread as getCalendarUnread,
+    hide as hideCalendar,
+    initCalendarPanel,
+    isOpen as isCalendarOpen,
+    openCommitment,
+    show as showCalendar,
+} from './src/commitments/calendarPanel.js';
+
+// Shared Activity spine: optional artifact index + source-linked notifications.
+import {
+    createActivityIntegrationApi,
+    initActivityHub,
+    registerActivitySource,
+} from './src/activity/activityHub.js';
+import {
+    getUnread as getNotificationsUnread,
+    hide as hideNotifications,
+    initNotificationsPanel,
+    isOpen as isNotificationsOpen,
+    show as showNotifications,
+} from './src/activity/notificationsPanel.js';
 
 export const MODULE_NAME = 'SillyTavern-SuperAgents';
 export const LOG_PREFIX = '[SuperAgents]';
@@ -203,7 +289,7 @@ export function debug(...args) {
 
 function initNamespace() {
     window.SuperAgents = {
-        version: '0.8.0',  // Step 11 polish — slash commands (/sa-*), per-turn cost hint, regex-safety hardening
+        version: '0.42.7',
 
         // Top-level toggles
         getSettings,
@@ -242,7 +328,17 @@ function initNamespace() {
             save:          saveAgent,
             delete:        deleteAgent,
             toggle:        toggleAgent,
+            getEnabledSetState,
+            toggleEnabledSet: toggleEnabledAgentSet,
+            isAgentPaused,
+            setAgentPaused,
+            toggleAgentPaused,
+            onAgentPauseChange,
             runOnLast:     runAgentOnLastMessage,
+            isPaused:      isAgentsPaused,
+            setPaused:     setAgentsPaused,
+            togglePaused:  toggleAgentsPaused,
+            onPauseChange: onAgentsPauseChange,
             createDefault: createDefaultAgent,
         },
 
@@ -253,6 +349,8 @@ function initNamespace() {
             save:          saveGroup,
             delete:        deleteGroup,
             toggle:        toggleGroup,
+            runOnMessage:  runGroupOnMessage,
+            runOnLast:     runGroupOnLastMessage,
             createDefault: createDefaultGroup,
         },
 
@@ -270,6 +368,7 @@ function initNamespace() {
             execute:       executeMergeVariable,
             storeSidecar:  storeSidecarResult,
             storeBatched:  storeBatchedSidecarResult,
+            getTransaction: getStateTransaction,
         },
 
         // Sidecar execution
@@ -305,6 +404,8 @@ function initNamespace() {
             init:            initLifecycle,
             runAgent:        runAgentOnMessage,
             runOnLast:       runAgentOnLastMessage,
+            runGroup:        runGroupOnMessage,
+            runGroupOnLast:  runGroupOnLastMessage,
             isActive:        isAgentRunActive,
             cancel:          cancelAgentRun,
             onRunStateChange,
@@ -325,6 +426,26 @@ function initNamespace() {
             init:    initMacros,
             refresh: refreshMacros,
         },
+
+        // Stable contract for optional integrations such as Dynamic Events.
+        // Feature-detect apiVersion; never import SuperAgents internals.
+        integration: createPublicIntegrationApi({
+            phone: {
+                isEnabled: isPhoneEnabled,
+                getThread: getPhoneThread,
+                listThreads: getPhoneThreads,
+                requestText: requestCharacterText,
+            },
+            feed: {
+                isEnabled: isFeedEnabled,
+                listPosts: listFeedPosts,
+                getPost: getFeedPost,
+                requestPost: requestCharacterPost,
+            },
+            calendar: createCommitmentsIntegrationApi(),
+            activity: createActivityIntegrationApi(),
+            presentation: createPresentationIntegrationApi(),
+        }),
 
         // Per-turn / per-session call accounting (cost hint — gameplan §6)
         stats: {
@@ -360,6 +481,21 @@ function initNamespace() {
                 init: initPhonePanel,
                 show: showPhone,
                 hide: hidePhone,
+            },
+            feed: {
+                init: initFeedPanel,
+                show: showFeed,
+                hide: hideFeed,
+            },
+            calendar: {
+                init: initCalendarPanel,
+                show: showCalendar,
+                hide: hideCalendar,
+            },
+            notifications: {
+                init: initNotificationsPanel,
+                show: showNotifications,
+                hide: hideNotifications,
             },
         },
 
@@ -439,11 +575,9 @@ jQuery(async () => {
         // renderer's so per-swipe state is restored before the DOM re-render.
         initLifecycle();
 
-        // Macro exposure: register {{agent_<var>}} state macros, and refresh
-        // them after every post-gen run so newly-accumulated state is queryable
-        // without a reload. CHAT_CHANGED re-sync is wired inside initMacros().
+        // Macro handlers read current chat state at expansion time. Structural
+        // changes (new/renamed agents) are refreshed when the editor saves.
         initMacros();
-        onPostProcessComplete(() => refreshMacros());
 
         // Render layer: register hooks, then start the DOM observer.
         registerRenderHook('ws-hud-data', renderWorldStateHud);
@@ -456,6 +590,8 @@ jQuery(async () => {
         registerRenderHook('art-prompt-data', renderArtPrompt);
         registerRenderHook('actor-interview-data', renderActorInterview);
         registerRenderHook('commentary-section-data', renderCommentarySection);
+        registerRenderHook('sa-generic-output-data', renderGenericOutput);
+        registerRenderHook('sa-wish-ledger-data', renderWishLedger);
         registerRenderHook('continuity-guard-data', renderContinuityGuard);
         // Direction Menu uses delegated click handling on #chat; install it up
         // front (idempotent + self-retries if #chat isn't in the DOM yet).
@@ -463,6 +599,7 @@ jQuery(async () => {
         // Continuity Guard's flag is clickable; bind its delegated handler too.
         initContinuityGuardDelegation();
         initRenderer();
+        initWorldStateEditor();
 
         // UI: add the wand-menu launcher for the unified modal.
         setupExtensionsMenuButton();
@@ -503,12 +640,108 @@ jQuery(async () => {
         // context-injection refresh (the lifecycle drives evaluation);
         // initPhonePanel builds the floating messenger and registers its
         // Settings control. Agent before panel: the panel queries phone state.
+        initPresentationProfiles();
         initPhoneAgent();
+        initFeedAgent();
+        initCommitments();
+        initActivityHub({
+            phone: { onActivity: onPhoneActivity, listThreads: getPhoneThreads },
+            feed: { onActivity: onFeedActivity, listPosts: listFeedPosts },
+            calendar: { onActivity: onCommitmentActivity, listCommitments },
+        });
         initPhonePanel();
+        initFeedPanel();
+        initCalendarPanel();
+        registerActivitySource('phone', {
+            isAvailable: () => isPhoneEnabled()
+                && getActiveSurfacePresentation('phone')?.capabilities?.available !== false,
+            open: artifact => {
+                const character = artifact.context?.character;
+                const thread = getPhoneThread(character);
+                if (!thread?.messages?.some(message => message.id === artifact.sourceId)) return false;
+                return openPhoneThread(character);
+            },
+        });
+        registerActivitySource('feed', {
+            isAvailable: () => isFeedEnabled()
+                && getActiveSurfacePresentation('feed')?.capabilities?.available !== false,
+            open: artifact => getFeedPost(artifact.sourceId)
+                ? openFeedPost(artifact.sourceId)
+                : false,
+        });
+        registerActivitySource('calendar', {
+            isAvailable: () => getActiveSurfacePresentation('calendar')?.capabilities?.available !== false,
+            open: artifact => getCommitment(artifact.sourceId)
+                ? openCommitment(artifact.sourceId)
+                : false,
+        });
+        initNotificationsPanel();
+        initSurfaceDock([
+            {
+                id: 'state-card',
+                label: 'State Card',
+                icon: 'fa-id-card',
+                tone: 'state-card',
+                isAvailable: hasStateCardComponents,
+                isOpen: isStateCardOpen,
+                getUnread: () => 0,
+                toggle: () => (isStateCardOpen() ? hideStateCard(false) : showStateCard(false)),
+            },
+            {
+                id: 'notifications',
+                getLabel: () => getActiveSurfacePresentation('notifications')?.label || 'Notifications',
+                getIcon: () => getActiveSurfacePresentation('notifications')?.icon || 'fa-bell',
+                getTone: () => getActiveSurfacePresentation('notifications')?.tone || 'notifications',
+                isAvailable: () => getGlobalSettings().showNotificationsLauncher !== false
+                    && getActiveSurfacePresentation('notifications')?.capabilities?.available !== false,
+                isOpen: isNotificationsOpen,
+                getUnread: getNotificationsUnread,
+                toggle: () => (isNotificationsOpen() ? hideNotifications(false) : showNotifications(false)),
+            },
+            {
+                id: 'phone',
+                getLabel: () => getActiveSurfacePresentation('phone')?.label || 'Phone',
+                getIcon: () => getActiveSurfacePresentation('phone')?.icon || 'fa-comment-dots',
+                getTone: () => getActiveSurfacePresentation('phone')?.tone || 'phone',
+                isAvailable: () => isPhoneEnabled()
+                    && getActiveSurfacePresentation('phone')?.capabilities?.available !== false,
+                isOpen: isPhoneOpen,
+                getUnread: getPhoneUnread,
+                toggle: () => (isPhoneOpen() ? hidePhone(false) : showPhone(false)),
+            },
+            {
+                id: 'feed',
+                getLabel: () => {
+                    const configured = String(getFeedConfig()?.appName || '').trim();
+                    return configured && configured !== 'Twatter'
+                        ? configured
+                        : (getActiveSurfacePresentation('feed')?.title || configured || 'Twatter');
+                },
+                getIcon: () => getActiveSurfacePresentation('feed')?.icon || 'fa-feather-pointed',
+                getTone: () => getActiveSurfacePresentation('feed')?.tone || 'feed',
+                isAvailable: () => isFeedEnabled()
+                    && getActiveSurfacePresentation('feed')?.capabilities?.available !== false,
+                isOpen: isFeedOpen,
+                getUnread: () => getFeedState().unread,
+                toggle: () => (isFeedOpen() ? hideFeed(false) : showFeed(false)),
+            },
+            {
+                id: 'calendar',
+                getLabel: () => getActiveSurfacePresentation('calendar')?.label || 'Calendar',
+                getIcon: () => getActiveSurfacePresentation('calendar')?.icon || 'fa-calendar-day',
+                getTone: () => getActiveSurfacePresentation('calendar')?.tone || 'calendar',
+                isAvailable: () => getGlobalSettings().showCalendarLauncher !== false
+                    && getActiveSurfacePresentation('calendar')?.capabilities?.available !== false,
+                isOpen: isCalendarOpen,
+                getUnread: getCalendarUnread,
+                toggle: () => (isCalendarOpen() ? hideCalendar(false) : showCalendar(false)),
+            },
+        ]);
+        initWeatherCycleIntegration();
 
         const { agents: agentStore } = window.SuperAgents;
         const agentCount = agentStore.getAll().length;
-        debug(`loaded v0.8.0 — ${agentCount} agent(s) on disk; lifecycle engine active (pre/post-gen, batching, rewrite, swipe, phone); compat guard + state macros active; slash commands (/sa-run, /sa-list, /sa-toggle, /sa-open); per-turn cost hint; unified modal (manage + library + groups live) + State Card + Phone floating panels; renderers: World State, Continuity Check, Narrative Engine, Direction Menu, Parallel Off-Screen`);
+        debug(`loaded v0.42.7 — ${agentCount} agent(s) on disk; every-N memory agents can retain branch-aware snapshots as reference-only context between provider calls; chat hydration and first-card greetings cannot trigger automatic post agents, and chat changes invalidate queued or in-flight tracker commits before teardown; World State v11 is grounded by active lore and recent history, supports validated branch corrections, and can optionally synchronize eligible snapshots plus exact Afternoon/Twilight lighting to Weather Cycle, including temporary manual visual overrides that yield to the next World State commit, editable overlay colors, and chronological phase controls; Social Web Ledger explicitly excludes current and prior player personas in solo and batched prompts and filters persona-linked edges at commit time so Relationship Ledger remains authoritative; grouped trackers use an unambiguous JSON-envelope contract and recover renamed keys or task-local tagged blocks before schema validation; structured classifiers recover schema-valid bare JSON and use reasoning-safe output budgets; post-agent jobs are coalesced, tracker commits yield cooperatively, branch-aware Story surfaces cache their visible path, and post-run timings separate model wait from synchronous finalization; deferred fresh-state gates plus staged Prompt Base / Prompt NSFW classifiers are available; initialization and one-shot lifecycle policies remain available; hidden Story App rendering is deferred and State Card refreshes are coalesced; lifecycle engine active; validated transactional state + fail-closed knowledge capability API active; relationship/social-web/knowledge ledgers available; Activity + source-linked Notifications active; adapter-ready branch-aware Calendar/Commitments with deletion-safe rescheduling and passive canonical story-plan capture available; Modern, Cute Retro, Retro Analog, Gamer Modern, Grounded Historical, Historical Fantasy, Xianxia, Post-Apocalyptic, and Near Future presentation profiles drive all story surfaces and Dynamic Events vocabulary through stable IDs; eleven State Card appearance choices include presentation matching and the dark Story Ledger alongside all earlier skins; branch-safe Knowledge controls, compat guard, state macros, slash commands, and route-based agent editor available`);
 
         // Surface a one-time migration result so the user knows their VM agents
         // came across (or that there was a name collision to resolve manually).

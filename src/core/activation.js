@@ -10,13 +10,15 @@
  * coin-flip agent doesn't re-roll between pre-gen and post-gen).
  *
  * Ported from VerseManager's runner.js (shouldActivate / buildActivationSnapshot
- * / getSnapshotAgents / normalizeGenType) — unchanged behavior.
+ * / getSnapshotAgents / normalizeGenType), then extended for SuperAgents.
  */
 
 import { chat } from '../../../../../../script.js';
 import { getEnabledAgents, getAgentById } from '../data/store.js';
 import { readPendingUserMessage } from './richContext.js';
-import { advanceGeneralGate, ownsCounterItself } from './everyN.js';
+import { evaluateGeneralGate, ownsCounterItself } from './everyN.js';
+import { agentMatchesCurrentScope } from './activationScope.js';
+import { activationPolicyAllows } from './activationPolicy.js';
 
 // ============================================================================
 // GENERATION TYPE
@@ -24,12 +26,16 @@ import { advanceGeneralGate, ownsCounterItself } from './everyN.js';
 
 /**
  * Collapse ST's many generation-type spellings into the buckets agents filter
- * on. Anything that isn't continue/impersonate/quiet is treated as 'normal'.
+ * on. Swipe and regenerate share one user-facing bucket. Anything else that
+ * isn't continue/impersonate/quiet is treated as 'normal'.
  * @param {string} generationType
- * @returns {'normal'|'continue'|'impersonate'|'quiet'}
+ * @returns {'normal'|'continue'|'impersonate'|'quiet'|'swipe'}
  */
 export function normalizeGenType(generationType) {
     switch (String(generationType ?? '').trim().toLowerCase()) {
+        case 'swipe':
+        case 'regenerate':
+            return 'swipe';
         case 'continue':
         case 'impersonate':
         case 'quiet':
@@ -48,10 +54,12 @@ export function normalizeGenType(generationType) {
  *
  * Order of gates:
  *   1. generationType filter (if the agent restricts types)
- *   2. phone agents bypass the rest — their two-tier trigger (keyword +
+ *   2. character/tag/group scope
+ *   3. initialization / one-shot lifecycle policy
+ *   4. phone agents bypass the remaining content gates — their two-tier trigger (keyword +
  *      talkativeness) lives inside the phone module, not here
- *   3. probability gate (rolled once per turn via the snapshot)
- *   4. keyword / pattern match against the last message (+ the pending user
+ *   5. probability gate (rolled once per turn via the snapshot)
+ *   6. keyword / pattern match against the last message (+ the pending user
  *      message, see below)
  *
  * Keyword/pattern matching scans the last committed message AND the user's
@@ -75,9 +83,15 @@ export function shouldActivate(agent, generationType, pendingUserText = '') {
         return false;
     }
 
+    if (!agentMatchesCurrentScope(agent)) return false;
+
+    // Sleeping initialization agents must not consume probability rolls or
+    // every-N counters while their lifecycle policy is closed.
+    if (!activationPolicyAllows(agent)) return false;
+
     // Phone agents always pass — their own trigger logic (keyword +
     // talkativeness probability) lives inside the phone evaluation, not here.
-    if (agent.phoneConfig != null) {
+    if (agent.phoneConfig != null || agent.feedConfig != null) {
         return true;
     }
 
@@ -146,7 +160,7 @@ export function shouldActivate(agent, generationType, pendingUserText = '') {
  *
  * @param {string} generationType — raw or normalized; normalized internally
  * @param {object} [options] — generation options from the event (automatic_trigger)
- * @returns {{ generationType: string, activeAgentIds: string[], pendingUserText: string }}
+ * @returns {{ generationType: string, activeAgentIds: string[], runnableAgentIds: string[], retainedSnapshotAgentIds: string[], pendingUserText: string }}
  */
 export function buildActivationSnapshot(generationType, options) {
     const genType = normalizeGenType(generationType);
@@ -155,26 +169,46 @@ export function buildActivationSnapshot(generationType, options) {
     // audit fix #8). '' for automatic triggers and post-gen.
     const pendingUserText = readPendingUserMessage(options);
 
-    // Stage 1: the existing per-agent activation gates (type / probability /
-    // keyword). Pure, no side effects.
-    let activeAgents = getEnabledAgents().filter(a => shouldActivate(a, genType, pendingUserText));
+    const enabledAgents = getEnabledAgents();
+    const pausedAgents = enabledAgents.filter(agent => agent.paused);
 
-    // Stage 2: the general every-N throttle. Advances each surviving agent's
-    // counter exactly ONCE here (snapshot builds once per generation) and drops
-    // agents that aren't due this turn. Only "new message" turns count toward N
-    // (normal + continue); impersonate/quiet neither advance nor gate. Agents
+    // Stage 1: activation gates only advance runnable agents. Individually
+    // paused agents remain in activeAgentIds as frozen reference context, but
+    // never roll probability/policy/cadence while paused.
+    const cadenceEligibleAgents = enabledAgents
+        .filter(agent => !agent.paused)
+        .filter(a => shouldActivate(a, genType, pendingUserText));
+
+    // Stage 2: the general every-N throttle. It receives the raw generation
+    // type so swipe/regenerate can either reuse the last reply's decision or
+    // count as a new attempt, according to the agent's cadence setting. Agents
     // that own their own counter (Continuity Guard) are exempt — they run every
     // turn and manage cadence internally.
-    const counts = genType === 'normal' || genType === 'continue';
-    if (counts) {
-        activeAgents = activeAgents.filter(a =>
-            ownsCounterItself(a) ? true : advanceGeneralGate(a),
-        );
+    const activeAgents = [];
+    const retainedSnapshotAgents = [];
+    for (const agent of cadenceEligibleAgents) {
+        const runs = ownsCounterItself(agent) || evaluateGeneralGate(agent, generationType);
+        if (runs) {
+            activeAgents.push(agent);
+        } else if (agent.reuseSnapshotBetweenRuns
+            && agent.mergeVariable?.enabled
+            && agent.mergeVariable.variableName) {
+            retainedSnapshotAgents.push(agent);
+        }
     }
 
+    const runnableIds = new Set(activeAgents.map(agent => agent.id));
+    const retainedIds = new Set(retainedSnapshotAgents.map(agent => agent.id));
+    const referenceIds = new Set([
+        ...runnableIds,
+        ...pausedAgents.map(agent => agent.id),
+        ...retainedIds,
+    ]);
     return {
         generationType: genType,
-        activeAgentIds: activeAgents.map(a => a.id),
+        activeAgentIds: enabledAgents.filter(agent => referenceIds.has(agent.id)).map(agent => agent.id),
+        runnableAgentIds: enabledAgents.filter(agent => runnableIds.has(agent.id)).map(agent => agent.id),
+        retainedSnapshotAgentIds: enabledAgents.filter(agent => retainedIds.has(agent.id)).map(agent => agent.id),
         pendingUserText,
     };
 }
@@ -187,5 +221,7 @@ export function buildActivationSnapshot(generationType, options) {
  */
 export function getSnapshotAgents(snapshot) {
     if (!snapshot?.activeAgentIds) return [];
-    return snapshot.activeAgentIds.map(id => getAgentById(id)).filter(Boolean);
+    return snapshot.activeAgentIds
+        .map(id => getAgentById(id))
+        .filter(agent => agent?.enabled);
 }

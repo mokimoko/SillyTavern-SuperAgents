@@ -27,6 +27,7 @@ const SANS = "system-ui,-apple-system,'Segoe UI',sans-serif";
 
 // Muted clay/rose accent — distinct from soundtrack purple + art amber.
 const ACCENT = '190,120,110';
+const ACCENT_TEXT = `color-mix(in srgb, rgb(${ACCENT}) 65%, var(--SmartThemeBodyColor, #fff) 35%)`;
 
 /**
  * Parse the raw body into per-actor entries.
@@ -89,10 +90,10 @@ export function renderActorInterview(el) {
         'align-items:center',
         'gap:8px',
         'padding:5px 10px',
-        'background:rgba(255,255,255,0.02)',
-        'border:1px solid rgba(255,255,255,0.06)',
+        'background:var(--sa-surface-input,rgba(255,255,255,0.02))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
         `border-left:2px solid rgba(${ACCENT},0.45)`,
-        'color:rgba(255,255,255,0.5)',
+        'color:var(--sa-text-secondary,rgba(255,255,255,0.65))',
         `font-family:${MONO}`,
         'font-size:10px',
         'font-weight:500',
@@ -112,7 +113,7 @@ export function renderActorInterview(el) {
     label.textContent = 'Behind the Scenes';
 
     const sceneInline = document.createElement('span');
-    sceneInline.style.cssText = 'margin-left:auto;text-transform:none;letter-spacing:0.02em;color:rgba(255,255,255,0.62);font-family:' + SANS + ';font-size:11px;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    sceneInline.style.cssText = 'margin-left:auto;text-transform:none;letter-spacing:0.02em;color:var(--sa-text-secondary,rgba(255,255,255,0.65));font-family:' + SANS + ';font-size:11px;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     sceneInline.textContent = scene;
 
     summary.appendChild(glyph);
@@ -120,11 +121,11 @@ export function renderActorInterview(el) {
     if (scene) summary.appendChild(sceneInline);
 
     summary.addEventListener('mouseenter', () => {
-        summary.style.color = 'rgba(255,255,255,0.75)';
+        summary.style.color = 'var(--sa-text-primary,rgba(255,255,255,0.85))';
         summary.style.borderLeftColor = `rgba(${ACCENT},0.75)`;
     });
     summary.addEventListener('mouseleave', () => {
-        summary.style.color = 'rgba(255,255,255,0.5)';
+        summary.style.color = 'var(--sa-text-secondary,rgba(255,255,255,0.65))';
         summary.style.borderLeftColor = `rgba(${ACCENT},0.45)`;
     });
 
@@ -132,19 +133,19 @@ export function renderActorInterview(el) {
     const body = document.createElement('div');
     body.style.cssText = [
         'padding:9px 12px 10px',
-        'background:rgba(0,0,0,0.18)',
-        'border:1px solid rgba(255,255,255,0.06)',
+        'background:var(--sa-surface-info,rgba(0,0,0,0.18))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
         'border-top:none',
         `border-left:2px solid rgba(${ACCENT},0.3)`,
         `font-family:${SANS}`,
         'font-size:12px',
         'line-height:1.6',
-        'color:rgba(255,255,255,0.7)',
+        'color:var(--sa-text-body,rgba(255,255,255,0.8))',
     ].join(';');
 
     if (mood) {
         const moodRow = document.createElement('div');
-        moodRow.style.cssText = `font-family:${MONO};font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;color:rgba(${ACCENT},0.75);margin-bottom:9px;opacity:0.85`;
+        moodRow.style.cssText = `font-family:${MONO};font-size:9.5px;letter-spacing:0.08em;text-transform:uppercase;color:${ACCENT_TEXT};margin-bottom:9px`;
         moodRow.textContent = 'on set \u00B7 ' + mood; // "on set · <mood>"
         body.appendChild(moodRow);
     }
@@ -156,7 +157,7 @@ export function renderActorInterview(el) {
             'align-items:flex-start',
             'gap:9px',
             'padding:8px 0',
-            i > 0 ? 'border-top:1px solid rgba(255,255,255,0.05)' : '',
+            i > 0 ? 'border-top:1px solid var(--sa-border-faint,rgba(255,255,255,0.05))' : '',
         ].filter(Boolean).join(';');
 
         // Thin-ruled monogram — outlined circle, not a filled dot.
@@ -167,7 +168,7 @@ export function renderActorInterview(el) {
             'height:22px',
             'border-radius:50%',
             `border:1px solid rgba(${ACCENT},0.5)`,
-            `color:rgba(${ACCENT},0.95)`,
+            `color:${ACCENT_TEXT}`,
             'display:flex',
             'align-items:center',
             'justify-content:center',
@@ -183,13 +184,13 @@ export function renderActorInterview(el) {
 
         if (actor.name) {
             const nameRow = document.createElement('div');
-            nameRow.style.cssText = `font-family:${MONO};font-size:9.5px;letter-spacing:0.06em;text-transform:uppercase;color:rgba(255,255,255,0.55);margin-bottom:3px`;
+            nameRow.style.cssText = `font-family:${MONO};font-size:9.5px;letter-spacing:0.06em;text-transform:uppercase;color:var(--sa-text-secondary,rgba(255,255,255,0.65));margin-bottom:3px`;
             nameRow.textContent = actor.name;
             col.appendChild(nameRow);
         }
 
         const quote = document.createElement('div');
-        quote.style.cssText = 'color:rgba(255,255,255,0.72);font-style:italic;white-space:pre-wrap;word-break:break-word;line-height:1.55';
+        quote.style.cssText = 'color:var(--sa-text-body,rgba(255,255,255,0.8));font-style:italic;white-space:pre-wrap;word-break:break-word;line-height:1.55';
         quote.textContent = actor.reaction;
         col.appendChild(quote);
 

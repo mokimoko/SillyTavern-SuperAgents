@@ -6,7 +6,7 @@
   "js": "index.js",
   "css": "style.css",
   "author": "mokimoko",
-  "version": "0.8.0",
+  "version": "0.42.7",
   "homePage": "https://github.com/mokimoko/SillyTavern-SuperAgents",
   "auto_update": false
 }

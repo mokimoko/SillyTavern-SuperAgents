@@ -6,9 +6,9 @@
  * inline-tag agents), the renderer injects the pre-computed styled HTML into the
  * message display and runs any matching render hooks.
  *
- * Runs independently of agent enable/disable state — data persisted on a message
- * renders permanently. Disabling an agent stops NEW extractions; old messages
- * keep their styled output.
+ * Persisted data follows the source agent's presentation state. Paused agents
+ * remain enabled, so their frozen message UI stays visible; disabled or deleted
+ * agents do not render until enabled again.
  *
  * Swipe-aware: saAgentData entries are tagged with `_swipeId`; the renderer only
  * displays data matching the message's current `swipe_id`. MESSAGE_SWIPED /
@@ -23,6 +23,7 @@
 
 import { chat, eventSource, event_types } from '../../../../../../script.js';
 import { debug } from '../../index.js';
+import { getAgentById, getEnabledAgents, onStoreChange } from '../data/store.js';
 
 const LOG_PREFIX = '[SuperAgents/renderer]';
 const RENDERED_ATTR = 'data-sa-agent-rendered';
@@ -49,6 +50,9 @@ export function registerRenderHook(className, renderFn) {
 
 /** @type {MutationObserver|null} */
 let observer = null;
+let unsubscribeStoreChange = null;
+let enabledAgentSignature = '';
+let enabledRefreshQueued = false;
 
 // ============================================================================
 // INIT / DESTROY
@@ -90,6 +94,8 @@ function startObserver(chatContainer) {
     if (event_types.CHARACTER_MESSAGE_RENDERED) {
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
     }
+    enabledAgentSignature = getEnabledAgentSignature();
+    unsubscribeStoreChange = onStoreChange(onStoreChanged);
 
     requestAnimationFrame(() => renderAllVisible());
     debug(`${LOG_PREFIX} initialized`);
@@ -108,6 +114,9 @@ export function destroyRenderer() {
     if (event_types.CHARACTER_MESSAGE_RENDERED) {
         eventSource.removeListener(event_types.CHARACTER_MESSAGE_RENDERED, onCharacterMessageRendered);
     }
+    unsubscribeStoreChange?.();
+    unsubscribeStoreChange = null;
+    enabledRefreshQueued = false;
 }
 
 // ============================================================================
@@ -142,9 +151,11 @@ function renderMessage(mesEl) {
     const agentData = message.extra.saAgentData;
     const currentSwipeId = message.swipe_id ?? 0;
 
-    const entries = Object.entries(agentData).filter(([, data]) =>
-        data._swipeId === undefined || data._swipeId === currentSwipeId,
-    );
+    const entries = Object.entries(agentData).filter(([agentId, data]) => {
+        const sourceAgent = getAgentById(data?.agentId || agentId);
+        return sourceAgent?.enabled
+            && (data._swipeId === undefined || data._swipeId === currentSwipeId);
+    });
     if (entries.length === 0) {
         mesEl.setAttribute(RENDERED_ATTR, 'empty');
         return;
@@ -237,6 +248,24 @@ function clearMessageRender(mesEl) {
 function onChatChanged() {
     document.querySelectorAll(`[${RENDERED_ATTR}]`).forEach(clearMessageRender);
     requestAnimationFrame(() => renderAllVisible());
+}
+
+function getEnabledAgentSignature() {
+    return getEnabledAgents().map(agent => agent.id).sort().join('\u0000');
+}
+
+/** Repaint persisted message UI only when an agent crosses the on/off boundary. */
+function onStoreChanged() {
+    const nextSignature = getEnabledAgentSignature();
+    if (nextSignature === enabledAgentSignature) return;
+    enabledAgentSignature = nextSignature;
+    if (enabledRefreshQueued) return;
+    enabledRefreshQueued = true;
+    requestAnimationFrame(() => {
+        enabledRefreshQueued = false;
+        document.querySelectorAll(`[${RENDERED_ATTR}]`).forEach(clearMessageRender);
+        renderAllVisible();
+    });
 }
 
 /**

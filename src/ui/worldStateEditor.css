@@ -1,0 +1,146 @@
+.sa-world-state-edit {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 24px;
+    height: 24px;
+    margin-left: auto;
+    padding: 0;
+    border: 1px solid var(--sa-border-subtle, rgb(180 190 205 / 16%));
+    border-radius: 7px;
+    color: var(--sa-text-muted, rgb(200 205 215 / 48%));
+    background: rgb(20 23 29 / 26%);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.ws-hud-rendered:hover .sa-world-state-edit,
+.sa-world-state-edit:focus-visible {
+    opacity: 1;
+}
+
+@media (hover: none) {
+    .sa-world-state-edit { opacity: 0.72; }
+}
+
+.sa-world-state-edit:hover {
+    color: var(--sa-text-primary, #eef1f5);
+    border-color: var(--sa-border-strong, rgb(180 190 205 / 34%));
+}
+
+.sa-world-state-editor-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--sa-z-overlay, 10001);
+    display: grid;
+    place-items: center;
+    padding: 18px;
+    background: rgb(5 7 10 / 68%);
+    backdrop-filter: blur(7px);
+}
+
+.sa-world-state-editor {
+    width: min(620px, 100%);
+    max-height: min(760px, calc(100dvh - 36px));
+    overflow: auto;
+    border: 1px solid var(--sa-border-strong, rgb(180 190 205 / 22%));
+    border-radius: 16px;
+    color: var(--sa-text-primary, #eef1f5);
+    background: var(--sa-bg-panel, rgb(21 24 31 / 98%));
+    box-shadow: 0 24px 80px rgb(0 0 0 / 54%);
+}
+
+.sa-world-state-editor > header {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    padding: 18px 20px 14px;
+    border-bottom: 1px solid var(--sa-border-subtle, rgb(180 190 205 / 12%));
+}
+
+.sa-world-state-editor h3,
+.sa-world-state-editor p {
+    margin: 0;
+}
+
+.sa-world-state-editor h3 {
+    font-size: 1.02rem;
+}
+
+.sa-world-state-editor header p {
+    margin-top: 4px;
+    color: var(--sa-text-muted, rgb(200 205 215 / 55%));
+    font-size: 0.8rem;
+}
+
+.sa-world-state-editor-close {
+    width: 30px;
+    height: 30px;
+    margin-left: auto;
+    padding: 0;
+    border: 0;
+    color: inherit;
+    background: transparent;
+    cursor: pointer;
+    opacity: 0.66;
+}
+
+.sa-world-state-editor form {
+    padding: 18px 20px 20px;
+}
+
+.sa-world-state-editor-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 13px;
+}
+
+.sa-world-state-editor-field {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+
+.sa-world-state-editor-field:first-child {
+    grid-column: 1 / -1;
+}
+
+.sa-world-state-editor-field > span {
+    color: var(--sa-text-secondary, rgb(220 225 232 / 76%));
+    font-size: 0.77rem;
+}
+
+.sa-world-state-editor-field input,
+.sa-world-state-editor-field select {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
+    padding: 9px 10px;
+    border: 1px solid var(--sa-border-subtle, rgb(180 190 205 / 18%));
+    border-radius: 8px;
+    color: var(--sa-text-primary, #eef1f5);
+    background: rgb(9 12 17 / 64%);
+}
+
+.sa-world-state-editor-error {
+    margin-top: 12px !important;
+    color: #f0a7a7;
+    font-size: 0.8rem;
+}
+
+.sa-world-state-editor footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 9px;
+    margin-top: 18px;
+}
+
+@media (max-width: 560px) {
+    .sa-world-state-editor-grid { grid-template-columns: 1fr; }
+    .sa-world-state-editor-field:first-child { grid-column: auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sa-world-state-edit { transition: none; }
+}

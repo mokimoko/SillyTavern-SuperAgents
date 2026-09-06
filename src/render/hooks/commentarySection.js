@@ -32,6 +32,7 @@ const SANS = "system-ui,-apple-system,'Segoe UI',sans-serif";
 // Muted slate-blue accent — the last unused cool tone in the family. Used for
 // the left border, the handle color (link-like, AO3 pseud energy) and avatars.
 const ACCENT = '95,130,175';
+const ACCENT_TEXT = 'color-mix(in srgb, rgb(140,175,215) 65%, var(--SmartThemeBodyColor, #fff) 35%)';
 
 /**
  * Synthetic relative timestamps. The model doesn't emit times (keeps the block
@@ -110,7 +111,7 @@ function buildComment(c, time, last) {
         c.reply ? 'margin-left:22px' : '',
         c.reply ? 'padding:11px 0 11px 12px' : 'padding:11px 0',
         c.reply ? `border-left:2px solid rgba(${ACCENT},0.22)` : '',
-        last ? '' : 'border-bottom:1px solid rgba(255,255,255,0.05)',
+        last ? '' : 'border-bottom:1px solid var(--sa-border-faint,rgba(255,255,255,0.05))',
     ].filter(Boolean).join(';');
     row.style.cssText = base;
 
@@ -121,7 +122,6 @@ function buildComment(c, time, last) {
     const av = document.createElement('div');
     const avA = c.reply ? 0.12 : 0.18;
     const avB = c.reply ? 0.4 : 0.5;
-    const avC = c.reply ? 0.85 : 0.95;
     av.style.cssText = [
         'flex-shrink:0',
         'width:20px',
@@ -129,7 +129,7 @@ function buildComment(c, time, last) {
         'border-radius:50%',
         `background:rgba(${ACCENT},${avA})`,
         `border:1px solid rgba(${ACCENT},${avB})`,
-        `color:rgba(150,180,220,${avC})`,
+        `color:${ACCENT_TEXT}`,
         'display:flex',
         'align-items:center',
         'justify-content:center',
@@ -144,18 +144,18 @@ function buildComment(c, time, last) {
 
     if (c.handle) {
         const h = document.createElement('span');
-        h.style.cssText = `color:rgba(140,175,215,${c.reply ? 0.82 : 0.9});font-weight:500;font-size:12.5px`;
+        h.style.cssText = `color:${ACCENT_TEXT};font-weight:500;font-size:12.5px`;
         h.textContent = fmtHandle(c.handle);
         head.appendChild(h);
     }
 
     const t = document.createElement('span');
-    t.style.cssText = 'margin-left:auto;color:rgba(255,255,255,0.28);font-size:10px;flex-shrink:0';
+    t.style.cssText = 'margin-left:auto;color:var(--sa-text-faint,rgba(255,255,255,0.35));font-size:10px;flex-shrink:0';
     t.textContent = time;
     head.appendChild(t);
 
     const body = document.createElement('div');
-    body.style.cssText = `color:rgba(255,255,255,${c.reply ? 0.72 : 0.75});word-break:break-word;white-space:pre-wrap;line-height:1.55`;
+    body.style.cssText = 'color:var(--sa-text-body,rgba(255,255,255,0.8));word-break:break-word;white-space:pre-wrap;line-height:1.55';
     body.textContent = c.text;
 
     row.appendChild(head);
@@ -202,10 +202,10 @@ export function renderCommentarySection(el) {
         'align-items:center',
         'gap:8px',
         'padding:5px 10px',
-        'background:rgba(255,255,255,0.02)',
-        'border:1px solid rgba(255,255,255,0.06)',
+        'background:var(--sa-surface-input,rgba(255,255,255,0.02))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
         `border-left:2px solid rgba(${ACCENT},0.45)`,
-        'color:rgba(255,255,255,0.5)',
+        'color:var(--sa-text-secondary,rgba(255,255,255,0.65))',
         `font-family:${MONO}`,
         'font-size:10px',
         'font-weight:500',
@@ -225,7 +225,7 @@ export function renderCommentarySection(el) {
     label.textContent = 'Reader Comments';
 
     const meta = document.createElement('span');
-    meta.style.cssText = 'margin-left:auto;text-transform:none;letter-spacing:0.02em;color:rgba(255,255,255,0.4);font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    meta.style.cssText = 'margin-left:auto;text-transform:none;letter-spacing:0.02em;color:var(--sa-text-muted,rgba(255,255,255,0.45));font-size:10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     // Prefer the scene descriptor in the summary; fall back to the count.
     meta.textContent = scene || count;
 
@@ -234,11 +234,11 @@ export function renderCommentarySection(el) {
     summary.appendChild(meta);
 
     summary.addEventListener('mouseenter', () => {
-        summary.style.color = 'rgba(255,255,255,0.75)';
+        summary.style.color = 'var(--sa-text-primary,rgba(255,255,255,0.85))';
         summary.style.borderLeftColor = `rgba(${ACCENT},0.75)`;
     });
     summary.addEventListener('mouseleave', () => {
-        summary.style.color = 'rgba(255,255,255,0.5)';
+        summary.style.color = 'var(--sa-text-secondary,rgba(255,255,255,0.65))';
         summary.style.borderLeftColor = `rgba(${ACCENT},0.45)`;
     });
 
@@ -247,14 +247,14 @@ export function renderCommentarySection(el) {
     const body = document.createElement('div');
     body.style.cssText = [
         'padding:6px 14px 12px',
-        'background:rgba(0,0,0,0.28)',
-        'border:1px solid rgba(255,255,255,0.06)',
+        'background:var(--sa-surface-info,rgba(0,0,0,0.28))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
         'border-top:none',
         `border-left:2px solid rgba(${ACCENT},0.3)`,
         `font-family:${SANS}`,
         'font-size:13px',
         'line-height:1.55',
-        'color:rgba(255,255,255,0.72)',
+        'color:var(--sa-text-body,rgba(255,255,255,0.8))',
     ].join(';');
 
     comments.forEach((c, i) => {

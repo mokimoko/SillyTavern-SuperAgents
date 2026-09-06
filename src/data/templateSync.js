@@ -10,7 +10,7 @@
  *
  * Synced fields: prompt, phase, injection, postProcess, mergeVariable,
  * regexScripts, maxTokens, description, category, tags, icon, author,
- * stateCard, sidecarCall, phoneConfig.
+ * stateCard, sidecarCall, phoneConfig, feedConfig.
  *
  * Preserved (never touched): id, name, enabled, conditions,
  * connectionProfile, groupId.
@@ -33,11 +33,17 @@ const TEMPLATE_BASE_PATH = '/scripts/extensions/third-party/SillyTavern-SuperAge
 
 // Only files actually present on disk are listed here. fetchAllTemplates
 // filters 404s in JS, but the browser still logs each failed GET — so this
-// list stays in step with what's been ported. All 13 built-ins are now shipped.
+// list stays in step with the templates actually shipped.
 const TEMPLATE_FILES = [
     'world-state.json',
     'state-card.json',
+    'relationship-ledger.json',
+    'social-web-ledger.json',
+    'knowledge-ledger.json',
+    'prompt-profile.json',
+    'prompt-nsfw.json',
     'phone-messenger.json',
+    'social-feed.json',
     'continuity-check.json',
     'continuity-guard.json',
     'narrative-engine.json',
@@ -46,7 +52,6 @@ const TEMPLATE_FILES = [
     'prose-polisher.json',
     'prose-guardian.json',
     'event-spark.json',
-    'secret-keeper.json',
     'dead-dove-escalation.json',
     'intimacy-kink-randomiser.json',
     'director.json',
@@ -54,6 +59,7 @@ const TEMPLATE_FILES = [
     'art-prompt-generator.json',
     'actor-interview.json',
     'commentary-section.json',
+    'wish-granter.json',
 ];
 
 /**
@@ -76,6 +82,7 @@ const TEMPLATE_SYNC_FIELDS = [
     'stateCard',
     'sidecarCall',
     'phoneConfig',
+    'feedConfig',
     'continuityGuard',
 ];
 
@@ -114,7 +121,31 @@ function applyTemplateFields(agent, template) {
         if (template[field] === undefined) continue;
 
         if (field === 'mergeVariable') {
+            // Injection placement is the USER's call, not the template author's:
+            // carry the auto-inject preference and custom macro name across a
+            // template version bump so re-syncing never silently re-enables
+            // auto-injection or drops a {{sa_…}} macro the user placed in a preset.
+            const userAutoInject = agent.mergeVariable?.autoInject;
+            const userMacroName = agent.mergeVariable?.macroName;
+            const userMainContext = agent.mergeVariable?.mainContext;
+            const hasUserMainTemplate = typeof userMainContext?.formatItem === 'string';
+            const hasLegacyRelationshipProjection = agent.sourceTemplateId === 'tpl-relationship-ledger'
+                && userMainContext?.formatItem?.includes('{{#each json.personas}}{{#each characters}}');
             agent.mergeVariable = normalizeMergeVariable(template.mergeVariable);
+            if (userAutoInject !== undefined) agent.mergeVariable.autoInject = userAutoInject;
+            if (userMacroName) agent.mergeVariable.macroName = userMacroName;
+            // Once an agent has an explicit main-chat projection, treat that
+            // presentation as user-authored territory. Legacy built-ins used a
+            // null item template, so this release still upgrades them to the
+            // new structured defaults exactly once.
+            if (hasUserMainTemplate && !hasLegacyRelationshipProjection) {
+                agent.mergeVariable.mainContext = {
+                    ...agent.mergeVariable.mainContext,
+                    formatHeader: userMainContext.formatHeader,
+                    formatItem: userMainContext.formatItem,
+                    formatEmpty: userMainContext.formatEmpty,
+                };
+            }
         } else if (field === 'regexScripts') {
             agent.regexScripts = Array.isArray(template.regexScripts)
                 ? template.regexScripts.map(normalizeRegexScript)
@@ -122,6 +153,15 @@ function applyTemplateFields(agent, template) {
         } else if (field === 'injection' || field === 'postProcess') {
             // Merge so we don't blow away any defaults the template omits
             agent[field] = { ...agent[field], ...template[field] };
+        } else if (field === 'feedConfig') {
+            // Keep user-chosen in-world branding across template upgrades. The
+            // original default is migrated so existing installs receive the new
+            // default without treating it as a customization.
+            const currentAppName = String(agent.feedConfig?.appName || '').trim();
+            agent.feedConfig = { ...template.feedConfig, ...agent.feedConfig };
+            if (!currentAppName || currentAppName === 'Murmur') {
+                agent.feedConfig.appName = template.feedConfig.appName;
+            }
         } else {
             agent[field] = template[field];
         }

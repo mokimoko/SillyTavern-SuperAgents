@@ -1,0 +1,76 @@
+{
+    "id": "tpl-prompt-profile",
+    "name": "Prompt Base",
+    "description": "The always-on first stage of the Adaptive Prompt Kit. Before each main reply, it silently classifies author, focus character, mood, impairment, recent injury, NSFW status, and violence. Its validated state is not injected by itself.",
+    "icon": "fa-solid fa-sliders",
+    "category": "tracker",
+    "tags": ["prompt routing", "classifier", "pre-gen", "validated", "base"],
+    "version": 3,
+    "author": "",
+    "prompt": "### Prompt Base — Silent Pre-Generation Classifier\n\nClassify the scene and the NEXT main response. Do not write fiction or instructions. Output only the required block.\n\n[PROMPT_BASE]\n{\"author\":\"Ursula K. Le Guin\",\"focusCharacter\":\"Character Name\",\"mood\":\"neutral\",\"impaired\":false,\"injured\":false,\"nsfw\":false,\"violence\":false}\n[/PROMPT_BASE]\n\nRULES:\n- author: Choose a published author whose style suits the established setting, plot, and present scene. Give the name they publish under, in English characters. Reuse the current choice when it still fits; change it only when the story or scene genuinely calls for a different style.\n- focusCharacter: Choose exactly one character who is most important to the next response, usually the lead opposite {{user}}, but not always. Use their canonical name. Never choose {{user}}.\n- mood: Choose exactly one: sad, angry, afraid, romantic, sexy, neutral. Use the focus character's dominant current mood. Sexy means actively lustful or sexually charged; romantic means romantically tender or yearning. If no option clearly dominates, use neutral.\n- impaired: true only when a substance currently hinders the focus character's ability to think clearly.\n- injured: true only for a recent injury whose effects are still present.\n- nsfw: true when explicit sexual activity is underway or is clearly the immediate direction of the next response. Flirting, attraction, romance, nudity, or a sexy mood alone are not enough.\n- violence: true when physical violence is underway or clearly imminent in the next response. A past injury, threat, argument, or tense mood alone is not enough.\n- Use only established canon, the pending request, and necessary logical inference. Do not invent identity, history, injury, intoxication, consent, or future action to justify a value.\n- Output valid compact JSON and only the [PROMPT_BASE] block.",
+    "phase": "pre",
+    "injection": { "position": 1, "depth": 0, "role": 0, "order": 40, "scan": false, "template": "", "injectResult": false },
+    "postProcess": { "enabled": false, "type": "regex", "regexFind": "", "regexReplace": "", "regexFlags": "g", "appendText": "", "extractPattern": "", "extractVariable": "", "rewriteEnabled": false, "rewriteMode": "rewrite", "rewriteMaxTokens": 500 },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 1000,
+        "responseKey": "prompt_base",
+        "includeHistory": false,
+        "historyMessageCount": 12,
+        "genesisHistoryCount": 20,
+        "richContext": { "enabled": true, "character": true, "persona": true, "worldInfo": true, "summary": true, "authorsNote": true, "pendingUser": true, "historyCount": 10, "selfMemory": false, "selfMemoryCount": 0 },
+        "display": { "enabled": false, "position": "top", "hookClass": "", "dataMap": {}, "contentField": "" }
+    },
+    "mergeVariable": {
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 2,
+            "invariants": [],
+            "schema": {
+                "type": "object",
+                "required": ["author", "focusCharacter", "mood", "impaired", "injured", "nsfw", "violence"],
+                "properties": {
+                    "author": { "type": "string", "minLength": 1, "maxLength": 100 },
+                    "focusCharacter": { "type": "string", "minLength": 1, "maxLength": 100 },
+                    "mood": { "type": "string", "enum": ["sad", "angry", "afraid", "romantic", "sexy", "neutral"] },
+                    "impaired": { "type": "boolean" },
+                    "injured": { "type": "boolean" },
+                    "nsfw": { "type": "boolean" },
+                    "violence": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }
+        },
+        "enabled": true,
+        "variableName": "sa_prompt_base",
+        "extractPattern": "\\[PROMPT_BASE\\]\\s*([\\s\\S]*?)\\s*\\[\\/PROMPT_BASE\\]",
+        "fieldNames": ["json"],
+        "keyFields": [],
+        "mode": "snapshot",
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "autoInject": false,
+        "macroName": "",
+        "formatHeader": "CURRENT BASE PROMPT CLASSIFICATION:",
+        "formatItem": "{{json}}",
+        "formatEmpty": "FIRST RUN — classify the immediate scene and next response."
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 1000,
+    "everyN": 1,
+    "everyNCadence": "new-replies",
+    "activationPolicy": { "mode": "always" },
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerPatterns": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue", "impersonate", "swipe"],
+        "generationTypesVersion": 2,
+        "stateGate": { "enabled": false, "variableName": "", "jsonField": "json", "path": "", "operator": "eq", "value": "true", "requireFresh": true }
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-prompt-profile"
+}

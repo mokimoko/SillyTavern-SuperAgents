@@ -22,30 +22,40 @@
  *
  * Registration is idempotent and re-runnable: agents can be created, renamed,
  * or have their variableName changed at runtime, so refreshMacros() re-syncs
- * the registry. The lifecycle calls refreshMacros() via onPostProcessComplete
- * and on CHAT_CHANGED so newly-instantiated agents become queryable without a
- * reload.
+ * the registry after structural agent changes. Macro handlers read current
+ * chat state when expanded, so state updates do not require re-registration.
  *
- * Uses the stable MacrosParser.registerMacro path. ST is mid-migration to an
- * experimental macro engine, but the legacy parser works under both engines,
- * which is what we want for a personal extension that just needs to run.
+ * Uses SillyTavern's current macro registry API. Replacing a macro previously
+ * registered by this module explicitly unregisters it first, avoiding duplicate
+ * registration warnings while still surfacing first-time external collisions.
  */
 
-import { MacrosParser } from '../../../../../../scripts/macros.js';
-import { eventSource, event_types } from '../../../../../events.js';
+import { macros, MacroCategory } from '../../../../../../scripts/macros/macro-system.js';
 import { debug } from '../../index.js';
-import { getAgents } from '../data/store.js';
+import { getAgents, getAgentById } from '../data/store.js';
 import { readMergeArray, formatMergeVariableData } from '../modes/mergeVariable.js';
 
 const LOG_PREFIX = '[SuperAgents/macros]';
 const MACRO_PREFIX = 'agent_';
 
-// The set of macro names we've registered, so refreshMacros can detect which
-// ones are stale (agent deleted / variableName changed) and overwrite cleanly.
-// MacrosParser has no public "unregister", so we re-register stale names with a
-// resolver that reflects current state — a removed agent's macro simply resolves
-// to empty rather than dangling on old data.
+// The set of macro names owned by this module. It lets refreshMacros replace its
+// own definitions quietly while leaving a warning intact for first-time name
+// collisions with core macros or another extension.
 const registered = new Set();
+
+function registerMacro(name, handler, description) {
+    if (registered.has(name)) {
+        macros.registry.unregisterMacro(name);
+    }
+
+    const definition = macros.registry.registerMacro(name, {
+        category: MacroCategory.MISC,
+        description,
+        handler,
+    });
+
+    if (definition) registered.add(name);
+}
 
 /**
  * Sanitize a variableName into a macro-safe suffix. Macro names are
@@ -77,6 +87,10 @@ function fieldToString(val) {
     return Array.isArray(val) ? val.join(', ') : String(val ?? '').trim();
 }
 
+function isAgentEnabled(agent) {
+    return getAgentById(agent?.id)?.enabled === true;
+}
+
 /**
  * Collect the merge-variable agents that have a usable variableName.
  * @returns {{ agent: object, varName: string, macroName: string }[]}
@@ -102,19 +116,48 @@ export function refreshMacros() {
     const stateAgents = collectStateAgents();
     const liveNames = new Set();
 
-    for (const { agent, macroName } of stateAgents) {
+    for (const { agent, varName, macroName } of stateAgents) {
         liveNames.add(macroName);
         const rawName = `${macroName}_raw`;
         const valueName = `${macroName}_value`;
 
+        // Bare variable-name macro: {{<variableName>}} → same formatted, persona-
+        // projected state as {{agent_<var>}}. Trackers are conventionally named
+        // sa_* (sa_state_card, sa_relationship_ledger, sa_parallel), so this lets
+        // {{sa_state_card}} resolve directly — matching the obvious intuition —
+        // with no per-agent macro-name setup. Skipped only if it would collide
+        // with the agent_-prefixed name (i.e. a variable literally named
+        // "agent_…"), which the register-below already owns.
+        const bareName = macroSafe(varName);
+        if (bareName && bareName !== macroName) {
+            registerMacro(
+                bareName,
+                () => {
+                    if (!isAgentEnabled(agent)) return '';
+                    try {
+                        const text = formatMergeVariableData(agent.mergeVariable, { projectPersona: true });
+                        return text?.trim() ? text : '';
+                    } catch (err) {
+                        debug(`${LOG_PREFIX} macro {{${bareName}}} resolver failed:`, err);
+                        return '';
+                    }
+                },
+                `SuperAgents: formatted state for "${agent.name}" (by variable name).`,
+            );
+            liveNames.add(bareName);
+        }
+
         // Formatted state — resolver reads current state at expansion time, so
         // the macro always reflects the latest accumulated data, not a snapshot
         // taken at registration.
-        MacrosParser.registerMacro(
+        registerMacro(
             macroName,
             () => {
+                if (!isAgentEnabled(agent)) return '';
                 try {
-                    const text = formatMergeVariableData(agent.mergeVariable);
+                    // Placed in a preset, this feeds the MAIN model — project a
+                    // persona-scoped var to the active persona, same as chat injection.
+                    const text = formatMergeVariableData(agent.mergeVariable, { projectPersona: true });
                     return text?.trim() ? text : '';
                 } catch (err) {
                     debug(`${LOG_PREFIX} macro {{${macroName}}} resolver failed:`, err);
@@ -125,9 +168,10 @@ export function refreshMacros() {
         );
 
         // Raw JSON array — for scripts/QRs that want to parse items themselves.
-        MacrosParser.registerMacro(
+        registerMacro(
             rawName,
             () => {
+                if (!isAgentEnabled(agent)) return '[]';
                 try {
                     return JSON.stringify(readMergeArray(agent.mergeVariable.variableName));
                 } catch (err) {
@@ -144,9 +188,10 @@ export function refreshMacros() {
         // This is the paste-ready form: drop {{agent_<name>_value}} straight
         // into an image-gen call, a /sd command, or any downstream consumer
         // that wants ONLY the payload, not the decorated display string.
-        MacrosParser.registerMacro(
+        registerMacro(
             valueName,
             () => {
+                if (!isAgentEnabled(agent)) return '';
                 try {
                     const mv = agent.mergeVariable;
                     const arr = readMergeArray(mv.variableName);
@@ -175,9 +220,10 @@ export function refreshMacros() {
             const safeField = macroSafe(field);
             if (!safeField || RESERVED_FIELD_SUFFIXES.has(safeField)) continue;
             const fieldMacro = `${macroName}_${safeField}`;
-            MacrosParser.registerMacro(
+            registerMacro(
                 fieldMacro,
                 () => {
+                    if (!isAgentEnabled(agent)) return '';
                     try {
                         const arr = readMergeArray(agent.mergeVariable.variableName);
                         if (!arr.length) return '';
@@ -189,18 +235,40 @@ export function refreshMacros() {
                 },
                 `SuperAgents: "${field}" field of "${agent.name}".`,
             );
-            registered.add(fieldMacro);
             liveNames.add(fieldMacro);
         }
 
-        registered.add(macroName);
-        registered.add(rawName);
-        registered.add(valueName);
+        // Optional user-defined macro: {{sa_<macroName>}} → the same formatted,
+        // persona-projected state as {{agent_<var>}}, but under a name the user
+        // controls (set in the agent editor) so they can drop it at an exact
+        // spot in a preset. mergeVariable.macroName is pre-sanitized by normalize
+        // to [a-z0-9_-]; empty means no custom macro. Registered even when
+        // auto-injection is off — that's the whole point of manual placement.
+        const customSuffix = String(agent?.mergeVariable?.macroName ?? '').trim();
+        if (customSuffix) {
+            const customName = `sa_${customSuffix}`;
+            registerMacro(
+                customName,
+                () => {
+                    if (!isAgentEnabled(agent)) return '';
+                    try {
+                        const text = formatMergeVariableData(agent.mergeVariable, { projectPersona: true });
+                        return text?.trim() ? text : '';
+                    } catch (err) {
+                        debug(`${LOG_PREFIX} macro {{${customName}}} resolver failed:`, err);
+                        return '';
+                    }
+                },
+                `SuperAgents: custom-named formatted state for "${agent.name}".`,
+            );
+            liveNames.add(customName);
+        }
     }
 
     // Stale macros (agent removed or variableName changed): re-point their
-    // resolvers at "" so they no longer surface obsolete data. We can't delete
-    // them from the parser, but a neutral resolver is harmless.
+    // resolvers at "" so they no longer surface obsolete data. Keeping a neutral
+    // definition preserves existing presets without exposing stale content.
+    liveNames.add('agent_state_list');
     for (const name of registered) {
         // Recover the base macro name by stripping any known suffix, so a live
         // agent's _raw / _value variants aren't mistaken for stale bases.
@@ -208,7 +276,7 @@ export function refreshMacros() {
         if (name.endsWith('_raw')) base = name.slice(0, -4);
         else if (name.endsWith('_value')) base = name.slice(0, -6);
         if (liveNames.has(base)) continue;
-        MacrosParser.registerMacro(
+        registerMacro(
             name,
             () => (name.endsWith('_raw') ? '[]' : ''),
             'SuperAgents: (inactive agent state).',
@@ -216,9 +284,12 @@ export function refreshMacros() {
     }
 
     // Discovery macro: what agent-state macros currently resolve to real data.
-    MacrosParser.registerMacro(
+    registerMacro(
         'agent_state_list',
-        () => stateAgents.map(s => `{{${s.macroName}}}`).join(', '),
+        () => stateAgents
+            .filter(({ agent }) => isAgentEnabled(agent))
+            .map(s => `{{${s.macroName}}}`)
+            .join(', '),
         'SuperAgents: list of available agent-state macros.',
     );
 
@@ -226,12 +297,10 @@ export function refreshMacros() {
 }
 
 /**
- * Initialize macro exposure. Registers once now, then re-syncs whenever the
- * active chat changes (state is chat-local) so macros track the current chat.
- * Called once from index.js.
+ * Initialize macro exposure. Handlers resolve chat-local state at expansion
+ * time; structural changes are refreshed by the editor after an agent is saved.
  */
 export function initMacros() {
     refreshMacros();
-    eventSource.on(event_types.CHAT_CHANGED, refreshMacros);
     debug(`${LOG_PREFIX} macro exposure initialized`);
 }

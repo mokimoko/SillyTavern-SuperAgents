@@ -1,0 +1,182 @@
+{
+    "id": "tpl-wish-granter",
+    "name": "Wish Granter",
+    "description": "A standalone, branch-aware reality-wish ledger. It records granted wishes with stable IDs, owners and turn numbers; preserves exact wording and the resulting reality; updates records without erasing history; and marks overridden or revoked wishes while injecting only active reality changes into the main prompt.",
+    "icon": "fa-solid fa-wand-magic-sparkles",
+    "category": "tracker",
+    "tags": ["tracker", "wishes", "reality", "persistent", "standalone"],
+    "version": 2,
+    "author": "moki",
+    "prompt": "### Wish Granter — Standalone Post-Generation Reality Ledger\n\nROLE: Maintain the authoritative ledger of reality-altering wishes. Read the latest scene, recent history, and the previous ledger supplied below. Output ONLY the required ledger block. Never write commentary outside it.\n\nCURRENT SILLYTAVERN MESSAGE ID: {{lastMessageId}}\nUse that exact integer as turn and updatedTurn for a wish created or changed by the latest scene.\n\nCOMMIT STANDARD:\n1. A <wish>...</wish> tag in the latest scene is an explicit committed wish. Preserve its wording exactly, removing only the wrapper and quotation marks that surround the entire wish.\n2. Automatic runs normally occur only when the newly generated scene contains that tag. On a manual run, update or revoke a wish only when the latest canonical scene unmistakably establishes the change.\n3. Never add hypotheticals, jokes, ordinary hopes, figures of speech, instructions, quoted old wishes, contemplated wishes, failed attempts, or wishes that were spoken but not granted.\n4. If evidence is ambiguous, preserve the previous ledger unchanged. Do not guess an owner or invent an effect.\n\nSTATE SHAPE:\n{\"nextId\":2,\"wishes\":{\"W001\":{\"id\":\"W001\",\"owner\":\"Seraphina\",\"status\":\"active\",\"active\":true,\"turn\":8,\"updatedTurn\":8,\"exactWording\":\"I wish the old oak were healthy again.\",\"realityState\":\"The old oak is healthy and everyone except Seraphina remembers it as always having been healthy.\",\"overrides\":[],\"supersededBy\":\"\"}}}\n\nIDENTITY AND HISTORY:\n- IDs are stable and never reused. New wishes use W plus a zero-padded sequence: W001, W002, and so on. nextId is the next unused number.\n- owner is the canonical speaker/wisher, not necessarily the card name.\n- turn is the message ID where the wish first took effect and never changes. updatedTurn changes only when that record changes.\n- exactWording preserves the granted wish verbatim. realityState is a concise statement of what is now canonically true because of it.\n- Preserve every previous record. Never delete history and never renumber records.\n\nSTATUS AND CHANGES:\n- active: the reality change remains in force. Set status to \"active\" and active to true.\n- superseded: a newer granted wish replaced or contradicted this effect. Set status to \"superseded\", active to false, and supersededBy to the new wish ID.\n- revoked: canon explicitly nullified the wish without replacing it. Set status to \"revoked\", active to false, and leave supersededBy empty.\n- When a new wish overrides one or more older wishes, create the new active record, list the old IDs in its overrides array, and update each old record to superseded. Do not infer an override merely because two wishes touch the same subject; require an actual contradiction or canonical replacement.\n- Update an existing ID only to correct or clarify that same historical wish from new canonical evidence. A genuinely new granted wish always receives a new ID.\n- Keep overrides append-only. Keep inactive records inactive unless canon explicitly restores the same wish; a restoration is normally a new wish with a new ID.\n\nREALITY AND MEMORY:\n- Active wishes are authorial continuity facts, not dialogue suggestions.\n- By default, the wish owner remembers the pre-wish reality and recognizes the alteration. Everyone else treats the altered reality as if it had always been true, unless the story explicitly establishes another exception.\n- Do not cause characters to mention the ledger, IDs, tags, or tracking process.\n\nFIRST RUN:\n- Reconstruct only unmistakably granted wishes visible in the supplied history, prioritizing <wish> tags. If none are established, output nextId 1 and an empty wishes object.\n\nOUTPUT FORMAT (valid compact JSON):\n[WISH_LEDGER]\n{\"nextId\":1,\"wishes\":{}}\n[/WISH_LEDGER]",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 1,
+        "role": 0,
+        "order": 92,
+        "scan": false,
+        "template": "",
+        "injectResult": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "extract",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 4096
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 4096,
+        "responseKey": "wish_ledger",
+        "includeHistory": true,
+        "historyMessageCount": 6,
+        "genesisHistoryCount": 24,
+        "currentMessagePattern": "<wish\\b[^>]*>[\\s\\S]*?<\\/wish>",
+        "richContext": {
+            "enabled": true,
+            "character": true,
+            "persona": true,
+            "worldInfo": false,
+            "summary": false,
+            "authorsNote": true,
+            "pendingUser": false,
+            "historyCount": 0,
+            "selfMemory": false,
+            "selfMemoryCount": 0
+        },
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "sa-wish-ledger-data",
+            "dataMap": {},
+            "contentField": "json"
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "personaScoped": false,
+        "variableName": "sa_wishes",
+        "extractPattern": "\\[WISH_LEDGER\\]\\s*([\\s\\S]*?)\\s*\\[\\/WISH_LEDGER\\]",
+        "fieldNames": ["json"],
+        "keyFields": [],
+        "mode": "snapshot",
+        "resolveField": "",
+        "resolveAction": "RESOLVED",
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "autoInject": true,
+        "macroName": "wishes",
+        "formatHeader": "PREVIOUS COMPLETE WISH LEDGER — preserve every record and update only from canonical evidence:",
+        "formatItem": "{{json}}",
+        "formatEmpty": "No wish ledger exists yet. Build the first snapshot only from unmistakably granted wishes in the supplied history.",
+        "mainContext": {
+            "enabled": true,
+            "mode": "full",
+            "maxDetailedEntries": 24,
+            "presencePath": "wishes",
+            "formatHeader": "",
+            "formatItem": "<active_wish_ledger>\nAuthorial continuity state. Each active wish is currently true. The owner remembers the prior reality; everyone else treats the altered reality as if it had always been true unless canon establishes an exception. Never mention this ledger or its IDs in narration.\n{{#each json.wishes}}{{#if active}}\n[{{id}}] Owner: {{owner}} | Granted at turn {{turn}}\nExact wish: {{exactWording}}\nReality now: {{realityState}}\n{{#if overrides}}Overrides: {{overrides}}\n{{/if}}{{/if}}{{/each}}</active_wish_ledger>",
+            "formatEmpty": ""
+        },
+        "retention": {
+            "enabled": false,
+            "strategy": "working-set",
+            "collectionPath": "",
+            "maxEntries": 100,
+            "dormantAfter": 2,
+            "pruneAfter": 5,
+            "changeField": "changed",
+            "attentionField": "attention",
+            "excludeParticipants": false,
+            "excludePlayerPersonas": false,
+            "participantFields": [],
+            "protectedWhen": []
+        },
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 1,
+            "canonicalizeJson": true,
+            "maxErrors": 20,
+            "schema": {
+                "type": "object",
+                "required": ["nextId", "wishes"],
+                "properties": {
+                    "nextId": { "type": "integer", "minimum": 1 },
+                    "wishes": {
+                        "type": "object",
+                        "maxProperties": 100,
+                        "additionalProperties": {
+                            "type": "object",
+                            "required": ["id", "owner", "status", "active", "turn", "updatedTurn", "exactWording", "realityState", "overrides", "supersededBy"],
+                            "properties": {
+                                "id": { "type": "string", "pattern": "^W[0-9]{3,}$", "maxLength": 24 },
+                                "owner": { "type": "string", "minLength": 1, "maxLength": 120 },
+                                "status": { "type": "string", "enum": ["active", "superseded", "revoked"] },
+                                "active": { "type": "boolean" },
+                                "turn": { "type": "integer", "minimum": 0 },
+                                "updatedTurn": { "type": "integer", "minimum": 0 },
+                                "exactWording": { "type": "string", "minLength": 1, "maxLength": 600 },
+                                "realityState": { "type": "string", "minLength": 1, "maxLength": 600 },
+                                "overrides": { "type": "array", "maxItems": 12, "uniqueItems": true, "items": { "type": "string", "pattern": "^W[0-9]{3,}$", "maxLength": 24 } },
+                                "supersededBy": { "type": "string", "pattern": "^(?:W[0-9]{3,})?$", "maxLength": 24 }
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            },
+            "invariants": [
+                { "type": "nondecreasing", "path": "nextId" },
+                { "type": "nondecreasing", "path": "wishes.*.turn" },
+                { "type": "nondecreasing", "path": "wishes.*.updatedTurn" },
+                { "type": "appendOnlySet", "path": "wishes.*.overrides" }
+            ]
+        }
+    },
+    "regexScripts": [],
+    "stateCard": null,
+    "phoneConfig": null,
+    "feedConfig": null,
+    "continuityGuard": null,
+    "connectionProfile": "",
+    "maxTokens": 4096,
+    "everyN": 1,
+    "everyNCadence": "new-replies",
+    "reuseSnapshotBetweenRuns": false,
+    "activationPolicy": { "mode": "always" },
+    "scope": {
+        "mode": "any",
+        "characterBindings": [],
+        "tagBindings": [],
+        "groupBindings": []
+    },
+    "enabled": false,
+    "paused": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerPatterns": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "swipe", "continue", "impersonate"],
+        "generationTypesVersion": 2,
+        "stateGate": {
+            "enabled": false,
+            "variableName": "",
+            "jsonField": "json",
+            "path": "",
+            "operator": "eq",
+            "value": "true",
+            "requireFresh": true
+        }
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-wish-granter"
+}

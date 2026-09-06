@@ -78,7 +78,7 @@ function buildEditorHTML(group, allAgents) {
         <div class="sam-divider-label"><i class="fa-solid fa-gears"></i> Execution</div>
         <div class="sae-field">
             <div class="sae-label">Execution mode</div>
-            <div class="sae-desc">Parallel: all members run at once on the same input. Sequential: one after another, each seeing the prior result.</div>
+            <div class="sae-desc">Parallel: sidecars sharing a connection profile are combined into one batch; different profiles run concurrently. Sequential: one member at a time, each seeing prior stored results.</div>
             <select id="sae-group-exec-mode" class="sae-select">
                 <option value="parallel" ${group.executionMode === 'parallel' ? 'selected' : ''}>Parallel</option>
                 <option value="sequential" ${group.executionMode === 'sequential' ? 'selected' : ''}>Sequential</option>
@@ -100,6 +100,7 @@ function buildEditorHTML(group, allAgents) {
         </div>
 
         <div class="sam-divider-label"><i class="fa-solid fa-robot"></i> Members</div>
+        <div class="sae-desc">An agent belongs to one execution group. Selecting one here moves it from any other group.</div>
         <div class="sae-group-select-actions">
             <button type="button" class="sam-btn sam-btn-sm" id="sae-group-all"><i class="fa-solid fa-check-double"></i> All</button>
             <button type="button" class="sam-btn sam-btn-sm" id="sae-group-none"><i class="fa-solid fa-xmark"></i> None</button>

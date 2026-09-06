@@ -10,9 +10,9 @@
  * State Card port: VM docked this to the left screen edge with a bespoke
  * floating toggle button; here it's a free-floating draggable panel built on
  * ui/draggablePanel.js and surfaced through the modal's Settings tab via
- * registerPanelControl. No edge docking, no separate toggle button — the
- * Settings control (and SuperAgents.ui.phone.show()) opens it. The unread
- * badge rides on the panel header instead of a toggle button.
+ * registerPanelControl. No edge docking: a compact top-left launcher handles
+ * per-chat show/hide, while the Settings control owns the default for new chats.
+ * Unread state appears both in the panel header and on the closed launcher.
  *
  * Styles live in phone/phonePanel.css, injected as a runtime <link> (the same
  * convention ui/stateCard.css uses) so the phone's CSS travels with the module
@@ -22,16 +22,25 @@
  * Namespace: VM's vm-phone-* → sa-phone-*.
  */
 
-import { eventSource, event_types, this_chid } from '../../../../../../script.js';
-import { selected_group } from '../../../../../group-chats.js';
+import { eventSource, event_types } from '../../../../../../script.js';
 import { getContext } from '../../../../../extensions.js';
 import { extension_settings } from '../../../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../../../script.js';
 import { MODULE_NAME, debug } from '../../index.js';
-import { makeDraggablePanel } from '../ui/draggablePanel.js';
+import { isAgentsPaused } from '../data/store.js';
+import { makeDraggablePanel, mountDraggablePanel } from '../ui/draggablePanel.js';
 import { registerPanelControl } from '../ui/modal.js';
+import { refreshSurfaceDock } from '../ui/surfaceDock.js';
+import { isStoryChatOpen } from '../ui/chatPresence.js';
+import { resolveSurfaceVisibility, setSurfaceVisibility } from '../ui/surfaceVisibilityState.js';
+import {
+    getActivePresentationProfile,
+    getActiveSurfacePresentation,
+    onPresentationChanged,
+} from '../presentation/presentationState.js';
 import {
     isPhoneEnabled,
+    getPhoneAgent,
     getPhoneConfig,
     getAllThreads,
     getThread,
@@ -46,7 +55,7 @@ import {
 
 const LOG_PREFIX = '[SuperAgents/phonePanel]';
 const PANEL_ID = 'phone';
-const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/phone/phonePanel.css';
+const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/phone/phonePanel.css?v=0.41.2-groups';
 
 // ============================================================================
 // STATE
@@ -56,6 +65,7 @@ const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/ph
 /** @type {ReturnType<typeof makeDraggablePanel>|null} */ let controller = null;
 
 let activeThread = null;     // charKey being viewed, or null = list/contacts
+let currentView = 'conversations';
 let isTyping = false;
 let isSendInProgress = false; // guards onNewText from double-rendering mid-send
 
@@ -75,32 +85,57 @@ function persistVisible(v) {
 /**
  * True when SillyTavern is actually inside a chat (character or group), false
  * on the Landing Page / empty state. Mirrors stateCard.js's isInChat so the
- * phone follows the same "persist visibility, but only surface inside a chat"
- * rule. `this_chid` is undefined on Landing and a string index in a character
- * chat; `selected_group` is null on Landing and a group id in a group chat.
+ * Phone follows the same "persist visibility, but only surface inside a chat"
+ * rule. The shared presence helper supports legacy globals and newer context.
  */
-function isInChat() {
-    return (this_chid != null) || !!selected_group;
+const isInChat = isStoryChatOpen;
+
+function phoneSurface() {
+    return getActiveSurfacePresentation('phone') || {};
+}
+
+function phoneCopy() {
+    return phoneSurface().copy || {};
+}
+
+function isPhoneSurfaceAvailable() {
+    return phoneSurface().capabilities?.available !== false && isPhoneEnabled();
+}
+
+function applyPhoneChrome() {
+    if (!panelEl) return;
+    const surface = phoneSurface();
+    const copy = surface.copy || {};
+    const title = panelEl.querySelector('.sa-phone-title');
+    if (title) title.textContent = surface.title || 'Messages';
+    panelEl.querySelector('.sa-phone-back')?.setAttribute('title', copy.back || 'Back');
+    panelEl.querySelector('.sa-phone-compose')?.setAttribute('title', copy.newMessageAction || 'New message');
+    panelEl.querySelector('.sa-phone-clear')?.setAttribute('title', copy.clear || 'Clear messages');
+    panelEl.querySelector('.sa-phone-close')?.setAttribute('title', copy.hide || 'Hide');
+    panelEl.querySelector('.sa-phone-input')?.setAttribute('placeholder', copy.inputPlaceholder || 'Message…');
+    panelEl.querySelector('.sa-phone-send')?.setAttribute('title', copy.send || 'Send');
 }
 
 /**
- * Bring the phone's visibility in line with persisted intent and chat presence.
- * Called on init and after every CHAT_CHANGED. The persisted "visible" flag is
- * the user's intent; this decides whether it applies now (in a chat) or has to
- * wait (Landing). Hiding for "not in chat" does NOT clear the flag, so entering
- * a chat restores the phone; the user's own close (hide()) is what clears it.
+ * Bring the phone's visibility in line with chat presence and user intent.
+ * The current chat's last launcher/close choice wins over the persistent
+ * Settings default. Landing-page hiding does not change either value.
  */
 function reconcileVisibility() {
     if (!controller) return;
-    if (!isPhoneEnabled() || !isInChat()) {
+    if (!isPhoneSurfaceAvailable() || !isInChat()) {
         // Hide without persisting — preserve the "I want this open" intent.
         controller.hide();
+        refreshSurfaceDock();
         return;
     }
-    if (isVisiblePersisted()) {
+    if (resolveSurfaceVisibility(PANEL_ID, isVisiblePersisted())) {
         controller.show();
         openView();
+    } else {
+        controller.hide();
     }
+    refreshSurfaceDock();
 }
 
 // ============================================================================
@@ -132,33 +167,36 @@ export function initPhonePanel() {
     panelEl = document.createElement('div');
     panelEl.id = 'sa-phone-panel';
     panelEl.className = 'sa-phone-panel';
+    const surface = phoneSurface();
+    const copy = phoneCopy();
+    panelEl.dataset.saPresentationProfile = getActivePresentationProfile().id;
     panelEl.innerHTML = `
         <div class="sa-phone-header" title="Drag to move">
             <i class="fa-solid fa-grip-lines sa-phone-grip"></i>
-            <button class="sa-phone-back" data-no-drag title="Back" style="display:none">
+            <button class="sa-phone-back" data-no-drag title="${copy.back || 'Back'}" style="display:none">
                 <i class="fa-solid fa-chevron-left"></i>
             </button>
-            <span class="sa-phone-title">Messages</span>
+            <span class="sa-phone-title">${surface.title || 'Messages'}</span>
             <span class="sa-phone-badge" style="display:none">0</span>
-            <button class="sa-phone-compose" data-no-drag title="New message" style="display:none">
+            <button class="sa-phone-compose" data-no-drag title="${copy.newMessageAction || 'New message'}" style="display:none">
                 <i class="fa-solid fa-pen-to-square"></i>
             </button>
-            <button class="sa-phone-clear" data-no-drag title="Clear messages" style="display:none">
+            <button class="sa-phone-clear" data-no-drag title="${copy.clear || 'Clear messages'}" style="display:none">
                 <i class="fa-solid fa-trash-can"></i>
             </button>
-            <button class="sa-phone-close" data-no-drag title="Hide">
+            <button class="sa-phone-close" data-no-drag title="${copy.hide || 'Hide'}">
                 <i class="fa-solid fa-xmark"></i>
             </button>
         </div>
         <div class="sa-phone-body"></div>
         <div class="sa-phone-input-bar" style="display:none">
-            <input type="text" class="sa-phone-input" data-no-drag placeholder="Message..." maxlength="500" />
-            <button class="sa-phone-send" data-no-drag title="Send">
+            <input type="text" class="sa-phone-input" data-no-drag placeholder="${copy.inputPlaceholder || 'Message...'}" maxlength="500" />
+            <button class="sa-phone-send" data-no-drag title="${copy.send || 'Send'}">
                 <i class="fa-solid fa-paper-plane"></i>
             </button>
         </div>
     `;
-    document.body.appendChild(panelEl);
+    mountDraggablePanel(panelEl);
 
     // Floating-panel behaviour: drag by the header, snap to L/R edges, anchor
     // bottom-right by default. The input + buttons opt out of drag via
@@ -168,10 +206,13 @@ export function initPhonePanel() {
         handle: '.sa-phone-header',
         defaultAnchor: 'bottom-right',
         snapToEdges: true,
+        resizable: true,
+        minW: 300,
+        minH: 420,
     });
 
-    // Header buttons.
-    panelEl.querySelector('.sa-phone-close')?.addEventListener('click', () => hide());
+    // Closing remembers this chat's choice; its Settings default remains intact.
+    panelEl.querySelector('.sa-phone-close')?.addEventListener('click', () => hide(false));
     panelEl.querySelector('.sa-phone-back')?.addEventListener('click', handleBack);
     panelEl.querySelector('.sa-phone-clear')?.addEventListener('click', handleClear);
     panelEl.querySelector('.sa-phone-compose')?.addEventListener('click', showContactsList);
@@ -190,19 +231,30 @@ export function initPhonePanel() {
     // Register with the modal's Settings tab (show/hide + reset-position).
     registerPanelControl({
         id: PANEL_ID,
-        label: 'Phone',
-        icon: 'fa-mobile-screen-button',
+        getLabel: () => phoneSurface().settingsLabel || 'Phone',
+        getIcon: () => phoneSurface().panelIcon || 'fa-mobile-screen-button',
         controller: {
             show:          () => show(),
             hide:          () => hide(),
             toggle:        () => (isOpen() ? hide() : show()),
             isOpen,
+            isDefaultVisible: isVisiblePersisted,
             // Available only when a phone agent exists and is enabled.
-            isAvailable:   () => isPhoneEnabled(),
+            isAvailable:   isPhoneSurfaceAvailable,
             // Re-sync visibility when agents change (enable/disable/delete).
             reconcile:     () => reconcileVisibility(),
             resetPosition: () => controller?.resetPosition(),
         },
+    });
+    onPresentationChanged(() => {
+        if (!panelEl) return;
+        panelEl.dataset.saPresentationProfile = getActivePresentationProfile().id;
+        applyPhoneChrome();
+        if (!isPhoneSurfaceAvailable()) controller?.hide();
+        if (currentView === 'contacts') showContactsList();
+        else if (currentView === 'thread' && activeThread) showThread(activeThread);
+        else showConversationList();
+        refreshSurfaceDock();
     });
 
     // New texts from phoneAgent (evaluation + reply paths) → badge + reveal.
@@ -238,12 +290,17 @@ export function initPhonePanel() {
         activeThread = null;
         reconcileVisibility();
     });
+    if (event_types.MESSAGE_SWIPED) {
+        eventSource.on(event_types.MESSAGE_SWIPED, () => {
+            updateBadge();
+            if (isOpen()) openView();
+        });
+    }
 
     updateBadge();
 
-    // Initial reconciliation: show only if the persisted flag is set AND we're
-    // already in a chat. If ST loaded to a chat the phone reappears; if we're on
-    // Landing it stays hidden (intent preserved) until a chat is opened. The
+    // Initial reconciliation applies the chat state or persistent default. On
+    // Landing it stays hidden until a chat opens. The
     // CHAT_CHANGED handler above also fires once on load, but calling this here
     // covers the case where the chat is already present at init time.
     reconcileVisibility();
@@ -255,22 +312,47 @@ export function initPhonePanel() {
 // SHOW / HIDE
 // ============================================================================
 
-export function show() {
+export function show(persist = true) {
     if (!controller) return;
+    if (persist) persistVisible(true);
+    if (isInChat()) setSurfaceVisibility(PANEL_ID, true);
+    if (!isInChat() || !isPhoneSurfaceAvailable()) {
+        controller.hide();
+        refreshSurfaceDock();
+        return;
+    }
     controller.show();
-    persistVisible(true);
     openView();
+    refreshSurfaceDock();
 }
 
-export function hide() {
+/** Open one Phone thread without making Phone a dependency of the caller. */
+export function openThread(charKey, { persist = false } = {}) {
+    const character = String(charKey || '').trim();
+    if (!controller || !character || !isInChat() || !isPhoneSurfaceAvailable()) return false;
+    if (persist) persistVisible(true);
+    setSurfaceVisibility(PANEL_ID, true);
+    controller.show();
+    showThread(character);
+    refreshSurfaceDock();
+    return true;
+}
+
+export function hide(persist = true) {
     if (!controller) return;
+    if (persist) persistVisible(false);
+    if (isInChat()) setSurfaceVisibility(PANEL_ID, false);
     controller.hide();
-    persistVisible(false);
     activeThread = null;
+    refreshSurfaceDock();
 }
 
 export function isOpen() {
     return !!controller?.isOpen();
+}
+
+export function toggleTemporary() {
+    if (isOpen()) hide(false); else show(false);
 }
 
 function bodyEl() {
@@ -356,6 +438,7 @@ function getAvailableContacts() {
 
 /** Show the contacts list (start a new conversation). */
 function showContactsList() {
+    currentView = 'contacts';
     activeThread = null;
     const body = bodyEl();
     if (!body) return;
@@ -366,11 +449,12 @@ function showContactsList() {
     if (inputBar) inputBar.style.display = 'none';
     if (clear) clear.style.display = 'none';
     if (compose) compose.style.display = 'none';
-    if (title) title.textContent = 'New Message';
+    const copy = phoneCopy();
+    if (title) title.textContent = copy.newMessage || 'New Message';
 
     const contacts = getAvailableContacts();
     if (contacts.length === 0) {
-        body.innerHTML = `<div class="sa-phone-empty"><i class="fa-solid fa-user-slash"></i><p>No characters available</p></div>`;
+        body.innerHTML = `<div class="sa-phone-empty"><i class="fa-solid fa-user-slash"></i><p>${escHtml(copy.noContacts || 'No characters available')}</p></div>`;
         return;
     }
 
@@ -379,7 +463,7 @@ function showContactsList() {
         <div class="sa-phone-contact-item" data-char="${escAttr(name)}">
             <div class="sa-phone-contact-avatar"><i class="fa-solid fa-user"></i></div>
             <div class="sa-phone-contact-name">${escHtml(name)}</div>
-            ${existing.has(name) ? '<div class="sa-phone-contact-badge">active</div>' : ''}
+            ${existing.has(name) ? `<div class="sa-phone-contact-badge">${escHtml(copy.activeContact || 'active')}</div>` : ''}
         </div>
     `).join('');
 
@@ -399,6 +483,7 @@ function handleBack() {
 // ============================================================================
 
 function showConversationList() {
+    currentView = 'conversations';
     activeThread = null;
     const body = bodyEl();
     if (!body) return;
@@ -407,7 +492,9 @@ function showConversationList() {
     if (back) back.style.display = 'none';
     if (inputBar) inputBar.style.display = 'none';
     if (clear) clear.style.display = 'none';
-    if (title) title.textContent = 'Messages';
+    const surface = phoneSurface();
+    const copy = phoneCopy();
+    if (title) title.textContent = surface.title || 'Messages';
 
     const contacts = getAvailableContacts();
     const threads = getAllThreads();
@@ -416,14 +503,14 @@ function showConversationList() {
     if (compose) compose.style.display = contacts.length > keys.length ? '' : 'none';
 
     if (keys.length === 0) {
-        body.innerHTML = `<div class="sa-phone-empty"><i class="fa-solid fa-comment-slash"></i><p>No messages yet</p></div>`;
+        body.innerHTML = `<div class="sa-phone-empty"><i class="fa-solid fa-comment-slash"></i><p>${escHtml(copy.noMessages || 'No messages yet')}</p></div>`;
         return;
     }
 
     body.innerHTML = keys.map(charKey => {
         const thread = threads[charKey];
         const lastMsg = thread.messages[thread.messages.length - 1];
-        const preview = lastMsg ? `${lastMsg.name}: ${lastMsg.content}`.slice(0, 50) : 'No messages';
+        const preview = lastMsg ? `${lastMsg.name}: ${lastMsg.content}`.slice(0, 50) : (copy.noPreview || 'No messages');
         const time = lastMsg ? formatTime(lastMsg.timestamp) : '';
         const unreadClass = thread.unread > 0 ? 'sa-phone-conv-unread' : '';
         const dot = thread.unread > 0 ? '<span class="sa-phone-conv-dot"></span>' : '';
@@ -447,6 +534,7 @@ function showConversationList() {
 // ============================================================================
 
 function showThread(charKey) {
+    currentView = 'thread';
     activeThread = charKey;
     const body = bodyEl();
     if (!body) return;
@@ -457,7 +545,7 @@ function showThread(charKey) {
     const isGroup = !!ctx.groupId;
     // Group: always show back. Solo: show back only with multiple threads.
     if (back) back.style.display = (isGroup || Object.keys(threads).length > 1) ? '' : 'none';
-    if (inputBar) inputBar.style.display = '';
+    if (inputBar) inputBar.style.display = phoneSurface().capabilities?.directCompose === false ? 'none' : '';
     if (clear) clear.style.display = '';
     if (compose) compose.style.display = 'none';
     if (title) title.textContent = charKey;
@@ -484,7 +572,7 @@ function renderMessages(charKey, container, hideLastN = 0) {
     const messages = hideLastN > 0 ? all.slice(0, -hideLastN) : all;
 
     if (messages.length === 0) {
-        container.innerHTML = `<div class="sa-phone-empty"><p>Start a conversation with ${escHtml(charKey)}</p></div>`;
+        container.innerHTML = `<div class="sa-phone-empty"><p>${escHtml(String(phoneCopy().startConversation || 'Start a conversation with {name}').replace('{name}', charKey))}</p></div>`;
         return;
     }
 
@@ -503,7 +591,7 @@ function renderMessages(charKey, container, hideLastN = 0) {
         `;
     }).join('');
 
-    if (isTyping) {
+    if (isTyping && phoneSurface().capabilities?.typingIndicator !== false) {
         html += `<div class="sa-phone-msg sa-phone-bubble-char">
             <div class="sa-phone-bubble sa-phone-typing"><span></span><span></span><span></span></div>
         </div>`;
@@ -522,12 +610,16 @@ function handleClear() {
     const body = bodyEl();
     if (body) renderMessages(activeThread, body);
     updateBadge();
-    toastr.info('Messages cleared.', 'Phone', { timeOut: 2000 });
+    toastr.info(phoneCopy().cleared || 'Messages cleared.', phoneSurface().title || 'Phone', { timeOut: 2000 });
 }
 
 async function handleSend(inputEl) {
     const text = inputEl.value.trim();
     if (!text || !activeThread || isPhoneBusy()) return;
+    if (isAgentsPaused() || getPhoneAgent()?.paused) {
+        toastr.info('The Phone agent is paused. Its state is frozen.');
+        return;
+    }
 
     inputEl.value = '';
     inputEl.disabled = true;
@@ -579,6 +671,12 @@ async function handleSend(inputEl) {
  * @param {HTMLElement} container
  */
 async function animateIncomingTexts(charKey, count, container) {
+    if (phoneSurface().capabilities?.typingIndicator === false) {
+        isTyping = false;
+        renderMessages(charKey, container, 0);
+        container.scrollTop = container.scrollHeight;
+        return;
+    }
     const delayRange = getPhoneConfig()?.typingDelay ?? { min: 800, max: 2500 };
 
     for (let remaining = count; remaining > 0; remaining--) {
@@ -611,6 +709,7 @@ function updateBadge() {
     } else {
         badge.style.display = 'none';
     }
+    refreshSurfaceDock();
 }
 
 // ============================================================================
@@ -618,6 +717,7 @@ function updateBadge() {
 // ============================================================================
 
 function formatTime(timestamp) {
+    if (phoneSurface().capabilities?.timestamps === false) return '';
     if (!timestamp) return '';
     const d = new Date(timestamp);
     const hours = d.getHours();

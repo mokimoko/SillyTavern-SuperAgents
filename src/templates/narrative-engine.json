@@ -5,7 +5,7 @@
     "icon": "fa-solid fa-gear",
     "category": "tracker",
     "tags": ["continuity", "tracking", "motifs", "themes", "literary"],
-    "version": 3,
+    "version": 5,
     "author": "",
     "prompt": "### Narrative Engine — Post-Generation Continuity Tracker\nAnalyze the scene that just played out and produce a continuity snapshot. Output ONLY an engine block — no narrative, no commentary, no explanation:\n\n[ENGINE]\n{\"spatial\":\"...\",\"condition\":\"...\",\"dress\":\"...\",\"motifs\":\"...\",\"themes\":\"...\",\"threads\":\"...\"}\n[/ENGINE]\n\n=== FIELDS ===\n\n**spatial** — Where each character is positioned within the scene. Be specific and physical: \"leaning against the doorframe\", \"sitting cross-legged on the floor beside the bed\". Not vague stage directions.\n\n**condition** — Physical state affecting how characters move or are described: injuries, fatigue, intoxication, wet, cold, etc. \"Normal\" if nothing notable.\n\n**dress** — What each character is currently wearing, especially anything specifically described, changed mid-scene, or relevant to the narrative. Be concrete.\n\n**motifs** — Track ONLY specific, tangible, iconic objects (a uniquely carved jade, a signature weapon, a specific flower) OR specific animal parallels (comparing a character to a wounded crane, a rabid dog) that define a character's identity or the dynamic between characters. Do NOT use generic settings, elements, or concepts such as water, darkness, winter, fire, claiming. \"None\" if no highly specific iconic symbol has organically emerged yet.\n\n**themes** — Broader thematic patterns developing organically across the story over time. Must emerge from actual events and character behavior, not be imposed or assumed. \"None\" until something genuinely develops.\n\n**threads** — 1-2 immediate unresolved actions, lies, unanswered questions, or dangling consequences that need addressing in the next few turns.\n\n=== RULES ===\n- Output ONLY the [ENGINE] block. Nothing else.\n- Use direct, clinical, database-style language. NO flowery prose.\n- Do NOT invent entries to fill space. If a field has nothing notable, say so plainly.\n- Update fields based on what actually happened. Do not copy previous entries unchanged unless they are still accurate.\n- Output valid JSON. Keep it compact (no pretty-printing).\n- Base your analysis on what actually happened in the scene — do not invent details not supported by the text.",
     "phase": "post",
@@ -42,11 +42,29 @@
         }
     },
     "mergeVariable": {
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 1,
+            "schema": {
+                "type": "object",
+                "required": ["spatial", "condition", "dress", "motifs", "themes", "threads"],
+                "properties": {
+                    "spatial": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                    "condition": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                    "dress": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                    "motifs": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                    "themes": { "type": "string", "minLength": 1, "maxLength": 2000 },
+                    "threads": { "type": "string", "minLength": 1, "maxLength": 2000 }
+                },
+                "additionalProperties": false
+            }
+        },
         "enabled": true,
         "variableName": "sa_narrative_engine",
         "extractPattern": "\\[ENGINE\\]\\s*([\\s\\S]*?)\\s*\\[\\/ENGINE\\]",
         "fieldNames": ["json"],
-        "keyFields": ["json"],
+        "keyFields": [],
         "mode": "snapshot",
         "stripFromResponse": false,
         "injectFormatted": true,

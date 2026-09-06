@@ -46,9 +46,11 @@ const GUARD_HOOK_CLASS = 'continuity-guard-data';
 function getGuardAgent() {
     const agents = getEnabledAgents();
     return agents.find(a =>
-        a.sourceTemplateId === 'tpl-continuity-guard'
-        || a.continuityGuard?.enabled === true
-        || a.name === 'Continuity Guard') || null;
+        !a.paused && (
+            a.sourceTemplateId === 'tpl-continuity-guard'
+            || a.continuityGuard?.enabled === true
+            || a.name === 'Continuity Guard'
+        )) || null;
 }
 
 /**

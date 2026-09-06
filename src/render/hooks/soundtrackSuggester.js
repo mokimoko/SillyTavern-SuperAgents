@@ -19,6 +19,7 @@
 
 const MONO = "ui-monospace,'Cascadia Code','Source Code Pro',Menlo,Consolas,monospace";
 const SANS = "system-ui,-apple-system,'Segoe UI',sans-serif";
+const ACCENT_TEXT = 'color-mix(in srgb, rgb(160,140,220) 65%, var(--SmartThemeBodyColor, #fff) 35%)';
 
 /**
  * Transform a .soundtrack-suggester-data element into the styled display.
@@ -52,10 +53,10 @@ export function renderSoundtrackSuggester(el) {
         'align-items:center',
         'gap:8px',
         'padding:5px 10px',
-        'background:rgba(255,255,255,0.02)',
-        'border:1px solid rgba(255,255,255,0.06)',
+        'background:var(--sa-surface-input,rgba(255,255,255,0.02))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
         'border-left:2px solid rgba(160,140,220,0.45)',
-        'color:rgba(255,255,255,0.5)',
+        'color:var(--sa-text-secondary,rgba(255,255,255,0.65))',
         `font-family:${MONO}`,
         'font-size:10px',
         'font-weight:500',
@@ -68,14 +69,14 @@ export function renderSoundtrackSuggester(el) {
 
     const glyph = document.createElement('span');
     glyph.textContent = '\u266A'; // ♪
-    glyph.style.cssText = 'color:rgba(160,140,220,0.85);font-size:12px';
+    glyph.style.cssText = `color:${ACCENT_TEXT};font-size:12px`;
 
     const label = document.createElement('span');
     label.style.cssText = 'text-transform:uppercase;letter-spacing:0.18em;opacity:0.7';
     label.textContent = 'Soundtrack';
 
     const trackInline = document.createElement('span');
-    trackInline.style.cssText = 'margin-left:auto;text-transform:none;letter-spacing:0.02em;color:rgba(255,255,255,0.62);font-family:' + SANS + ';font-size:11px;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    trackInline.style.cssText = 'margin-left:auto;text-transform:none;letter-spacing:0.02em;color:var(--sa-text-secondary,rgba(255,255,255,0.65));font-family:' + SANS + ';font-size:11px;font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
     trackInline.textContent = track;
 
     summary.appendChild(glyph);
@@ -83,44 +84,44 @@ export function renderSoundtrackSuggester(el) {
     if (track) summary.appendChild(trackInline);
 
     summary.addEventListener('mouseenter', () => {
-        summary.style.color = 'rgba(255,255,255,0.75)';
+        summary.style.color = 'var(--sa-text-primary,rgba(255,255,255,0.85))';
         summary.style.borderLeftColor = 'rgba(160,140,220,0.75)';
     });
     summary.addEventListener('mouseleave', () => {
-        summary.style.color = 'rgba(255,255,255,0.5)';
+        summary.style.color = 'var(--sa-text-secondary,rgba(255,255,255,0.65))';
         summary.style.borderLeftColor = 'rgba(160,140,220,0.45)';
     });
 
     const body = document.createElement('div');
     body.style.cssText = [
         'padding:9px 12px',
-        'background:rgba(0,0,0,0.18)',
-        'border:1px solid rgba(255,255,255,0.06)',
+        'background:var(--sa-surface-info,rgba(0,0,0,0.18))',
+        'border:1px solid var(--sa-border-soft,rgba(255,255,255,0.06))',
         'border-top:none',
         'border-left:2px solid rgba(160,140,220,0.3)',
         `font-family:${SANS}`,
         'font-size:12px',
         'line-height:1.6',
-        'color:rgba(255,255,255,0.7)',
+        'color:var(--sa-text-body,rgba(255,255,255,0.8))',
     ].join(';');
 
     if (track) {
         const trackRow = document.createElement('div');
-        trackRow.style.cssText = 'color:rgba(255,255,255,0.85);font-weight:600;margin-bottom:2px';
+        trackRow.style.cssText = 'color:var(--sa-text-primary,rgba(255,255,255,0.85));font-weight:600;margin-bottom:2px';
         trackRow.textContent = track;
         body.appendChild(trackRow);
     }
 
     if (vibe) {
         const vibeRow = document.createElement('div');
-        vibeRow.style.cssText = `font-family:${MONO};font-size:10px;letter-spacing:0.04em;color:rgba(160,140,220,0.85);margin-bottom:7px`;
+        vibeRow.style.cssText = `font-family:${MONO};font-size:10px;letter-spacing:0.04em;color:${ACCENT_TEXT};margin-bottom:7px`;
         vibeRow.textContent = vibe;
         body.appendChild(vibeRow);
     }
 
     if (why) {
         const whyRow = document.createElement('div');
-        whyRow.style.cssText = 'color:rgba(255,255,255,0.62);font-style:italic;white-space:pre-wrap;word-break:break-word';
+        whyRow.style.cssText = 'color:var(--sa-text-secondary,rgba(255,255,255,0.65));font-style:italic;white-space:pre-wrap;word-break:break-word';
         whyRow.textContent = why;
         body.appendChild(whyRow);
     }
@@ -143,7 +144,7 @@ export function renderSoundtrackSuggester(el) {
             'padding:4px 10px',
             'background:rgba(160,140,220,0.12)',
             'border:1px solid rgba(160,140,220,0.35)',
-            'color:rgba(190,175,235,0.95)',
+            `color:${ACCENT_TEXT}`,
             `font-family:${MONO}`,
             'font-size:10px',
             'letter-spacing:0.06em',

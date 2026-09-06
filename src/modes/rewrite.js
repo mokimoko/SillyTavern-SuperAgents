@@ -30,7 +30,7 @@ const LOG_PREFIX = '[SuperAgents/rewrite]';
  * @param {object} [opts]
  * @param {boolean} [opts.stream]      Stream the rewrite (CMRS only).
  * @param {Function|null} [opts.onChunk] Progress callback for streaming UIs.
- * @returns {Promise<{changed: boolean, error?: string}>}
+ * @returns {Promise<{changed: boolean, completed?: boolean, error?: string}>}
  */
 export async function executeRewriteAgent(agent, message, messageIndex, generationType, opts = {}) {
     const { stream = false, onChunk = null, signal = null, timeoutMs } = opts;
@@ -129,7 +129,7 @@ export async function executeRewriteAgent(agent, message, messageIndex, generati
             else toastr.info('No change', agent.name, { timeOut: 2000 });
         }
 
-        return { changed };
+        return { changed, completed: true };
 
     } catch (err) {
         if (isAbortError(err)) {

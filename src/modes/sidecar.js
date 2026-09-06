@@ -29,8 +29,12 @@ import {
     formatMergeVariableData,
     storeSidecarResult,
     collectRecentStates,
+    getStateTransaction,
 } from './mergeVariable.js';
-import { getGlobalSettings } from '../data/store.js';
+import { getEffectiveConnectionProfile, getGlobalSettings } from '../data/store.js';
+import { buildRetentionPrompt } from '../data/stateRetention.js';
+import { getConfiguredParticipantExclusion } from '../core/participants.js';
+import { markActivationPolicyComplete } from '../core/activationPolicy.js';
 
 const LOG_PREFIX = '[SuperAgents/sidecar]';
 
@@ -160,12 +164,18 @@ export function buildSidecarDisplayData(agent, message, messageIndex, extractedI
     const item = arr[0]; // snapshot mode = single item
 
     // Build data attribute string from the dataMap config
-    const attrs = [];
+    const escapeAttr = value => String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;');
+    const attrs = [
+        `data-agent-name="${escapeAttr(agent.name || 'Agent output')}"`,
+        `data-agent-icon="${escapeAttr(agent.icon || 'fa-solid fa-robot')}"`,
+    ];
     for (const [field, attrName] of Object.entries(display.dataMap || {})) {
         const val = item[field] ?? '';
         if (val) {
-            const escaped = String(val).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-            attrs.push(`${attrName}="${escaped}"`);
+            attrs.push(`${attrName}="${escapeAttr(val)}"`);
         }
     }
 
@@ -201,17 +211,45 @@ export function buildSidecarDisplayData(agent, message, messageIndex, extractedI
 
 /**
  * Group sidecar agents by connection profile for batching.
- * Agents sharing a profile get combined into one LLM call.
+ * Agents sharing a profile get combined into one LLM call. Duplicate response
+ * keys are placed in separate envelopes so one task can never overwrite another
+ * task's top-level JSON slot. The global batchByProfile switch is honored.
  * Agents with NO profile get solo execution (no batching).
  * @param {object[]} agents
  * @returns {Map<string, object[]>} profileKey → agents
  */
 export function groupSidecarsByProfile(agents) {
     const groups = new Map();
+    if (getGlobalSettings().batchByProfile === false) {
+        for (const agent of agents) groups.set(`__solo_${agent.id}`, [agent]);
+        return groups;
+    }
+
+    const profileBuckets = new Map();
     for (const agent of agents) {
-        const key = agent.connectionProfile || `__solo_${agent.id}`;
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(agent);
+        const profile = getEffectiveConnectionProfile(agent.connectionProfile);
+        if (!profile) {
+            groups.set(`__solo_${agent.id}`, [agent]);
+            continue;
+        }
+
+        const responseKey = agent.sidecarCall?.responseKey || agent.id;
+        const buckets = profileBuckets.get(profile) || [];
+        let bucket = buckets.find(candidate => !candidate.responseKeys.has(responseKey));
+        if (!bucket) {
+            bucket = { agents: [], responseKeys: new Set() };
+            buckets.push(bucket);
+            profileBuckets.set(profile, buckets);
+        }
+        bucket.agents.push(agent);
+        bucket.responseKeys.add(responseKey);
+    }
+
+    for (const [profile, buckets] of profileBuckets) {
+        buckets.forEach((bucket, index) => {
+            const key = index === 0 ? profile : `${profile}__collision_${index}`;
+            groups.set(key, bucket.agents);
+        });
     }
     return groups;
 }
@@ -256,6 +294,23 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
         const formatted = formatMergeVariableData(agent.mergeVariable);
         if (formatted) {
             expandedPrompt += '\n\n' + formatted;
+        }
+    }
+    const retentionPrompt = buildRetentionPrompt(agent.mergeVariable?.retention);
+    if (retentionPrompt) expandedPrompt += '\n\n' + retentionPrompt;
+
+    // Participant-excluding trackers (e.g. Active Roster): name the player's
+    // personas and excluded participants so the model doesn't spend tokens
+    // tracking them. Commit-time filtering is the hard guarantee (see
+    // commitMergeItems); this is the cheap, cooperative nudge.
+    if (agent.mergeVariable?.retention?.excludeParticipants
+        || agent.mergeVariable?.retention?.excludePlayerPersonas) {
+        const { names, playersOnly } = getConfiguredParticipantExclusion(agent.mergeVariable.retention);
+        if (names.length) {
+            const reason = playersOnly
+                ? 'they are current or previously used player personas, whose relationships belong exclusively to Relationship Ledger'
+                : 'they are player personas or explicitly excluded, never autonomous tracked characters';
+            expandedPrompt += `\n\nDO NOT TRACK these participants — ${reason}: ${names.join(', ')}. Track only other established characters.`;
         }
     }
 
@@ -318,8 +373,24 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
         }
 
         // Extract and store data directly from the LLM response
-        const extractedItems = storeSidecarResult(agent, response, message, messageIndex);
-        const dataStored = !!extractedItems;
+        let extractedItems = storeSidecarResult(agent, response, message, messageIndex);
+        let dataStored = !!extractedItems;
+        let stateRejected = getStateTransaction(message, agent.id)?.status === 'rejected';
+
+        // Bounded single repair when a validated update was rejected (opt-out via
+        // globalSettings.repairRejectedState = false). A successful repair commits
+        // the corrected state in place, so everything below treats it as a store.
+        if (stateRejected && getGlobalSettings().repairRejectedState !== false) {
+            const repair = await repairRejectedState(agent, message, messageIndex, {
+                signal: opts.signal ?? null,
+                timeoutMs: opts.timeoutMs,
+            });
+            if (repair.repaired) {
+                extractedItems = repair.items;
+                dataStored = true;
+                stateRejected = false;
+            }
+        }
 
         // Build display data if configured
         if (extractedItems) {
@@ -331,20 +402,32 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
             agentName: agent.name,
             phase: 'post',
             originalText: null,
-            result: dataStored ? 'Sidecar: data stored' : 'Sidecar: no data extracted',
+            result: dataStored
+                ? 'Sidecar: data stored'
+                : (stateRejected ? 'Sidecar: invalid state rejected' : 'Sidecar: no data extracted'),
             mode: 'sidecar',
         });
+
+        // Memory-backed agents are marked by the successful validated commit.
+        // A sidecar with no Memory still completed once it returned a non-empty
+        // response, so record one-shot completion here before the orchestrator's
+        // sidecar early return.
+        if (!agent.mergeVariable?.enabled || !agent.mergeVariable?.variableName) {
+            markActivationPolicyComplete(agent);
+        }
 
         if (showNotifications) {
             toastr.clear();
             if (dataStored) {
                 toastr.success('', agent.name, { timeOut: 3000 });
+            } else if (stateRejected) {
+                toastr.warning('Invalid tracker update rejected; previous state preserved.', agent.name, { timeOut: 7000 });
             } else {
                 toastr.warning('No data extracted', agent.name, { timeOut: 5000 });
             }
         }
 
-        return { changed: false, dataStored };
+        return { changed: false, dataStored, stateRejected };
 
     } catch (err) {
         if (isAbortError(err)) {
@@ -362,6 +445,99 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
         }
         return { changed: false, dataStored: false, error: err.message };
     }
+}
+
+// ============================================================================
+// BOUNDED REPAIR — one corrective call when a validated update is rejected
+// ============================================================================
+
+/**
+ * Attempt a SINGLE corrective LLM call for a tracker whose latest proposed state
+ * failed schema validation. Reads the rejected proposal + validation errors off
+ * the stored transaction, asks the model to return a corrected state block (in
+ * the same tagged format the agent's extractor expects), then re-stores it —
+ * which re-validates and commits on success, or leaves the prior good state in
+ * place on a second failure. Strictly bounded: one attempt, no recursion.
+ *
+ * Gated by the caller (globalSettings.repairRejectedState !== false). Reuses the
+ * agent's own connection profile + token budget. Safe on any agent: no-ops
+ * unless there is a rejected transaction carrying a proposal to fix and the
+ * agent uses a tagged extract pattern.
+ *
+ * @param {object} agent
+ * @param {object} message - chat[n]
+ * @param {number} messageIndex
+ * @param {object} [opts] - { signal, timeoutMs }
+ * @returns {Promise<{repaired: boolean, items?: object[]|null, cancelled?: boolean, error?: string}>}
+ */
+export async function repairRejectedState(agent, message, messageIndex, opts = {}) {
+    const mv = agent.mergeVariable;
+    if (!mv?.enabled || !mv.validation?.enabled || !mv.extractPattern) {
+        return { repaired: false };
+    }
+
+    const tx = getStateTransaction(message, agent.id);
+    if (!tx || tx.status !== 'rejected') return { repaired: false };
+
+    const errors = Array.isArray(tx.errors) ? tx.errors : [];
+    const proposed = Array.isArray(tx.proposedItems) ? tx.proposedItems : null;
+    if (!proposed || proposed.length === 0) return { repaired: false };
+
+    // The invalid logical JSON the model needs to correct.
+    const jsonField = mv.validation.jsonField || mv.fieldNames?.[0] || 'json';
+    const invalidBlob = proposed
+        .map(item => item?.[jsonField])
+        .filter(value => typeof value === 'string' && value.trim())
+        .join('\n');
+    if (!invalidBlob) return { repaired: false };
+
+    const schemaStr = mv.validation.schema ? JSON.stringify(mv.validation.schema) : '{}';
+    const errorLines = errors.length ? errors.map(e => `- ${e}`).join('\n') : '- (unspecified)';
+
+    const systemPrompt = [
+        'You are a strict JSON repair function. A structured state update FAILED schema validation.',
+        'Return a corrected version that satisfies EVERY listed constraint. Preserve the original meaning; change ONLY what the errors require. Do not add, drop, or invent characters or fields beyond what the schema needs.',
+        '',
+        'JSON SCHEMA (the corrected payload must validate against this):',
+        schemaStr,
+        '',
+        'VALIDATION ERRORS TO FIX:',
+        errorLines,
+        '',
+        `Wrap the corrected JSON in the SAME tags the task uses, matching this extractor: ${mv.extractPattern}`,
+        'Output ONLY the corrected state block — no prose, no explanation, no code fences.',
+    ].join('\n');
+
+    const userContent = `INVALID OUTPUT TO REPAIR:\n${invalidBlob}`;
+    const maxTokens = agent.sidecarCall?.maxTokens || agent.maxTokens || 8192;
+
+    let response;
+    try {
+        response = await callAgentLLM({
+            systemPrompt,
+            userContent,
+            profileRef: agent.connectionProfile || '',
+            maxTokens,
+            callerName: `repair:${agent.name}`,
+            signal: opts.signal ?? null,
+            timeoutMs: opts.timeoutMs,
+        });
+    } catch (err) {
+        if (isAbortError(err)) return { repaired: false, cancelled: true };
+        debug(`${LOG_PREFIX} repair call failed for "${agent.name}":`, err?.message);
+        return { repaired: false, error: err?.message };
+    }
+    if (!response) return { repaired: false };
+
+    // Re-store: re-extracts, re-validates, and commits on success (or rejects
+    // again, leaving the prior good state). No recursion — one attempt only.
+    const items = storeSidecarResult(agent, response, message, messageIndex);
+    const nowRejected = getStateTransaction(message, agent.id)?.status === 'rejected';
+    if (items && !nowRejected) {
+        debug(`${LOG_PREFIX} repaired invalid state for "${agent.name}"`);
+        return { repaired: true, items };
+    }
+    return { repaired: false };
 }
 
 // ============================================================================
@@ -396,6 +572,8 @@ export async function executePreGenSidecarAgent(agent, contextText, generationTy
             expandedPrompt += '\n\n' + formatted;
         }
     }
+    const retentionPrompt = buildRetentionPrompt(agent.mergeVariable?.retention);
+    if (retentionPrompt) expandedPrompt += '\n\n' + retentionPrompt;
 
     // Rich context (opt-in): the same inputs the main chat sees. Appended to
     // the system prompt so the planner directs from the real scene state, not
