@@ -34,6 +34,7 @@
 
 import {
     chat,
+    chat_metadata,
     extension_prompts,
     setExtensionPrompt,
     substituteParams,
@@ -42,7 +43,7 @@ import {
 } from '../../../../../../script.js';
 import { getContext } from '../../../../../extensions.js';
 import { eventSource, event_types } from '../../../../../events.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 import { isAbortError } from './llm.js';
 
 import {
@@ -64,7 +65,7 @@ import { recordAgentRun } from './idempotency.js';
 import { beginSelfGeneration, endSelfGeneration, isExternalGenerationActive } from './compatibility.js';
 import { resetTurn, recordAgents, formatTurnHint } from './callStats.js';
 
-import { formatMergeVariableData, executeMergeVariable, writeMergeArray, bindVariableToSwipe, captureTurnBaseline, restoreTurnBaseline, resolveStateTrace } from '../modes/mergeVariable.js';
+import { formatMergeVariableData, executeMergeVariable, writeMergeArray, readMergeArray, bindVariableToSwipe, bindVariableToMessage, captureTurnBaseline, restoreTurnBaseline, resolveStateTrace, storeBatchedSidecarResult } from '../modes/mergeVariable.js';
 import {
     executeSidecarAgent,
     buildSidecarDisplayData,
@@ -76,12 +77,22 @@ import { executeRewriteAgent } from '../modes/rewrite.js';
 import { executeExtractAgent, executeAppendAgent } from '../modes/postProcess.js';
 import { processAgentRegex, clearAgentData } from '../render/regexProcessor.js';
 import { refreshMessage } from '../render/renderer.js';
+import { getOwnSwipeDisplayItems, requiresOwnSwipeDisplay } from '../render/sidecarDisplayPolicy.js';
 import { executePhoneEvaluation, queuePhoneEvaluation } from '../phone/phoneAgent.js';
 import { executeFeedEvaluation, queueFeedEvaluation } from '../feed/feedAgent.js';
 import { ownsCounterItself } from './everyN.js';
 import { runGuardManually } from '../modes/continuityGuardRunner.js';
 import { markActivationPolicyComplete } from './activationPolicy.js';
 import { restoreRetainedSnapshots } from './snapshotReuse.js';
+import { restoreStateAfterMessageDeletion } from './branchStateRestore.js';
+import { AFTER_DARK_AUTO_CHECKPOINT_KEY, AFTER_DARK_NUDGE_VARIABLE, applyAfterDarkDropGuard, buildAfterDarkInjection, moveAfterDarkStage, readAfterDarkAutoAdvance, readAfterDarkAutoCheckpoint, readAfterDarkInjectionEnabled, readAfterDarkState, shouldAutoAdvanceAfterDark } from '../afterDark/afterDarkState.js';
+import { DRAMA_QUEEN_AUTO_CHECKPOINT_KEY, DRAMA_QUEEN_NUDGE_VARIABLE, applyDramaQueenDropGuard, buildDramaQueenInjection, moveDramaQueenBeat, readDramaQueenAutoCheckpoint, readDramaQueenInjectionEnabled, readDramaQueenProgressionMode, readDramaQueenState, shouldAutoAdvanceDramaQueen } from '../dramaQueen/dramaQueenState.js';
+import { buildPostGenUtilityTasks, getUtilityAnalysisVariables } from './utilityAnalysis.js';
+import {
+    clearDeferredSwipeAgentIds,
+    isDeferrablePostAgent,
+    rememberDeferredSwipeAgentIds,
+} from './swipeDeferral.js';
 
 const LOG_PREFIX = '[SuperAgents/lifecycle]';
 const PROMPT_KEY_PREFIX = 'sa_agent_';
@@ -218,6 +229,8 @@ function clearDisabledAgentPrompts() {
     for (const agent of getEnabledAgents()) {
         enabledKeys.add(PROMPT_KEY_PREFIX + agent.id);
         enabledKeys.add(PROMPT_KEY_PREFIX + agent.id + '_ctx');
+        enabledKeys.add(PROMPT_KEY_PREFIX + agent.id + '_after_dark');
+        enabledKeys.add(PROMPT_KEY_PREFIX + agent.id + '_drama_queen');
     }
     for (const key of Object.keys(extension_prompts)) {
         if (key.startsWith(PROMPT_KEY_PREFIX) && !enabledKeys.has(key)) {
@@ -229,6 +242,23 @@ function clearDisabledAgentPrompts() {
 function onLifecycleStoreChanged() {
     const nextEnabledIds = new Set(getEnabledAgents().map(agent => agent.id));
     clearDisabledAgentPrompts();
+
+    // While globally paused, enablement changes redefine the frozen reference
+    // set immediately. This covers restoring the active set while Pause Agents
+    // is still on: every currently enabled agent contributes stored context,
+    // but the empty runnable list guarantees none can execute.
+    if (isAgentsPaused()) {
+        const freezeEnabled = (snapshot) => {
+            if (!snapshot) return;
+            snapshot.activeAgentIds = [...nextEnabledIds];
+            snapshot.runnableAgentIds = [];
+            snapshot.retainedSnapshotAgentIds = [];
+            snapshot.deferredCatchUpAgentIds = [];
+            snapshot.paused = true;
+        };
+        freezeEnabled(pendingSnapshot);
+        if (frozenSnapshot !== pendingSnapshot) freezeEnabled(frozenSnapshot);
+    }
 
     const removedIds = [...enabledAgentIds].filter(id => !nextEnabledIds.has(id));
     enabledAgentIds = nextEnabledIds;
@@ -294,6 +324,7 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
                 runnableAgentIds: [],
                 pendingUserText: '',
             }),
+            generationType: normalizeGenType(generationType),
             runnableAgentIds: [],
             paused: true,
         }
@@ -377,13 +408,19 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
         && !a.sidecarCall?.enabled,
     );
     for (const agent of preAgents) {
-        let expanded = substituteParams(agent.prompt).trim();
-        if (!expanded) continue;
+        // Pause keeps stored reference state in the main prompt, but static
+        // behavioral instructions must not continue steering the story.
+        let expanded = paused ? '' : substituteParams(agent.prompt).trim();
 
-        if (agent.mergeVariable?.enabled && agent.mergeVariable.injectFormatted && agent.mergeVariable.variableName) {
+        if (agent.mergeVariable?.enabled
+            && agent.mergeVariable.injectFormatted
+            && agent.mergeVariable.variableName
+            && (!paused || agent.mergeVariable.autoInject !== false)) {
             const formatted = formatMergeVariableData(agent.mergeVariable, { projectPersona: true });
-            if (formatted) expanded += '\n\n' + formatted;
+            if (formatted) expanded += expanded ? '\n\n' + formatted : formatted;
         }
+
+        if (!expanded) continue;
 
         const key = PROMPT_KEY_PREFIX + agent.id;
         setExtensionPrompt(
@@ -398,23 +435,155 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
         debug(`${LOG_PREFIX} injected pre-gen prompt for "${agent.name}" at depth ${agent.injection.depth}`);
     }
 
-    // --- Sidecar context injection ---
+    // After Dark's planner call is manual-only, but a selected plan remains a
+    // cheap authorial instruction until the user advances or drops it.
+    {
+        const planAgents = getEnabledAgents().filter(agent =>
+            agent.afterDarkConfig?.enabled || agent.sourceTemplateId === 'tpl-after-dark',
+        );
+        for (const agent of planAgents) {
+            const key = PROMPT_KEY_PREFIX + agent.id + '_after_dark';
+            if (!readAfterDarkInjectionEnabled(chat_metadata)) {
+                delete extension_prompts[key];
+                continue;
+            }
+            const autoAdvance = readAfterDarkAutoAdvance(chat_metadata, agent.afterDarkConfig);
+            const varName = agent.mergeVariable?.variableName || 'sa_after_dark';
+            let items = readMergeArray(varName);
+            let state = applyAfterDarkDropGuard(readAfterDarkState(items), chat_metadata);
+            const lastAssistantIndex = findLastAssistantIndex();
+            const rawStateMessageIndex = Number(items[items.length - 1]?._messageIndex);
+            const fallbackMessageIndex = Number.isFinite(rawStateMessageIndex)
+                ? rawStateMessageIndex
+                : Number(state.active?.activatedAtMessage ?? -1);
+            const stateMessageIndex = readAfterDarkAutoCheckpoint(chat_metadata, fallbackMessageIndex);
+            if (!agent.paused && shouldAutoAdvanceAfterDark(state, {
+                enabled: autoAdvance,
+                generationType: genType,
+                lastAssistantIndex,
+                stateMessageIndex,
+            })) {
+                const message = chat[lastAssistantIndex];
+                const stored = storeBatchedSidecarResult(
+                    agent,
+                    moveAfterDarkStage(state, 1),
+                    message,
+                    lastAssistantIndex,
+                    'after_dark_auto',
+                );
+                if (stored) {
+                    writeMergeArray(AFTER_DARK_NUDGE_VARIABLE, []);
+                    bindVariableToMessage(message, AFTER_DARK_NUDGE_VARIABLE);
+                    chat_metadata[AFTER_DARK_AUTO_CHECKPOINT_KEY] = lastAssistantIndex;
+                    bindVariableToMessage(message, varName);
+                    saveChatDebounced();
+                    items = stored;
+                    state = applyAfterDarkDropGuard(readAfterDarkState(items), chat_metadata);
+                    debug(`${LOG_PREFIX} auto-advanced After Dark to beat ${state.active.stageIndex + 1}`);
+                }
+            }
+            const prompt = buildAfterDarkInjection(state, {
+                autoAdvance,
+            });
+            if (!prompt) {
+                delete extension_prompts[key];
+                continue;
+            }
+            setExtensionPrompt(
+                key,
+                prompt,
+                agent.injection.position,
+                agent.injection.depth,
+                agent.injection.scan,
+                agent.injection.role,
+            );
+            debug(`${LOG_PREFIX} injected active After Dark beat for "${agent.name}"`);
+        }
+    }
+
+    // Drama Queen planning is manual. A selected engine contributes only its
+    // current beat; proposals and future beats remain private author material.
+    {
+        const dramaAgents = getEnabledAgents().filter(agent =>
+            agent.dramaQueenConfig?.enabled || agent.sourceTemplateId === 'tpl-drama-queen');
+        for (const agent of dramaAgents) {
+            const key = `${PROMPT_KEY_PREFIX}${agent.id}_drama_queen`;
+            if (!readDramaQueenInjectionEnabled(chat_metadata)) {
+                delete extension_prompts[key];
+                continue;
+            }
+            const progressionMode = readDramaQueenProgressionMode(chat_metadata, agent.dramaQueenConfig);
+            const varName = agent.mergeVariable?.variableName || 'sa_drama_queen';
+            let items = readMergeArray(varName);
+            let state = applyDramaQueenDropGuard(readDramaQueenState(items), chat_metadata);
+            const lastAssistantIndex = findLastAssistantIndex();
+            const rawStateMessageIndex = Number(items[items.length - 1]?._messageIndex);
+            const fallbackMessageIndex = Number.isFinite(rawStateMessageIndex)
+                ? rawStateMessageIndex
+                : Number(state.active?.activatedAtMessage ?? -1);
+            const stateMessageIndex = readDramaQueenAutoCheckpoint(chat_metadata, fallbackMessageIndex);
+            if (!agent.paused && shouldAutoAdvanceDramaQueen(state, {
+                enabled: progressionMode === 'auto',
+                generationType: genType,
+                lastAssistantIndex,
+                stateMessageIndex,
+            })) {
+                const message = chat[lastAssistantIndex];
+                const stored = storeBatchedSidecarResult(
+                    agent,
+                    moveDramaQueenBeat(state, 1),
+                    message,
+                    lastAssistantIndex,
+                    'drama_queen_auto',
+                );
+                if (stored) {
+                    writeMergeArray(DRAMA_QUEEN_NUDGE_VARIABLE, []);
+                    bindVariableToMessage(message, DRAMA_QUEEN_NUDGE_VARIABLE);
+                    chat_metadata[DRAMA_QUEEN_AUTO_CHECKPOINT_KEY] = lastAssistantIndex;
+                    bindVariableToMessage(message, varName);
+                    saveChatDebounced();
+                    items = stored;
+                    state = applyDramaQueenDropGuard(readDramaQueenState(items), chat_metadata);
+                    debug(`${LOG_PREFIX} auto-advanced Drama Queen to beat ${state.active.beatIndex + 1}`);
+                }
+            }
+            const prompt = buildDramaQueenInjection(state);
+            if (!prompt) {
+                delete extension_prompts[key];
+                continue;
+            }
+            setExtensionPrompt(
+                key,
+                prompt,
+                agent.injection.position,
+                agent.injection.depth,
+                agent.injection.scan,
+                agent.injection.role,
+            );
+            debug(`${LOG_PREFIX} injected active Drama Queen beat for "${agent.name}"`);
+        }
+    }
+
+    // --- Stored-state context injection ---
     // Sidecar agents don't inject their full prompt (the narrative model
     // shouldn't emit structured tags), but their tracked state SHOULD be
-    // available for contextual awareness (e.g. current time/location).
+    // available for contextual awareness (e.g. current time/location). While
+    // globally paused, the same snapshot rule also covers custom state-bearing
+    // post agents that are not sidecars. Static pre agents were handled above.
     //
     // Gated by mergeVariable.autoInject (default on): turn it off to keep the
     // state out of the automatic chat context and instead place it yourself via
     // the {{sa_<name>}} / {{agent_<var>}} macro at an exact spot in your preset.
-    const sidecarContextAgents = activeAgents.filter(a =>
+    const stateContextAgents = activeAgents.filter(a =>
         a.enabled &&
-        a.sidecarCall?.enabled &&
+        (a.sidecarCall?.enabled || paused) &&
+        !(!a.sidecarCall?.enabled && (a.phase === 'pre' || a.phase === 'both')) &&
         a.mergeVariable?.enabled &&
         a.mergeVariable.injectFormatted &&
         a.mergeVariable.autoInject !== false &&
         a.mergeVariable.variableName,
     );
-    for (const agent of sidecarContextAgents) {
+    for (const agent of stateContextAgents) {
         const formatted = formatMergeVariableData(agent.mergeVariable, { projectPersona: true });
         if (!formatted?.trim()) continue;
 
@@ -427,7 +596,7 @@ async function onGenerationAfterCommands(generationType, _options, dryRun) {
             agent.injection.scan,
             agent.injection.role,
         );
-        debug(`${LOG_PREFIX} injected sidecar context for "${agent.name}" at depth ${agent.injection.depth}`);
+        debug(`${LOG_PREFIX} injected stored-state context for "${agent.name}" at depth ${agent.injection.depth}`);
     }
 }
 
@@ -463,7 +632,7 @@ async function onMessageReceived(messageIndex) {
         debug(`${LOG_PREFIX} ignored duplicate post-gen entry for message ${idx}`);
         return;
     }
-    if (isAgentRunInProgress || isAgentsPaused() || pendingSnapshot.paused) return;
+    if (isAgentRunInProgress) return;
 
     const revision = lifecycleRevision;
     const snapshot = pendingSnapshot;
@@ -477,7 +646,7 @@ async function onMessageReceived(messageIndex) {
 }
 
 async function processReceivedMessage(idx, message, revision, snapshot) {
-    if (isAgentsPaused() || !isReceivedMessageCurrent(revision, snapshot, idx, message)) return;
+    if (!isReceivedMessageCurrent(revision, snapshot, idx, message)) return;
 
     // Cooperative coexistence note (Step 8): if another generation-driving
     // extension is mid-pass on this turn, log it. We don't hard-block — ST's
@@ -489,7 +658,7 @@ async function processReceivedMessage(idx, message, revision, snapshot) {
     }
 
     if (!isStreamingStillActive(idx)) {
-        if (generationStopRequested || isAgentsPaused()
+        if (generationStopRequested
             || !isReceivedMessageCurrent(revision, snapshot, idx, message)) return;
         await processPostGenAgents(idx, message, revision, snapshot);
         return;
@@ -523,7 +692,7 @@ async function processReceivedMessage(idx, message, revision, snapshot) {
         }, STREAM_POLL_INTERVAL_MS);
     });
 
-    if (generationStopRequested || isAgentsPaused()
+    if (generationStopRequested
         || !isReceivedMessageCurrent(revision, snapshot, idx, message)) return;
     await processPostGenAgents(idx, message, revision, snapshot);
 }
@@ -568,6 +737,7 @@ function buildExecutionPlan(agents) {
             id: groupId,
             order: groupConfig.order ?? 100,
             executionMode: groupConfig.executionMode || 'parallel',
+            batchMaxTokens: groupConfig.batchMaxTokens ?? null,
             agents: groupAgents,
         });
     }
@@ -577,6 +747,7 @@ function buildExecutionPlan(agents) {
             id: '__ungrouped__',
             order: 9999,
             executionMode: 'parallel',
+            batchMaxTokens: null,
             agents: ungrouped,
         });
     }
@@ -647,7 +818,10 @@ async function executeGroup(group, message, messageIndex, generationType) {
     if (sidecarAgents.length > 0 && !generationStopRequested) {
         const batches = groupSidecarsByProfile(sidecarAgents);
         const batchPromises = [...batches.values()].map(batch =>
-            executeSidecarBatch(batch, message, messageIndex, generationType, runOpts()),
+            executeSidecarBatch(batch, message, messageIndex, generationType, {
+                ...runOpts(),
+                batchMaxTokens: group.batchMaxTokens,
+            }),
         );
         const results = await Promise.allSettled(batchPromises);
         for (const result of results) {
@@ -781,20 +955,57 @@ async function executeSingleAgent(agent, message, messageIndex, generationType) 
  * @param {number} messageIndex
  */
 async function processPostGenAgents(messageIndex, expectedMessage, revision, snapshot) {
-    if (isAgentsPaused() || snapshot?.paused
-        || !isReceivedMessageCurrent(revision, snapshot, messageIndex, expectedMessage)) return;
+    if (!isReceivedMessageCurrent(revision, snapshot, messageIndex, expectedMessage)) return;
     const activeAgents = getSnapshotAgents(snapshot);
     const runnableIds = new Set(snapshot.runnableAgentIds ?? snapshot.activeAgentIds ?? []);
-    const runnableAgents = activeAgents.filter(agent => agent.enabled && runnableIds.has(agent.id) && !agent.paused);
-    const candidatePostAgents = runnableAgents.filter(a => a.phase === 'post' || a.phase === 'both');
+    const runnableAgents = snapshot?.paused || isAgentsPaused() ? []
+        : activeAgents.filter(agent => agent.enabled && runnableIds.has(agent.id) && !agent.paused);
+    const catchUpIds = new Set(snapshot.deferredCatchUpAgentIds ?? []);
+    const catchUpAgents = activeAgents.filter(agent => catchUpIds.has(agent.id)
+        && !agent.paused && isDeferrablePostAgent(agent));
+    const candidatePostAgents = [...new Map([
+        ...runnableAgents.filter(a => a.phase === 'post' || a.phase === 'both'),
+        ...catchUpAgents,
+    ].map(agent => [agent.id, agent])).values()];
     const postAgents = [];
     for (const agent of candidatePostAgents) {
-        if (matchesCurrentResponse(agent, expectedMessage)) postAgents.push(agent);
+        if (catchUpIds.has(agent.id) || matchesCurrentResponse(agent, expectedMessage)) postAgents.push(agent);
     }
 
-    if (postAgents.length === 0) return;
+    const deferSwipePostAgents = snapshot.generationType === 'swipe'
+        && getGlobalSettings().deferPostAgentsOnSwipe;
+    const deferredNow = deferSwipePostAgents
+        ? postAgents.filter(isDeferrablePostAgent)
+        : [];
+    if (deferredNow.length) {
+        rememberDeferredSwipeAgentIds(deferredNow.map(agent => agent.id));
+        debug(`${LOG_PREFIX} deferred ${deferredNow.length} post-agent(s) until the next regular reply`);
+    }
+    const immediatePostAgents = deferredNow.length
+        ? postAgents.filter(agent => !isDeferrablePostAgent(agent))
+        : postAgents;
 
-    recordAgents(postAgents.length); // cost-hint accounting (agents this turn)
+    const utilityTasks = deferSwipePostAgents ? [] : buildPostGenUtilityTasks({
+        // Manual UtilityApps are intentionally absent from the ordinary
+        // activation snapshot. Conditional runtime tasks consult the enabled
+        // store while inheriting this turn's pause/current-message guards.
+        agents: getEnabledAgents(),
+        message: expectedMessage,
+        messageIndex,
+        generationType: snapshot.generationType,
+    });
+    const postTasks = [...immediatePostAgents, ...utilityTasks];
+
+    if (postTasks.length === 0) {
+        for (const listener of postProcessListeners) {
+            try { listener(messageIndex); } catch (err) {
+                console.warn(`${LOG_PREFIX} post-process listener error:`, err);
+            }
+        }
+        return;
+    }
+
+    recordAgents(postTasks.length); // cost-hint accounting includes conditional utility work
     activeRunController = new AbortController();
     generationStopRequested = false;
     setRunActive(true);
@@ -813,7 +1024,7 @@ async function processPostGenAgents(messageIndex, expectedMessage, revision, sna
         if (!isReceivedMessageCurrent(revision, snapshot, messageIndex, message)) return;
 
         // 1. Group-aware execution
-        const executionPlan = buildExecutionPlan(postAgents);
+        const executionPlan = buildExecutionPlan(postTasks);
         for (const group of executionPlan) {
             if (generationStopRequested) break;
             const result = await executeGroup(group, message, messageIndex, snapshot.generationType);
@@ -837,9 +1048,10 @@ async function processPostGenAgents(messageIndex, expectedMessage, revision, sna
             if (generationStopRequested) break;
 
             // Clear previous extraction data for idempotency (e.g. regenerate)
-            clearAgentData(message, agent.id);
+            if (clearAgentData(message, agent.id)) chatChanged = true;
 
-            const result = processAgentRegex(agent, message, messageIndex);
+            const result = await processAgentRegex(agent, message, messageIndex);
+            if (!isReceivedMessageCurrent(revision, snapshot, messageIndex, message)) return;
             if (result.changed) chatChanged = true;
 
             if (result.extractionCount > 0) {
@@ -860,12 +1072,22 @@ async function processPostGenAgents(messageIndex, expectedMessage, revision, sna
         );
         for (const agent of sidecarDisplayAgents) {
             const existing = message.extra?.saAgentData?.[agent.id];
+            const ownItems = requiresOwnSwipeDisplay(agent)
+                ? getOwnSwipeDisplayItems(agent, message)
+                : null;
+            if (requiresOwnSwipeDisplay(agent) && !ownItems?.length) {
+                if (existing) {
+                    delete message.extra.saAgentData[agent.id];
+                    chatChanged = true;
+                }
+                continue;
+            }
             const hasCurrentDisplay = existing?._swipeId === (message.swipe_id ?? 0)
                 && Array.isArray(existing.scripts) && existing.scripts.length > 0;
             const regexMayHaveReplacedIt = Array.isArray(agent.regexScripts)
                 && agent.regexScripts.length > 0;
             if (hasCurrentDisplay && !regexMayHaveReplacedIt) continue;
-            buildSidecarDisplayData(agent, message, messageIndex);
+            buildSidecarDisplayData(agent, message, messageIndex, ownItems || undefined);
         }
 
         // 4. Save + refresh
@@ -898,6 +1120,7 @@ async function processPostGenAgents(messageIndex, expectedMessage, revision, sna
             console.error(`${LOG_PREFIX} post-gen processing failed:`, err);
         }
     } finally {
+        if (catchUpIds.size && !generationStopRequested) clearDeferredSwipeAgentIds(catchUpIds);
         const finishedAt = globalThis.performance?.now?.() ?? Date.now();
         debug(`${LOG_PREFIX} post-gen message ${messageIndex}: ${Math.round(finishedAt - startedAt)}ms total, `
             + `${Math.round(finishedAt - finalizationStartedAt)}ms synchronous finalization`);
@@ -909,6 +1132,7 @@ async function processPostGenAgents(messageIndex, expectedMessage, revision, sna
         // showing agents-run vs actual calls, so batching savings are visible.
         if (!generationStopRequested
             && isReceivedMessageCurrent(revision, snapshot, messageIndex, expectedMessage)
+            && immediatePostAgents.length > 0
             && getGlobalSettings().showCostHint) {
             const hint = formatTurnHint();
             if (hint) toastr.info(hint, 'SuperAgents', { timeOut: 4000 });
@@ -945,6 +1169,19 @@ function onChatChanged() {
     cancelAgentRun();
 }
 
+function onMessageDeleted() {
+    onChatChanged();
+    restoreStateAfterMessageDeletion();
+    let checkpointCleared = false;
+    for (const key of [AFTER_DARK_AUTO_CHECKPOINT_KEY, DRAMA_QUEEN_AUTO_CHECKPOINT_KEY]) {
+        if (Number(chat_metadata?.[key]) < chat.length) continue;
+        if (!(key in chat_metadata)) continue;
+        delete chat_metadata[key];
+        checkpointCleared = true;
+    }
+    if (checkpointCleared) saveChatDebounced();
+}
+
 // ============================================================================
 // MESSAGE EDIT HANDLER
 // ============================================================================
@@ -967,8 +1204,9 @@ async function onMessageEdited(messageIndex) {
         !a.paused && Array.isArray(a.regexScripts) && a.regexScripts.length > 0,
     );
     for (const agent of regexAgents) {
-        clearAgentData(message, agent.id);
-        const result = processAgentRegex(agent, message, idx);
+        if (clearAgentData(message, agent.id)) changed = true;
+        const result = await processAgentRegex(agent, message, idx);
+        if (chat[idx] !== message) return;
         if (result.changed) changed = true;
     }
 
@@ -976,6 +1214,18 @@ async function onMessageEdited(messageIndex) {
         a.sidecarCall?.enabled && a.sidecarCall?.display?.enabled,
     );
     for (const agent of sidecarAgents) {
+        if (requiresOwnSwipeDisplay(agent)) {
+            const items = getOwnSwipeDisplayItems(agent, message);
+            if (!items?.length) {
+                if (message.extra?.saAgentData?.[agent.id]) {
+                    delete message.extra.saAgentData[agent.id];
+                    changed = true;
+                }
+                continue;
+            }
+            buildSidecarDisplayData(agent, message, idx, items);
+            continue;
+        }
         buildSidecarDisplayData(agent, message, idx);
     }
 
@@ -1094,6 +1344,7 @@ function onSwipeNavigation(messageIndex) {
             .map(a => a.mergeVariable?.variableName)
             .filter(Boolean),
     );
+    for (const varName of getUtilityAnalysisVariables()) trackedVars.add(varName);
     // Back-compat: also cover any var that only exists in stored per-swipe
     // history (e.g. an agent later disabled) so its display doesn't go stale.
     const legacySwipes = message.saAgentSwipes ?? message.extra?.saAgentSwipes;
@@ -1101,13 +1352,13 @@ function onSwipeNavigation(messageIndex) {
         for (const varName of Object.keys(legacySwipes)) trackedVars.add(varName);
     }
 
-    const resolved = new Set();
+    const resolved = new Map();
     for (const varName of trackedVars) {
         const items = resolveStateTrace(chat, idx, currentSwipeId, varName);
         // null → nothing anywhere down the trace: clear to empty so next turn's
         // LLM sees formatEmpty instead of another swipe's leftovers.
         writeMergeArray(varName, items ?? []);
-        resolved.add(varName);
+        resolved.set(varName, items ?? []);
     }
 
     // Rebuild sidecar display for every state-bearing agent from the freshly
@@ -1123,7 +1374,10 @@ function onSwipeNavigation(messageIndex) {
         if (message.extra?.saAgentData?.[agent.id]) {
             delete message.extra.saAgentData[agent.id];
         }
-        buildSidecarDisplayData(agent, message, idx);
+        const items = requiresOwnSwipeDisplay(agent)
+            ? getOwnSwipeDisplayItems(agent, message, currentSwipeId)
+            : resolved.get(varName);
+        if (items?.length) buildSidecarDisplayData(agent, message, idx, items);
     }
 
     debug(`${LOG_PREFIX} swipe ${currentSwipeId}: trace-resolved ${resolved.size} var(s) + rebuilt display`);
@@ -1154,15 +1408,16 @@ export function findLastAssistantIndex() {
  * { skipped: true } marker when there was no assistant message to target.
  *
  * @param {string} agentId
+ * @param {{promptSuffix?:string, allowWhilePaused?:boolean, timeoutMs?:number}} [options]
  * @returns {Promise<{changed:boolean, error?:string, skipped?:boolean}>}
  */
-export async function runAgentOnLastMessage(agentId) {
+export async function runAgentOnLastMessage(agentId, options = {}) {
     const targetIdx = findLastAssistantIndex();
     if (targetIdx < 0) {
         toastr.warning('No assistant message to run the agent on.');
         return { changed: false, skipped: true };
     }
-    const result = await runAgentOnMessage(agentId, targetIdx);
+    const result = await runAgentOnMessage(agentId, targetIdx, options);
     if (result?.error) toastr.error(`Agent failed: ${result.error}`);
     return result;
 }
@@ -1205,10 +1460,6 @@ export async function runGroupOnLastMessage(groupId) {
  * @returns {Promise<{changed:boolean, error?:string, skipped?:boolean}>}
  */
 export async function rerollAgentPreGen(agentId) {
-    if (isAgentsPaused()) {
-        toastr.info('SuperAgents are paused. Resume them before rerolling an agent.');
-        return { changed: false, skipped: true };
-    }
     if (isAgentRunInProgress) {
         toastr.warning('Another agent is currently running.');
         return { changed: false, skipped: true };
@@ -1272,13 +1523,10 @@ export async function rerollAgentPreGen(agentId) {
  *
  * @param {string} agentId
  * @param {number} messageIndex
+ * @param {{promptSuffix?:string, allowWhilePaused?:boolean, timeoutMs?:number}} [options]
  * @returns {Promise<{changed:boolean, error?:string, textsGenerated?:number}>}
  */
-export async function runAgentOnMessage(agentId, messageIndex) {
-    if (isAgentsPaused()) {
-        toastr.info('SuperAgents are paused. Resume them before running an agent.');
-        return { changed: false, skipped: true };
-    }
+export async function runAgentOnMessage(agentId, messageIndex, options = {}) {
     if (isAgentRunInProgress) {
         toastr.warning('Another agent is currently running.');
         return { changed: false };
@@ -1293,7 +1541,7 @@ export async function runAgentOnMessage(agentId, messageIndex) {
         toastr.info('This agent is off. Enable it before running.');
         return { changed: false, skipped: true };
     }
-    if (agent.paused) {
+    if (agent.paused && options.allowWhilePaused !== true) {
         toastr.info('This agent is paused. Resume it before running.');
         return { changed: false, skipped: true };
     }
@@ -1306,7 +1554,7 @@ export async function runAgentOnMessage(agentId, messageIndex) {
 
     beginManualRun();
     try {
-        return await executeManualAgent(agent, message, messageIndex);
+        return await executeManualAgent(agent, message, messageIndex, options);
     } catch (err) {
         return manualRunError(agent, err);
     } finally {
@@ -1328,10 +1576,6 @@ export async function runAgentOnMessage(agentId, messageIndex) {
  * @returns {Promise<{changed:boolean, errors:Array<{agentId:string,error:string}>, skippedCount:number}>}
  */
 export async function runGroupOnMessage(groupId, messageIndex) {
-    if (isAgentsPaused()) {
-        toastr.info('SuperAgents are paused. Resume them before running a group.');
-        return { changed: false, errors: [], skippedCount: 0, skipped: true };
-    }
     if (isAgentRunInProgress) {
         toastr.warning('Another agent is currently running.');
         return { changed: false, errors: [], skippedCount: 0 };
@@ -1390,7 +1634,10 @@ export async function runGroupOnMessage(groupId, messageIndex) {
             const batches = [...groupSidecarsByProfile(sidecars).values()];
             await Promise.all(batches.map(async (batch) => {
                 try {
-                    const result = await executeSidecarBatch(batch, message, messageIndex, 'normal', runOpts());
+                    const result = await executeSidecarBatch(batch, message, messageIndex, 'normal', {
+                        ...runOpts(),
+                        batchMaxTokens: group.batchMaxTokens,
+                    });
                     results.push(result);
                     if (result.dataStored) {
                         saveChatDebounced();
@@ -1445,7 +1692,7 @@ function manualRunError(agent, err) {
 }
 
 /** Execute one agent using the exact route behind its individual play button. */
-async function executeManualAgent(agent, message, messageIndex) {
+async function executeManualAgent(agent, message, messageIndex, options = {}) {
     // Continuity Guard has its own deterministic manual sweep.
     if (ownsCounterItself(agent)) {
         const res = runGuardManually(messageIndex);
@@ -1471,7 +1718,15 @@ async function executeManualAgent(agent, message, messageIndex) {
     }
 
     if (agent.sidecarCall?.enabled) {
-        const result = await executeSidecarAgent(agent, message, messageIndex, 'normal', runOpts());
+        const promptSuffix = String(options.promptSuffix || '').trim();
+        const runAgent = promptSuffix
+            ? { ...agent, prompt: `${agent.prompt}\n\n${promptSuffix}` }
+            : agent;
+        const opts = runOpts();
+        if (typeof options.timeoutMs === 'number' && options.timeoutMs >= 0) {
+            opts.timeoutMs = options.timeoutMs;
+        }
+        const result = await executeSidecarAgent(runAgent, message, messageIndex, 'normal', opts);
         if (result.dataStored) {
             saveChatDebounced();
             refreshMessage(messageIndex);
@@ -1489,8 +1744,15 @@ async function executeManualAgent(agent, message, messageIndex) {
             default: result = { changed: false };
         }
     } else {
-        toastr.info('This agent has no post-processing configured.', agent.name);
+        if (!agent.mergeVariable?.enabled) {
+            toastr.info('This agent has no post-processing configured.', agent.name);
+        }
         result = { changed: false };
+    }
+
+    if (agent.mergeVariable?.enabled) {
+        const mergeResult = executeMergeVariable(agent, message, messageIndex);
+        result = { ...result, changed: Boolean(result.changed || mergeResult.changed) };
     }
 
     if (result.changed) {
@@ -1545,15 +1807,17 @@ export function initLifecycle() {
             frozenSnapshot = null;
             return;
         }
+        const frozenAgentIds = getEnabledAgents().map(agent => agent.id);
         frozenSnapshot = {
             ...(pendingSnapshot || {
                 generationType: 'normal',
-                activeAgentIds: getEnabledAgents().map(agent => agent.id),
                 runnableAgentIds: [],
                 pendingUserText: '',
             }),
-            activeAgentIds: [...(pendingSnapshot?.activeAgentIds || getEnabledAgents().map(agent => agent.id))],
+            activeAgentIds: frozenAgentIds,
             runnableAgentIds: [],
+            retainedSnapshotAgentIds: [],
+            deferredCatchUpAgentIds: [],
             paused: true,
         };
         pendingSnapshot = { ...frozenSnapshot };
@@ -1586,6 +1850,9 @@ export function initLifecycle() {
     }
     if (event_types.MESSAGE_SWIPED) {
         eventSource.on(event_types.MESSAGE_SWIPED, onSwipeNavigation);
+    }
+    if (event_types.MESSAGE_DELETED) {
+        eventSource.on(event_types.MESSAGE_DELETED, onMessageDeleted);
     }
 
     // Attach pre-gen agent display (e.g. Director plan) to the bot message once

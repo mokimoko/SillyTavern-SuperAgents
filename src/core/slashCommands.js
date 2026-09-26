@@ -22,7 +22,7 @@
 import { chat, chat_metadata, saveChatDebounced } from '../../../../../../script.js';
 import { SlashCommand } from '../../../../../slash-commands/SlashCommand.js';
 import { SlashCommandParser } from '../../../../../slash-commands/SlashCommandParser.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 
 import {
     getAgents,
@@ -101,7 +101,7 @@ function handleList() {
     });
 
     const pauseLine = isAgentsPaused()
-        ? '⏸ All agents globally paused (saved enablement preserved)'
+        ? '⏸ Automatic agent calls paused (saved enablement and state context preserved)'
         : '▶ Agent execution active';
     const output = [pauseLine, ...lines].join('\n');
     console.log(`${LOG_PREFIX} agent list:\n${output}`);
@@ -127,8 +127,8 @@ function handlePause(args, value) {
         return '';
     }
 
-    if (paused) toastr.info('All SuperAgents paused. Their enabled states are preserved.');
-    else toastr.success('SuperAgents resumed with the previously enabled agents.');
+    if (paused) toastr.info('Automatic agent calls paused. Stored state and manual runs stay available.');
+    else toastr.success('Automatic agent calls resumed with the previously enabled agents.');
     return paused ? 'paused' : 'active';
 }
 

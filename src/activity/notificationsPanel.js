@@ -6,7 +6,7 @@ import {
     saveSettingsDebounced,
 } from '../../../../../../script.js';
 import { extension_settings } from '../../../../../extensions.js';
-import { MODULE_NAME, debug } from '../../index.js';
+import { MODULE_NAME, debug } from '../core/runtime.js';
 import { makeDraggablePanel, mountDraggablePanel } from '../ui/draggablePanel.js';
 import { registerPanelControl } from '../ui/modal.js';
 import { refreshSurfaceDock } from '../ui/surfaceDock.js';
@@ -261,6 +261,7 @@ export function initNotificationsPanel() {
         reconcile();
     });
     if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, render);
+    if (event_types.MESSAGE_DELETED) eventSource.on(event_types.MESSAGE_DELETED, render);
     render();
     reconcile();
     debug(`${LOG_PREFIX} source-linked notification center initialized`);

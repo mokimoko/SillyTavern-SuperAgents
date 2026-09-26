@@ -1,28 +1,14 @@
 /** Pure branch, normalization, unread, and projection helpers for the social Feed. */
 
+import { cloneBranchPath, compactBranchPath, isBranchPathVisible, resolveChatBranch } from '../core/branchPath.js';
+
 function activeSwipeId(message) {
     const value = Number(message?.swipe_id ?? 0);
     return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 export function resolveFeedBranch(chat, options = {}) {
-    if (!Array.isArray(chat) || chat.length === 0) {
-        return { messageIndex: null, swipeId: null, branchPath: null };
-    }
-
-    const requestedIndex = options.messageIndex == null ? NaN : Number(options.messageIndex);
-    const messageIndex = Number.isInteger(requestedIndex)
-        ? Math.max(0, Math.min(requestedIndex, chat.length - 1))
-        : chat.length - 1;
-    const requestedSwipe = options.swipeId == null ? NaN : Number(options.swipeId);
-    const swipeId = Number.isInteger(requestedSwipe) && requestedSwipe >= 0
-        ? requestedSwipe
-        : activeSwipeId(chat[messageIndex]);
-    const branchPath = chat.slice(0, messageIndex + 1).map((message, index) => (
-        index === messageIndex ? swipeId : activeSwipeId(message)
-    ));
-
-    return { messageIndex, swipeId, branchPath };
+    return resolveChatBranch(chat, options);
 }
 
 export function stampFeedEntry(entry, branch) {
@@ -30,16 +16,15 @@ export function stampFeedEntry(entry, branch) {
         ...entry,
         messageIndex: branch?.messageIndex ?? null,
         swipeId: branch?.swipeId ?? null,
-        branchPath: Array.isArray(branch?.branchPath) ? [...branch.branchPath] : null,
+        branchPath: cloneBranchPath(branch?.branchPath),
     };
 }
 
 export function isFeedEntryVisible(entry, chat, options = {}, currentPath = null) {
-    const storedPath = Array.isArray(entry?.branchPath) ? entry.branchPath : null;
-    if (storedPath?.length) {
+    const storedPath = compactBranchPath(entry?.branchPath);
+    if (storedPath) {
         const resolvedPath = currentPath || resolveFeedBranch(chat, options).branchPath;
-        if (!resolvedPath || resolvedPath.length < storedPath.length) return false;
-        return storedPath.every((swipeId, index) => resolvedPath[index] === swipeId);
+        return isBranchPathVisible(storedPath, resolvedPath);
     }
 
     // Legacy/unanchored entries remain universal after upgrading.
@@ -61,6 +46,7 @@ function normalizeComment(comment = {}) {
         content: cleanText(comment.content ?? comment.text, 1000),
         timestamp: Number(comment.timestamp || Date.now()),
         source: comment.source === 'user' ? 'user' : 'generated',
+        branchPath: compactBranchPath(comment.branchPath),
     };
 }
 
@@ -71,6 +57,7 @@ function normalizeReaction(reaction = {}) {
         author: cleanText(reaction.author, 120) || 'Unknown',
         kind: cleanText(reaction.kind, 40) || 'heart',
         timestamp: Number(reaction.timestamp || Date.now()),
+        branchPath: compactBranchPath(reaction.branchPath),
     };
 }
 
@@ -87,6 +74,7 @@ export function normalizeFeedPost(post = {}) {
         continuity: cleanText(post.continuity, 1000),
         comments: Array.isArray(post.comments) ? post.comments.map(normalizeComment) : [],
         reactions: Array.isArray(post.reactions) ? post.reactions.map(normalizeReaction) : [],
+        branchPath: compactBranchPath(post.branchPath),
     };
 }
 
@@ -102,7 +90,7 @@ export function normalizeFeedState(state = {}) {
 
 export function projectFeedState(state, chat, options = {}) {
     const normalized = normalizeFeedState(state);
-    const currentPath = resolveFeedBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveFeedBranch(chat, options).branchPath);
     const posts = normalized.posts
         .filter(post => isFeedEntryVisible(post, chat, options, currentPath))
         .map(post => ({
@@ -119,7 +107,7 @@ export function projectFeedState(state, chat, options = {}) {
 
 export function markVisibleFeedRead(state, chat, options = {}) {
     const normalized = normalizeFeedState(state);
-    const currentPath = resolveFeedBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveFeedBranch(chat, options).branchPath);
     for (const post of normalized.posts) {
         if (isFeedEntryVisible(post, chat, options, currentPath)) post.unread = false;
     }
@@ -128,7 +116,7 @@ export function markVisibleFeedRead(state, chat, options = {}) {
 
 export function clearVisibleFeed(state, chat, options = {}) {
     const normalized = normalizeFeedState(state);
-    const currentPath = resolveFeedBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveFeedBranch(chat, options).branchPath);
     normalized.posts = normalized.posts.filter(post => (
         !isFeedEntryVisible(post, chat, options, currentPath)
     ));

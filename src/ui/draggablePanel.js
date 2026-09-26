@@ -27,7 +27,7 @@
 
 import { saveSettingsDebounced } from '../../../../../../script.js';
 import { extension_settings } from '../../../../../extensions.js';
-import { MODULE_NAME, debug } from '../../index.js';
+import { MODULE_NAME, debug } from '../core/runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/panel]';
 

@@ -1,0 +1,125 @@
+.sa-ad-beat-controller {
+    --ad-strip-paper: #f3e4d5;
+    --ad-strip-muted: #a68e8a;
+    --ad-strip-hot: #ff7749;
+    --ad-strip-wine: #4f202f;
+    position: fixed;
+    z-index: 4050;
+    display: none;
+    width: 276px;
+    color: var(--ad-strip-paper);
+    background: rgba(20, 15, 19, .97);
+    border: 1px solid rgba(242, 229, 208, .16);
+    border-radius: 4px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .42);
+    font-family: "Trebuchet MS", "Segoe UI", sans-serif;
+    text-shadow: none;
+    cursor: grab;
+    touch-action: none;
+}
+
+.sa-ad-beat-controller.sa-panel-open { display: block; }
+.sa-ad-beat-controller.sa-panel--dragging { cursor: grabbing; }
+.sa-ad-beat-controller * { box-sizing: border-box; text-shadow: none !important; }
+
+.sa-ad-beat-top,
+.sa-ad-beat-collapsed {
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    gap: 6px;
+    padding: 7px 7px 5px;
+}
+
+.sa-ad-beat-collapsed { padding: 5px 6px; }
+.sa-ad-beat-top b,
+.sa-ad-beat-collapsed b {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    color: #fff3e9;
+    font: 700 11px/1.2 "Palatino Linotype", Georgia, serif;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.sa-ad-beat-top em,
+.sa-ad-beat-collapsed em {
+    color: var(--ad-strip-muted);
+    font-size: 9px;
+    font-style: normal;
+    font-weight: 900;
+    letter-spacing: .08em;
+}
+
+.sa-ad-beat-controller button {
+    display: grid;
+    place-items: center;
+    width: 25px;
+    height: 25px;
+    flex: 0 0 25px;
+    padding: 0;
+    color: #bda9a4;
+    background: transparent;
+    border: 0;
+    border-radius: 3px;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+.sa-ad-beat-controller button:hover { color: #fff; background: rgba(255, 255, 255, .08); }
+.sa-ad-beat-controller button:disabled { opacity: .25; cursor: default; }
+.sa-ad-beat-controller button.is-on { color: var(--ad-strip-hot); background: rgba(255, 119, 73, .12); }
+.sa-ad-beat-controller button.is-nudge { color: #e8bd79; background: rgba(232, 189, 121, .11); }
+.sa-ad-beat-controller button.is-injection-toggle { color: #e56d68; }
+.sa-ad-beat-controller button.is-injection-toggle.is-paused { color: #77c995; background: rgba(119, 201, 149, .12); }
+.sa-ad-beat-controller.is-injection-paused .sa-ad-beat-progress,
+.sa-ad-beat-controller.is-injection-paused .sa-ad-beat-shell > p { opacity: .48; }
+.sa-ad-beat-controller.is-busy .sa-ad-beat-actions button { opacity: .28; pointer-events: none; }
+
+.sa-ad-beat-status { display: grid; place-items: center; width: 20px; color: var(--ad-strip-muted); font-size: 11px; }
+.sa-ad-beat-shell.is-ready .sa-ad-beat-status { color: #e8bd79; animation: sa-ad-ready 2.6s ease-in-out 1; }
+.sa-ad-beat-shell.is-diverged .sa-ad-beat-status { color: #e76e67; }
+.sa-ad-beat-shell.is-overshot .sa-ad-beat-status { color: #dfa464; }
+
+.sa-ad-beat-progress { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; padding: 0 8px; }
+.sa-ad-beat-progress i { height: 2px; background: #392a30; }
+.sa-ad-beat-progress i.is-done { background: #76505a; }
+.sa-ad-beat-progress i.is-current { background: var(--ad-strip-hot); }
+.sa-ad-beat-shell.is-ready .sa-ad-beat-progress i.is-current { background: #e8bd79; }
+.sa-ad-beat-shell.is-diverged .sa-ad-beat-progress i.is-current { background: #e76e67; }
+.sa-ad-beat-shell.is-overshot .sa-ad-beat-progress i.is-current { background: #dfa464; }
+
+.sa-ad-beat-shell > p {
+    display: -webkit-box;
+    min-height: 31px;
+    margin: 7px 9px 6px;
+    overflow: hidden;
+    color: #d5c4bd;
+    font-size: 10px;
+    line-height: 1.45;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+}
+
+.sa-ad-beat-actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 6px 5px;
+    border-top: 1px solid rgba(242, 229, 208, .08);
+}
+.sa-ad-beat-actions button:nth-last-child(2) { margin-left: auto; }
+.sa-ad-beat-shell.is-diverged .sa-ad-beat-actions [data-action="adapt"] { color: #e76e67; background: rgba(231, 110, 103, .11); }
+.sa-ad-beat-shell.is-overshot .sa-ad-beat-actions [data-action="next"] { color: #dfa464; background: rgba(223, 164, 100, .1); }
+
+@keyframes sa-ad-ready {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .48; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sa-ad-beat-shell.is-ready .sa-ad-beat-status { animation: none; }
+}
+
+@media (max-width: 540px) {
+    .sa-ad-beat-controller { width: min(276px, calc(100vw - 18px)); }
+}

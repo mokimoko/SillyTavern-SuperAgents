@@ -35,7 +35,7 @@ import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../../../popup.js';
 import { getRunRecords, revertAgentRewrite } from '../core/idempotency.js';
 import { onPostProcessComplete } from '../core/lifecycle.js';
 import { getAgentById, getEnabledAgents, onStoreChange } from '../data/store.js';
-import { refreshMessage } from '../render/renderer.js';
+import { onChatDomMutation, refreshMessage } from '../render/renderer.js';
 import { renderInlineHtml, escapeHtml } from '../render/diffEngine.js';
 
 const LOG_PREFIX = '[SuperAgents/diffButton]';
@@ -214,9 +214,9 @@ function mesIdFromNode(node) {
 let delegationBound = false;
 
 /** @type {MutationObserver|null} */
-let chatObserver = null;
 let syncPending = false;
 let enabledAgentSignature = '';
+let initialized = false;
 
 /**
  * Debounced re-sync after any chat DOM mutation. ST's updateMessageBlock (used
@@ -245,30 +245,19 @@ function onStoreChanged() {
     scheduleSyncAll();
 }
 
-/** Start observing #chat for message rebuilds. Idempotent. */
-function startChatObserver() {
-    if (chatObserver) return;
-    const chatEl = document.getElementById('chat');
-    if (!chatEl) return;
-
-    chatObserver = new MutationObserver((mutations) => {
-        // We only care about additions of nodes that smell like a message
-        // rebuild — bare .mes elements, .extraMesButtons rows, or anything
-        // containing those. Filtering keeps unrelated DOM churn cheap.
-        for (const m of mutations) {
-            if (m.type !== 'childList' || m.addedNodes.length === 0) continue;
-            for (const node of m.addedNodes) {
-                if (node.nodeType !== Node.ELEMENT_NODE) continue;
-                const cls = node.classList;
-                if (cls?.contains('mes') || cls?.contains('extraMesButtons')
-                    || node.querySelector?.('.extraMesButtons')) {
-                    scheduleSyncAll();
-                    return;
-                }
+function onChatMutations(mutations) {
+    for (const mutation of mutations) {
+        if (mutation.type !== 'childList' || mutation.addedNodes.length === 0) continue;
+        for (const node of mutation.addedNodes) {
+            if (node.nodeType !== Node.ELEMENT_NODE) continue;
+            const cls = node.classList;
+            if (cls?.contains('mes') || cls?.contains('extraMesButtons')
+                || node.querySelector?.('.extraMesButtons')) {
+                scheduleSyncAll();
+                return;
             }
         }
-    });
-    chatObserver.observe(chatEl, { childList: true, subtree: true });
+    }
 }
 
 /** Bind the delegated click handler on #chat once. */
@@ -327,12 +316,14 @@ function onPostProcess(messageIndex) {
  * do a first pass over already-visible messages.
  */
 export function initDiffButtons() {
+    if (initialized) return;
+    initialized = true;
     enabledAgentSignature = getEnabledAgentSignature();
     onStoreChange(onStoreChanged);
+    onChatDomMutation(onChatMutations);
     let attempts = 0;
     const tryBind = () => {
         bindDelegation();
-        startChatObserver();
         if (delegationBound) {
             requestAnimationFrame(syncAllVisible);
             return;

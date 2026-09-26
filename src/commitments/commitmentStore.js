@@ -1,6 +1,12 @@
 /** Pure normalization, retention, branch projection, and unread helpers. */
 
 import { normalizeTimeExpression, timeExpressionOrder } from './timeExpressions.js';
+import {
+    branchPathLength,
+    cloneBranchPath,
+    compactBranchPath,
+    isBranchPathVisible,
+} from '../core/branchPath.js';
 
 export const COMMITMENT_STATE_VERSION = 3;
 export const MAX_COMMITMENTS = 120;
@@ -62,16 +68,15 @@ export function stampCommitment(entry, branch) {
         ...entry,
         messageIndex: branch?.messageIndex ?? null,
         swipeId: branch?.swipeId ?? null,
-        branchPath: Array.isArray(branch?.branchPath) ? [...branch.branchPath] : null,
+        branchPath: cloneBranchPath(branch?.branchPath),
     };
 }
 
 export function isCommitmentVisible(entry, chat, options = {}, currentPath = null) {
-    const storedPath = Array.isArray(entry?.branchPath) ? entry.branchPath : null;
-    if (storedPath?.length) {
+    const storedPath = compactBranchPath(entry?.branchPath);
+    if (storedPath) {
         const resolvedPath = currentPath || resolveCommitmentBranch(chat, options).branchPath;
-        if (!resolvedPath || resolvedPath.length < storedPath.length) return false;
-        return storedPath.every((swipeId, index) => resolvedPath[index] === swipeId);
+        return isBranchPathVisible(storedPath, resolvedPath);
     }
     if (entry?.messageIndex == null || !Number.isInteger(Number(entry.messageIndex))) return true;
     const index = Number(entry.messageIndex);
@@ -80,7 +85,7 @@ export function isCommitmentVisible(entry, chat, options = {}, currentPath = nul
 }
 
 export function isReconciliationGrantUsed(grant, chat, options = {}) {
-    const currentPath = resolveCommitmentBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveCommitmentBranch(chat, options).branchPath);
     return Array.isArray(grant?.uses)
         && grant.uses.some(use => isCommitmentVisible(use, chat, options, currentPath));
 }
@@ -101,9 +106,7 @@ export function normalizeCommitment(input = {}) {
         ? input.visibility
         : 'persona';
     const source = ['user', 'external', 'generated'].includes(input.source) ? input.source : 'user';
-    const branchPath = Array.isArray(input.branchPath)
-        ? input.branchPath.map(value => Math.max(0, Number(value) || 0)).slice(0, 500)
-        : null;
+    const branchPath = compactBranchPath(input.branchPath);
     const rawLineage = input.lineage && typeof input.lineage === 'object' ? input.lineage : {};
     const lineage = cleanText(rawLineage.relation, 80) === 'rescheduled-from'
         ? {
@@ -158,9 +161,7 @@ export function normalizeCommitmentState(state = {}) {
                 swipeId: grant?.swipeId != null && Number.isInteger(Number(grant.swipeId))
                     ? Math.max(0, Number(grant.swipeId))
                     : null,
-                branchPath: Array.isArray(grant?.branchPath)
-                    ? grant.branchPath.map(value => Math.max(0, Number(value) || 0)).slice(0, 500)
-                    : null,
+                branchPath: compactBranchPath(grant?.branchPath),
                 uses: Array.isArray(grant?.uses)
                     ? grant.uses.map(use => ({
                         usedAt: Number(use?.usedAt || 0),
@@ -170,10 +171,8 @@ export function normalizeCommitmentState(state = {}) {
                         swipeId: use?.swipeId != null && Number.isInteger(Number(use.swipeId))
                             ? Math.max(0, Number(use.swipeId))
                             : null,
-                        branchPath: Array.isArray(use?.branchPath)
-                            ? use.branchPath.map(value => Math.max(0, Number(value) || 0)).slice(0, 500)
-                            : null,
-                    })).filter(use => use.messageIndex != null || use.branchPath?.length).slice(-8)
+                        branchPath: compactBranchPath(use?.branchPath),
+                    })).filter(use => use.messageIndex != null || branchPathLength(use.branchPath) > 0).slice(-8)
                     : [],
             })).filter(grant => grant.token && grant.commitmentId).slice(-MAX_RECONCILIATION_GRANTS)
             : [],
@@ -187,9 +186,7 @@ export function normalizeCommitmentState(state = {}) {
                 swipeId: grant?.swipeId != null && Number.isInteger(Number(grant.swipeId))
                     ? Math.max(0, Number(grant.swipeId))
                     : null,
-                branchPath: Array.isArray(grant?.branchPath)
-                    ? grant.branchPath.map(value => Math.max(0, Number(value) || 0)).slice(0, 500)
-                    : null,
+                branchPath: compactBranchPath(grant?.branchPath),
                 uses: Array.isArray(grant?.uses)
                     ? grant.uses.map(use => ({
                         usedAt: Number(use?.usedAt || 0),
@@ -199,10 +196,8 @@ export function normalizeCommitmentState(state = {}) {
                         swipeId: use?.swipeId != null && Number.isInteger(Number(use.swipeId))
                             ? Math.max(0, Number(use.swipeId))
                             : null,
-                        branchPath: Array.isArray(use?.branchPath)
-                            ? use.branchPath.map(value => Math.max(0, Number(value) || 0)).slice(0, 500)
-                            : null,
-                    })).filter(use => use.messageIndex != null || use.branchPath?.length).slice(-MAX_COMMITMENTS)
+                        branchPath: compactBranchPath(use?.branchPath),
+                    })).filter(use => use.messageIndex != null || branchPathLength(use.branchPath) > 0).slice(-MAX_COMMITMENTS)
                     : [],
             })).filter(grant => grant.token).slice(-MAX_STORY_CREATION_GRANTS)
             : [],
@@ -212,7 +207,7 @@ export function normalizeCommitmentState(state = {}) {
 
 export function projectCommitmentState(state, chat, options = {}) {
     const normalized = normalizeCommitmentState(state);
-    const currentPath = resolveCommitmentBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveCommitmentBranch(chat, options).branchPath);
     const commitments = normalized.commitments.filter(item => (
         isCommitmentVisible(item, chat, options, currentPath)
     ));
@@ -257,7 +252,7 @@ export function markCommitmentsRead(state, ids = []) {
 
 export function markVisibleCommitmentsRead(state, chat, options = {}) {
     const normalized = normalizeCommitmentState(state);
-    const currentPath = resolveCommitmentBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveCommitmentBranch(chat, options).branchPath);
     for (const commitment of normalized.commitments) {
         if (isCommitmentVisible(commitment, chat, options, currentPath)) commitment.unread = false;
     }

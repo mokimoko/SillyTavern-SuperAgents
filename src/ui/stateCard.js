@@ -30,7 +30,7 @@ import {
     saveSettingsDebounced,
 } from '../../../../../../script.js';
 import { extension_settings } from '../../../../../extensions.js';
-import { MODULE_NAME, debug } from '../../index.js';
+import { MODULE_NAME, debug } from '../core/runtime.js';
 import { getEnabledAgents, getAgentById } from '../data/store.js';
 import { makeDraggablePanel, mountDraggablePanel } from './draggablePanel.js';
 import { registerPanelControl } from './modal.js';
@@ -63,11 +63,7 @@ const DEFAULT_VARIABLE = 'sa_state_card';
 // an untracked branch is covered the same way: nearby prior state shows through,
 // distant/absent state reads empty.
 const STALENESS_HORIZON = 6;
-// Hardcoded (not `${MODULE_NAME}`): MODULE_NAME is still in its import TDZ when
-// this module evaluates due to the index.js↔ui circular import, so building the
-// href at top level would yield ".../undefined/...". templateSync.js hardcodes
-// its base path for the same reason.
-const CSS_HREF = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/ui/stateCard.css?v=0.42.7';
+const CSS_HREF = `/scripts/extensions/third-party/${MODULE_NAME}/src/ui/stateCard.css?v=0.50.3`;
 
 // ============================================================================
 // STATE
@@ -298,6 +294,7 @@ export function initStateCard() {
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, () => scheduleRefresh(150));
     }
     eventSource.on(event_types.MESSAGE_SWIPED, () => scheduleRefresh(100));
+    if (event_types.MESSAGE_DELETED) eventSource.on(event_types.MESSAGE_DELETED, () => scheduleRefresh(100));
 
     // CHAT_CHANGED is the *real* invalidation: a new chat means any prior
     // render belongs to the previous conversation. Reconcile visibility against
@@ -465,7 +462,13 @@ function readResolvedStateArray(variableName = currentVariable) {
     const lastIdx = findLastAssistantIndex();
     if (lastIdx >= 0) {
         const swipeId = chat[lastIdx]?.swipe_id ?? 0;
-        const { items, distance } = resolveStateTraceDetailed(chat, lastIdx, swipeId, variableName);
+        const { items, distance } = resolveStateTraceDetailed(
+            chat,
+            lastIdx,
+            swipeId,
+            variableName,
+            { maxDistance: STALENESS_HORIZON },
+        );
         if (items !== null) {
             // Beyond the horizon → the freshest real state is too far back; show
             // empty rather than a fossil. Within it → accept (this is what holds

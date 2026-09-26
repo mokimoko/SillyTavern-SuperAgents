@@ -5,7 +5,7 @@
  */
 
 import { chat } from '../../../../../../script.js';
-import { getAgents } from '../data/store.js';
+import { getAgents, isAgentsPaused } from '../data/store.js';
 import { readMergeArray, resolveStateTraceDetailed } from '../modes/mergeVariable.js';
 import { projectActivePersona } from '../core/participants.js';
 import { SUPERAGENTS_EVENTS } from './events.js';
@@ -116,6 +116,7 @@ function listStateSources() {
             agentId: agent.id,
             agentName: agent.name,
             enabled: agent.enabled,
+            paused: Boolean(agent.paused || isAgentsPaused()),
             variableName: agent.mergeVariable.variableName,
             mode: agent.mergeVariable.mode,
             validated: Boolean(agent.mergeVariable.validation?.enabled),

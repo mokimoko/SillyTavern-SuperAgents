@@ -9,9 +9,15 @@ import {
     substituteParams,
 } from '../../../../../../script.js';
 import { eventSource, event_types } from '../../../../../events.js';
-import { debug } from '../../index.js';
-import { getEnabledAgents, getGlobalSettings } from '../data/store.js';
+import { debug } from '../core/runtime.js';
+import {
+    getEnabledAgents,
+    getGlobalSettings,
+    isAgentsPaused,
+    onStoreChange,
+} from '../data/store.js';
 import { SUPERAGENTS_EVENTS } from '../integration/events.js';
+import { deletedTailStart, isAnchoredInDeletedTail } from '../core/branchPath.js';
 import {
     getActiveSurfacePresentation,
     setPresentationProfile,
@@ -247,11 +253,14 @@ function migrateReconciliationWindows() {
 }
 
 /** Restore an authorized terminal record when deletion or a swipe hides its branch grant. */
-function restoreCurrentBranchReconciliationWindows(source = 'calendar-branch-restore') {
+function restoreCurrentBranchReconciliationWindows(source = 'calendar-branch-restore', extraAuthorizedIds = []) {
     if (getGlobalSettings().calendarStorySync === false) return 0;
     const state = readState();
     const visible = projectCommitmentState(state, chat);
-    const authorizedIds = new Set(state.reconciliationGrants.map(grant => grant.commitmentId));
+    const authorizedIds = new Set([
+        ...state.reconciliationGrants.map(grant => grant.commitmentId),
+        ...extraAuthorizedIds,
+    ]);
     const successorIds = new Set(visible.commitments
         .filter(commitment => commitment.lineage?.relation === 'rescheduled-from')
         .map(commitment => commitment.lineage.commitmentId));
@@ -424,7 +433,7 @@ function applyCalendarDirective(directive, location) {
 
 /** Apply story-established Calendar changes from the latest assistant response. */
 export function processCalendarReconciliation() {
-    if (getGlobalSettings().calendarStorySync === false) return [];
+    if (isAgentsPaused() || getGlobalSettings().calendarStorySync === false) return [];
     const location = currentAssistantLocation();
     if (!location) return [];
     const parsed = parseCalendarDirectives(location.message.mes);
@@ -476,7 +485,7 @@ export function markVisibleCommitmentsAsRead(options = {}) {
     notifyActivity({ kind: 'read', sourceIds: visibleIds });
 }
 
-function buildInjection() {
+function buildInjection({ snapshotOnly = false } = {}) {
     const state = getCommitmentState();
     const surface = getActiveSurfacePresentation('calendar') || {};
     const surfaceLabel = surface.title || 'Calendar';
@@ -518,11 +527,11 @@ function buildInjection() {
             };
         })
         .filter(Boolean);
-    const pendingCues = [
+    const pendingCues = snapshotOnly ? [] : [
         ...reconciliationCues.filter(item => !item.dormant).slice(0, 4),
         ...reconciliationCues.filter(item => item.dormant).slice(0, 4),
     ].map(item => item.text).filter(Boolean);
-    const storyCreationCue = storySyncEnabled
+    const storyCreationCue = storySyncEnabled && !snapshotOnly
         ? buildCalendarStoryCreationCue(state.storyCreationGrants.at(-1), surfaceLabel)
         : '';
     const sections = [];
@@ -558,7 +567,7 @@ export function syncCommitmentInjection() {
     // Pause All intentionally leaves enabled flags intact and keeps the frozen
     // context snapshot available.
     if (getEnabledAgents().length === 0) { clearInjection(); return; }
-    const text = buildInjection();
+    const text = buildInjection({ snapshotOnly: isAgentsPaused() });
     if (!text) { clearInjection(); return; }
     setExtensionPrompt(PROMPT_KEY, substituteParams(text), 1, 0, false, 0);
 }
@@ -604,7 +613,7 @@ export function initCommitments() {
     if (initialized) return;
     initialized = true;
     eventSource.on(event_types.GENERATION_AFTER_COMMANDS, () => {
-        ensureStoryCreationGrant();
+        if (!isAgentsPaused()) ensureStoryCreationGrant();
         syncCommitmentInjection();
     });
     eventSource.on(event_types.MESSAGE_RECEIVED, processCalendarReconciliation);
@@ -624,9 +633,34 @@ export function initCommitments() {
             notifyChanged({ kind: 'branch-changed', reconciliationRestored: restored, creationGrantCreated });
         });
     }
+    onStoreChange(syncCommitmentInjection);
     if (event_types.MESSAGE_DELETED) {
-        eventSource.on(event_types.MESSAGE_DELETED, () => {
-            const restored = restoreCurrentBranchReconciliationWindows('calendar-deletion-restore');
+        eventSource.on(event_types.MESSAGE_DELETED, messageIndex => {
+            const start = deletedTailStart(chat, messageIndex);
+            const state = readState();
+            const prune = entries => entries.filter(entry => !isAnchoredInDeletedTail(entry, start));
+            const commitments = prune(state.commitments);
+            const removedAuthorizedIds = state.reconciliationGrants
+                .filter(grant => isAnchoredInDeletedTail(grant, start))
+                .map(grant => grant.commitmentId);
+            const reconciliationGrants = prune(state.reconciliationGrants).map(grant => ({
+                ...grant,
+                uses: prune(grant.uses),
+            }));
+            const storyCreationGrants = prune(state.storyCreationGrants).map(grant => ({
+                ...grant,
+                uses: prune(grant.uses),
+            }));
+            if (commitments.length !== state.commitments.length
+                || JSON.stringify(reconciliationGrants) !== JSON.stringify(state.reconciliationGrants)
+                || JSON.stringify(storyCreationGrants) !== JSON.stringify(state.storyCreationGrants)) {
+                state.commitments = commitments;
+                state.reconciliationGrants = reconciliationGrants;
+                state.storyCreationGrants = storyCreationGrants;
+                writeState(state);
+                saveChatDebounced();
+            }
+            const restored = restoreCurrentBranchReconciliationWindows('calendar-deletion-restore', removedAuthorizedIds);
             const creationGrantCreated = ensureStoryCreationGrant();
             syncCommitmentInjection();
             notifyChanged({

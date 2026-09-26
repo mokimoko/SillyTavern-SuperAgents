@@ -21,7 +21,9 @@
  * Public surface: `window.SuperAgents`.
  */
 
-import { extension_settings } from '../../../extensions.js';
+import { MODULE_NAME, LOG_PREFIX, getSettings, debug } from './src/core/runtime.js';
+
+export { MODULE_NAME, LOG_PREFIX, getSettings, debug };
 
 // LLM keystone
 import { callAgentLLM, extractResponseText } from './src/core/llm.js';
@@ -164,11 +166,20 @@ import { renderDirectorPlan } from './src/render/hooks/directorPlan.js';
 import { renderSoundtrackSuggester } from './src/render/hooks/soundtrackSuggester.js';
 import { renderArtPrompt } from './src/render/hooks/artPromptGenerator.js';
 import { renderActorInterview } from './src/render/hooks/actorInterview.js';
+import { renderCharacterDiary } from './src/render/hooks/characterDiary.js';
 import { renderCommentarySection } from './src/render/hooks/commentarySection.js';
 import { renderGenericOutput } from './src/render/hooks/genericOutput.js';
 import { renderWishLedger } from './src/render/hooks/wishLedger.js';
 import { renderContinuityGuard, initContinuityGuardDelegation } from './src/render/hooks/continuityGuard.js';
 import { initContinuityGuardRunner } from './src/modes/continuityGuardRunner.js';
+import {
+    getUnread as getWorldThreadsUnread,
+    hide as hideWorldThreads,
+    initWorldEventsAgent,
+    isAvailable as isWorldThreadsAvailable,
+    isOpen as isWorldThreadsOpen,
+    show as showWorldThreads,
+} from './src/worldEvents/worldEventsAgent.js';
 
 // UI layer: unified management modal (Step 9)
 import { openModal, closeModal, isModalOpen, registerPanelControl } from './src/ui/modal.js';
@@ -255,33 +266,40 @@ import {
     show as showNotifications,
 } from './src/activity/notificationsPanel.js';
 
-export const MODULE_NAME = 'SillyTavern-SuperAgents';
-export const LOG_PREFIX = '[SuperAgents]';
-
-// ----------------------------------------------------------------------
-// Top-level extension settings (top-level toggles only — store.js owns
-// agents/groups/globalSettings further down)
-// ----------------------------------------------------------------------
-
-const DEFAULT_SETTINGS = {
-    enabled: true,
-    debug: false,
-};
-
-export function getSettings() {
-    if (!extension_settings[MODULE_NAME] || typeof extension_settings[MODULE_NAME] !== 'object') {
-        extension_settings[MODULE_NAME] = {};
-    }
-    const s = extension_settings[MODULE_NAME];
-    for (const [k, v] of Object.entries(DEFAULT_SETTINGS)) {
-        if (s[k] === undefined) s[k] = v;
-    }
-    return s;
-}
-
-export function debug(...args) {
-    if (getSettings().debug) console.log(LOG_PREFIX, ...args);
-}
+// OOC writers' room: compact knowledge, bounded room memory, and UtilitiesApp UI.
+import {
+    initGroupChatAgent,
+    isGroupChatAvailable,
+} from './src/groupChat/groupChatAgent.js';
+import {
+    getUnread as getGroupChatUnread,
+    hide as hideGroupChat,
+    initGroupChatPanel,
+    isOpen as isGroupChatOpen,
+    show as showGroupChat,
+} from './src/groupChat/groupChatPanel.js';
+import {
+    canShowBeatController as canShowAfterDarkBeatController,
+    getUnread as getAfterDarkUnread,
+    hide as hideAfterDark,
+    initAfterDarkPanel,
+    isAvailable as isAfterDarkAvailable,
+    isOpen as isAfterDarkOpen,
+    toggleBeatController as toggleAfterDarkBeatController,
+    show as showAfterDark,
+} from './src/afterDark/afterDarkPanel.js';
+import { isBeatControllerOpen as isAfterDarkBeatControllerOpen } from './src/afterDark/afterDarkBeatController.js';
+import {
+    canShowBeatController as canShowDramaQueenBeatController,
+    getUnread as getDramaQueenUnread,
+    hide as hideDramaQueen,
+    initDramaQueenPanel,
+    isAvailable as isDramaQueenAvailable,
+    isOpen as isDramaQueenOpen,
+    toggleBeatController as toggleDramaQueenBeatController,
+    show as showDramaQueen,
+} from './src/dramaQueen/dramaQueenPanel.js';
+import { isDramaQueenBeatControllerOpen } from './src/dramaQueen/dramaQueenBeatController.js';
 
 // ----------------------------------------------------------------------
 // Public namespace
@@ -289,7 +307,7 @@ export function debug(...args) {
 
 function initNamespace() {
     window.SuperAgents = {
-        version: '0.42.7',
+        version: '0.50.3',
 
         // Top-level toggles
         getSettings,
@@ -497,6 +515,11 @@ function initNamespace() {
                 show: showNotifications,
                 hide: hideNotifications,
             },
+            groupChat: {
+                init: initGroupChatPanel,
+                show: showGroupChat,
+                hide: hideGroupChat,
+            },
         },
 
         // Templates
@@ -589,6 +612,7 @@ jQuery(async () => {
         registerRenderHook('soundtrack-suggester-data', renderSoundtrackSuggester);
         registerRenderHook('art-prompt-data', renderArtPrompt);
         registerRenderHook('actor-interview-data', renderActorInterview);
+        registerRenderHook('character-diary-data', renderCharacterDiary);
         registerRenderHook('commentary-section-data', renderCommentarySection);
         registerRenderHook('sa-generic-output-data', renderGenericOutput);
         registerRenderHook('sa-wish-ledger-data', renderWishLedger);
@@ -628,6 +652,7 @@ jQuery(async () => {
         // Its click-driven repair reuses the rewrite/diff/revert machinery, so
         // a confirmed fix lights up the diff button above automatically.
         initContinuityGuardRunner(onPostProcessComplete);
+        initWorldEventsAgent();
 
         // User-facing slash commands (/sa-run, /sa-list, /sa-toggle, /sa-open).
         registerSlashCommands();
@@ -644,6 +669,7 @@ jQuery(async () => {
         initPhoneAgent();
         initFeedAgent();
         initCommitments();
+        initGroupChatAgent({ onPostProcessComplete });
         initActivityHub({
             phone: { onActivity: onPhoneActivity, listThreads: getPhoneThreads },
             feed: { onActivity: onFeedActivity, listPosts: listFeedPosts },
@@ -652,6 +678,9 @@ jQuery(async () => {
         initPhonePanel();
         initFeedPanel();
         initCalendarPanel();
+        initGroupChatPanel();
+        initAfterDarkPanel();
+        initDramaQueenPanel();
         registerActivitySource('phone', {
             isAvailable: () => isPhoneEnabled()
                 && getActiveSurfacePresentation('phone')?.capabilities?.available !== false,
@@ -736,12 +765,65 @@ jQuery(async () => {
                 getUnread: getCalendarUnread,
                 toggle: () => (isCalendarOpen() ? hideCalendar(false) : showCalendar(false)),
             },
+        ], [
+            {
+                id: 'group-chat',
+                label: 'Group Chat',
+                description: 'Chat out of character with the writers of story characters',
+                icon: 'fa-comments',
+                isAvailable: isGroupChatAvailable,
+                isOpen: isGroupChatOpen,
+                getUnread: getGroupChatUnread,
+                toggle: () => (isGroupChatOpen() ? hideGroupChat(false) : showGroupChat(false)),
+            },
+            {
+                id: 'world-threads',
+                label: 'World Threads',
+                description: 'Guide events moving beyond the current scene',
+                icon: 'fa-diagram-project',
+                isAvailable: isWorldThreadsAvailable,
+                isOpen: isWorldThreadsOpen,
+                getUnread: getWorldThreadsUnread,
+                toggle: () => (isWorldThreadsOpen() ? hideWorldThreads(false) : showWorldThreads(false)),
+            },
+            {
+                id: 'after-dark',
+                label: 'After Dark',
+                description: 'Privately plan and steer a spicy scene',
+                icon: 'fa-martini-glass-citrus',
+                isAvailable: isAfterDarkAvailable,
+                isOpen: isAfterDarkOpen,
+                getUnread: getAfterDarkUnread,
+                toggle: () => (isAfterDarkOpen() ? hideAfterDark() : showAfterDark()),
+                secondaryAction: toggleAfterDarkBeatController,
+                secondaryLabel: 'Toggle compact After Dark beat controller',
+                secondaryUnavailableLabel: 'Start an After Dark plan to use its beat controller',
+                secondaryIcon: 'fa-gamepad',
+                isSecondaryAvailable: canShowAfterDarkBeatController,
+                isSecondaryOpen: isAfterDarkBeatControllerOpen,
+            },
+            {
+                id: 'drama-queen',
+                label: 'Drama Queen',
+                description: 'Privately plan and steer dramatic pressure',
+                icon: 'fa-masks-theater',
+                isAvailable: isDramaQueenAvailable,
+                isOpen: isDramaQueenOpen,
+                getUnread: getDramaQueenUnread,
+                toggle: () => (isDramaQueenOpen() ? hideDramaQueen() : showDramaQueen()),
+                secondaryAction: toggleDramaQueenBeatController,
+                secondaryLabel: 'Toggle compact Drama Queen beat controller',
+                secondaryUnavailableLabel: 'Activate a Drama Queen engine to use its beat controller',
+                secondaryIcon: 'fa-gamepad',
+                isSecondaryAvailable: canShowDramaQueenBeatController,
+                isSecondaryOpen: isDramaQueenBeatControllerOpen,
+            },
         ]);
         initWeatherCycleIntegration();
 
         const { agents: agentStore } = window.SuperAgents;
         const agentCount = agentStore.getAll().length;
-        debug(`loaded v0.42.7 — ${agentCount} agent(s) on disk; every-N memory agents can retain branch-aware snapshots as reference-only context between provider calls; chat hydration and first-card greetings cannot trigger automatic post agents, and chat changes invalidate queued or in-flight tracker commits before teardown; World State v11 is grounded by active lore and recent history, supports validated branch corrections, and can optionally synchronize eligible snapshots plus exact Afternoon/Twilight lighting to Weather Cycle, including temporary manual visual overrides that yield to the next World State commit, editable overlay colors, and chronological phase controls; Social Web Ledger explicitly excludes current and prior player personas in solo and batched prompts and filters persona-linked edges at commit time so Relationship Ledger remains authoritative; grouped trackers use an unambiguous JSON-envelope contract and recover renamed keys or task-local tagged blocks before schema validation; structured classifiers recover schema-valid bare JSON and use reasoning-safe output budgets; post-agent jobs are coalesced, tracker commits yield cooperatively, branch-aware Story surfaces cache their visible path, and post-run timings separate model wait from synchronous finalization; deferred fresh-state gates plus staged Prompt Base / Prompt NSFW classifiers are available; initialization and one-shot lifecycle policies remain available; hidden Story App rendering is deferred and State Card refreshes are coalesced; lifecycle engine active; validated transactional state + fail-closed knowledge capability API active; relationship/social-web/knowledge ledgers available; Activity + source-linked Notifications active; adapter-ready branch-aware Calendar/Commitments with deletion-safe rescheduling and passive canonical story-plan capture available; Modern, Cute Retro, Retro Analog, Gamer Modern, Grounded Historical, Historical Fantasy, Xianxia, Post-Apocalyptic, and Near Future presentation profiles drive all story surfaces and Dynamic Events vocabulary through stable IDs; eleven State Card appearance choices include presentation matching and the dark Story Ledger alongside all earlier skins; branch-safe Knowledge controls, compat guard, state macros, slash commands, and route-based agent editor available`);
+        debug(`loaded v0.50.3 — ${agentCount} agent(s) on disk; lifecycle and long-chat performance pass`);
 
         // Surface a one-time migration result so the user knows their VM agents
         // came across (or that there was a name collision to resolve manually).

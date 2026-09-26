@@ -31,7 +31,7 @@
  */
 
 import { macros, MacroCategory } from '../../../../../../scripts/macros/macro-system.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 import { getAgents, getAgentById } from '../data/store.js';
 import { readMergeArray, formatMergeVariableData } from '../modes/mergeVariable.js';
 

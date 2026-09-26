@@ -223,6 +223,7 @@ export function initWeatherCycleIntegration() {
     });
     eventSource.on(event_types.CHAT_CHANGED, () => queueSync(true));
     if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, () => queueSync(true));
+    if (event_types.MESSAGE_DELETED) eventSource.on(event_types.MESSAGE_DELETED, () => queueSync(true));
     onStoreChange(queueSync);
     document.addEventListener('change', event => {
         const id = event.target?.id ?? '';

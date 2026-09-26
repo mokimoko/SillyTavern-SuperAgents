@@ -12,7 +12,7 @@
  */
 
 import { chat, saveChatDebounced } from '../../../../../../script.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 
 const EXTRA_KEY = 'agentRuns';
 const LOG_PREFIX = '[SuperAgents/idempotency]';

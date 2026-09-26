@@ -9,8 +9,10 @@ import {
     substituteParams,
 } from '../../../../../../script.js';
 import { eventSource, event_types } from '../../../../../events.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import { callAgentLLM } from '../core/llm.js';
+import { deletedTailStart, isAnchoredInDeletedTail, resolveQueueBranch } from '../core/branchPath.js';
+import { recentPromptLines, truncatePromptText } from '../core/promptText.js';
 import {
     getAgents,
     getEnabledAgents,
@@ -35,6 +37,9 @@ import {
 const LOG_PREFIX = '[SuperAgents/feed]';
 const FEED_VAR = 'sa_social_feed';
 const PROMPT_KEY = 'sa_agent_feed_ctx';
+const MAX_INJECTED_POST_CHARS = 600;
+const MAX_INJECTED_COMMENT_CHARS = 240;
+const MAX_FEED_CONTEXT_CHARS = 6500;
 const postListeners = [];
 const activityListeners = [];
 let warnedMultiple = false;
@@ -250,7 +255,7 @@ export async function executeFeedEvaluation(
     externalCue = '',
     showFeedback = false,
 ) {
-    if (isAgentsPaused() || agent?.paused) {
+    if ((isAgentsPaused() && !showFeedback) || agent?.paused) {
         if (showFeedback) toastr.info('SuperAgents are paused. Feed state is frozen.');
         return { accepted: false, postsGenerated: 0, error: 'agents paused' };
     }
@@ -430,11 +435,10 @@ export function queueFeedEvaluation({
     if (isAgentsPaused() || agent?.paused) {
         return Promise.resolve({ accepted: false, postsGenerated: 0, error: 'agents paused' });
     }
-    const branch = resolveFeedBranch(chat, { messageIndex, swipeId: message?.swipe_id });
-    const path = branch.branchPath?.join('.') || `${branch.messageIndex ?? 'none'}:${branch.swipeId ?? 0}`;
+    const branch = resolveQueueBranch(chat, { messageIndex, swipeId: message?.swipe_id });
     const resolvedAuthor = String(author || message?.name || '').trim();
     return getQueue().enqueue({
-        key: `feed|${resolvedAuthor.toLowerCase()}|${path}`,
+        key: `feed|${resolvedAuthor.toLowerCase()}|${branch.queuePath}`,
         agent,
         message: { ...(message || {}), swipe_id: branch.swipeId ?? 0 },
         messageIndex: branch.messageIndex,
@@ -478,12 +482,12 @@ function buildInjection() {
     if (!posts.length) return '';
     const surface = getActiveSurfacePresentation('feed') || {};
     const commentLabel = surface.copy?.commentContextLabel || 'comments';
-    const lines = posts.map(post => {
+    const lines = recentPromptLines(posts.map(post => {
         const comments = surface.capabilities?.comments === false
             ? ''
-            : post.comments.slice(-2).map(comment => `${comment.author}: ${comment.content}`).join(' | ');
-        return `- ${post.author} (${post.audience}): ${post.content}${comments ? ` [${commentLabel}: ${comments}]` : ''}`;
-    });
+            : post.comments.slice(-2).map(comment => `${comment.author}: ${truncatePromptText(comment.content, MAX_INJECTED_COMMENT_CHARS)}`).join(' | ');
+        return `- ${post.author} (${post.audience}): ${truncatePromptText(post.content, MAX_INJECTED_POST_CHARS)}${comments ? ` [${commentLabel}: ${comments}]` : ''}`;
+    }), MAX_FEED_CONTEXT_CHARS);
     const configuredName = String(getFeedConfig()?.appName || '').trim();
     const appName = configuredName && configuredName !== 'Twatter'
         ? configuredName
@@ -549,6 +553,26 @@ export function initFeedAgent() {
         getQueue().clear('feed agent paused');
     });
     if (event_types.MESSAGE_SWIPED) eventSource.on(event_types.MESSAGE_SWIPED, syncInjection);
+    if (event_types.MESSAGE_DELETED) eventSource.on(event_types.MESSAGE_DELETED, messageIndex => {
+        feedChatEpoch += 1;
+        getQueue().clear('message deleted');
+        const start = deletedTailStart(chat, messageIndex);
+        const state = readState();
+        const posts = state.posts
+            .filter(post => !isAnchoredInDeletedTail(post, start))
+            .map(post => ({
+                ...post,
+                comments: post.comments.filter(comment => !isAnchoredInDeletedTail(comment, start)),
+                reactions: post.reactions.filter(reaction => !isAnchoredInDeletedTail(reaction, start)),
+            }));
+        if (JSON.stringify(posts) !== JSON.stringify(state.posts)) {
+            state.posts = posts;
+            writeState(state);
+            saveChatDebounced();
+        }
+        syncInjection();
+        notifyPostListeners(null);
+    });
     eventSource.on(event_types.CHAT_CHANGED, () => {
         feedChatEpoch += 1;
         getQueue().clear('chat changed');

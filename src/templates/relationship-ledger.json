@@ -4,10 +4,17 @@
     "description": "Relationships component for the State Card panel and single source of truth for relationship meters. Tracked per player persona (each persona keeps its own ledger; the panel and Dynamic Events see the active persona's slice). Records per-character meters, each character's interpretation of the bond, canonical milestones, and significant events without removing off-screen characters. Renders as its own section in the panel.",
     "icon": "fa-solid fa-people-arrows",
     "category": "tracker",
-    "tags": ["tracker", "relationships", "persistent", "meters", "milestones", "state"],
-    "version": 14,
+    "tags": [
+        "tracker",
+        "relationships",
+        "persistent",
+        "meters",
+        "milestones",
+        "state"
+    ],
+    "version": 16,
     "author": "",
-    "prompt": "### Relationship Ledger — Post-Generation Relationship Tracker\n\nROLE: Maintain a persistent relationship ledger for named characters whose relationship with {{user}} matters. This ledger is the single source of truth for relationship meters. Output ONLY the ledger block. No prose, commentary, or explanation.\n\nPERSONA SCOPING (apply first):\n- Relationships are tracked PER PLAYER PERSONA. The top level is \"personas\", keyed by persona name; each persona holds its own \"characters\" ledger. A player may alternate personas within one chat, and each keeps a separate relationship record.\n- Attribute this update to the CURRENTLY ACTIVE persona, whose name is {{user}}: create or update characters under personas.{{user}}.characters. PRESERVE every other persona already present unchanged — never delete or overwrite another persona's ledger.\n- Meters are directional from the named character toward the persona under which they are recorded.\n- If the current tracked state still uses an old top-level \"characters\" object without persona keys, migrate it under personas.{{user}}.\n\nOUTPUT FORMAT (compact JSON):\n[RELATIONSHIP_LEDGER]\n{\"personas\":{\"{{user}}\":{\"characters\":{\"Name\":{\"affection\":30,\"attraction\":10,\"trust\":25,\"comfort\":20,\"respect\":40,\"familiarity\":15,\"loyalty\":15,\"fear\":0,\"jealousy\":0,\"relationship\":\"New acquaintance\",\"interpretation\":\"Interested but cautious\",\"stance\":\"Polite and observant\",\"milestones\":[],\"significantEvents\":[]}}}}}\n[/RELATIONSHIP_LEDGER]\n\nCONTINUITY:\n1. Copy every existing character forward, including characters absent from the latest scene. Never delete an entry merely because someone is off-screen.\n2. Add a named character when they meaningfully interact with {{user}} or their relationship becomes narratively relevant. Do not add incidental crowds.\n3. Preserve values unless the latest scene provides evidence for change. Normal meter changes are 0–10 points. Fear and jealousy may move more sharply when the scene clearly warrants it.\n4. Numbers record pressures and dispositions; they do not invent milestones. High attraction does not prove acceptance, confession, consent, reciprocation, or an established romance.\n\nMETERS (0–100, directional from the named character toward {{user}}):\n- affection: warmth and fondness, whether platonic or romantic.\n- attraction: romantic or physical pull, independent of affection.\n- trust: belief in {{user}}'s honesty and safety.\n- comfort: ease with proximity, vulnerability, and unguarded behavior.\n- respect: esteem for {{user}}'s judgment, competence, or character.\n- familiarity: accumulated knowledge and shared history; it never decreases.\n- loyalty: willingness to act for {{user}} at personal cost.\n- fear: fear of {{user}} specifically, not general danger.\n- jealousy: current possessive or comparative tension concerning {{user}}.\n\nTEXT STATE:\n- relationship: the bond the character currently believes exists, stated plainly and without assuming reciprocity.\n- interpretation: how the character explains their own feelings to themself. This may differ sharply from the meters—for example, strong attraction rationalized as rivalry or protectiveness.\n- stance: the behavior posture they currently bring to interactions with {{user}}.\n\nRELATIONSHIP-ARC MILESTONES (use these exact labels only when canon supports them):\n- \"love acknowledged\": the character has privately or explicitly recognized their own love. Attraction, affection, genre expectation, or the narrator's guess is insufficient.\n- \"relationship constraint established\": a specific duty, danger, commitment, taboo, role, distance, incompatible goal, fear of harm, concealed identity, or other concrete obstacle canonically limits what the character can do about that love.\n- \"relationship constraint challenged\": the established obstacle was meaningfully tested in the story but remains in force.\n- \"relationship constraint transformed\": canon changed the obstacle's form or terms without necessarily removing it.\n- \"relationship constraint resolved\": canon removed the established obstacle. This does not establish reciprocation or a relationship.\n- \"shared meaningful vulnerability\": the character deliberately allowed {{user}} access to something personally consequential. Ordinary disclosure or accidental exposure is insufficient.\n- \"trust broken\": a canonical breach changed the character's willingness to rely on or grant access to {{user}}.\n- \"trust re-earned\": after a prior breach, canon shows the character recognizes meaningful repair. An apology or recovered score alone is insufficient.\n- \"betrayal by character established\": the tracked character canonically violated {{user}}'s justified reliance, commitment, loyalty, consent, or shared terms. Mere disappointment, incompatibility, secrecy allowed by the relationship, or an unresolved accusation is insufficient.\n- \"betrayal by persona established\": {{user}} canonically violated the tracked character's justified reliance, commitment, loyalty, consent, or shared terms. Do not infer this from the character's suspicion or write it to make a conflict symmetrical.\n- When both betrayal labels apply, preserve the two acts and harms separately. Mutual wrongdoing does not imply equal responsibility or cancellation.\n- Betrayal direction and trust-meter direction are distinct. If the character betrayed {{user}}, do not lower the character's trust in {{user}} unless canon separately changed it. Use \"trust broken\" only when the character's own reliance on {{user}} was breached.\n- \"betrayal confronted\": the established betrayal was openly named, questioned, admitted, or directly addressed. Discovery without confrontation is insufficient.\n- \"accountability accepted\": the responsible party explicitly acknowledges their action, its harm, and their responsibility without replacing acknowledgment with excuse. If {{user}} is responsible, add this only after {{user}} actually does so.\n- \"restitution attempted\": the responsible party began a concrete reparative action or accepted a real cost. A promise, apology, or intention alone is insufficient.\n- \"restitution demonstrated\": canon contains sustained or consequential evidence that reparative behavior changed something real. This does not establish forgiveness or restored relationship status.\n- \"forgiveness expressed\": the harmed party canonically offered forgiveness. If {{user}} was harmed, add this only after {{user}} actually expresses it. Forgiveness does not restore trust, access, contact, intimacy, or the former relationship.\n- \"relationship redefined after betrayal\": canon establishes durable new terms after the betrayal, including possible estrangement, ended contact, limited cooperation, cautious rebuilding, or restored partnership with changed boundaries. Do not assume a preferred outcome.\n- \"devotion established\": canon shows the tracked character holds a durable, action-relevant commitment to {{user}}. This may be romantic love, chosen family, sworn protection, comradeship, loyalty, or another bond, but affection, attraction, habit, dependence, or a single sacrifice is insufficient.\n- \"duty established\": canon gives the tracked character a concrete obligation beyond devotion to {{user}}, such as an office, oath, command, family responsibility, faction, cause, profession, dependents, law, or prior commitment. Name the actual duty in relationship, interpretation, stance, or significantEvents; do not create this milestone from generic busyness.\n- \"devotion and duty conflict established\": canon makes the established devotion and duty impossible to satisfy fully at the same time. Competing priorities or inconvenience alone are insufficient until the incompatibility and stakes become concrete.\n- \"duty chosen over devotion\": in a direct canonical conflict, the tracked character acted to fulfill the established duty at a meaningful cost to devotion or the bond. This records the choice, not moral correctness, ended devotion, or {{user}}'s reaction.\n- \"devotion chosen over duty\": in a direct canonical conflict, the tracked character acted for devotion to {{user}} at a meaningful cost to the established duty. This does not prove {{user}} requested, welcomes, rewards, or reciprocates the sacrifice, and it does not make the duty false or corrupt.\n- \"devotion and duty renegotiated\": canon establishes concrete new terms intended to carry both commitments differently, such as recusal, delegation, disclosure, changed office, divided time, limited contact, boundaries, or contingency plans. A proposal or private intention is insufficient.\n- \"devotion and duty reconciled\": canon materially resolves or integrates the prior conflict through fulfilled or released duty, durable new terms, transformed commitments, or another explicit solution. This does not erase costs, guarantee stakeholder approval, establish romance, or determine {{user}}'s participation.\n- Devotion and loyalty meter direction are related but not interchangeable. A high loyalty score does not establish devotion, duty, conflict, or a canonical choice. Choosing duty does not prove devotion false; choosing devotion does not prove duty insincere.\n- If both choice milestones eventually occur, preserve their order, circumstances, stakeholders, and costs separately. A later opposite choice does not cancel the earlier one or prove a final hierarchy between devotion and duty.\n- Affection may remain high behind low trust. Preserve that warmth without using it to unlock access, consent, private space, touch, secrets, or vulnerability.\n- After \"trust broken\", positive trust changes normally remain 0–5 and require fresh evidence of reliability; restore permissions one at a time rather than snapping back to the former relationship.\n\n\nCANON:\n- milestones: short, durable facts that change what the relationship can mean, such as \"confessed attraction\", \"first kiss\", \"agreed to date\", \"trust broken\", or \"reconciled after betrayal\". Preserve all previous milestones. Add one only when it actually occurred in prose.\n- significantEvents: retain up to 12 concise relationship-defining events. Preserve the most consequential; replace the least useful only when the limit is reached.\n\nRULES:\n- Track each narrative character under their actual name, not the scenario card title, unless the card title truly is that character's name.\n- In multi-character and scenario cards, maintain separate entries for each relevant character.\n- Never equate a score threshold with an event that did not happen.\n- Output valid compact JSON and only the required block.",
+    "prompt": "### Relationship Ledger — Post-Generation Relationship Tracker\n\nROLE: Maintain a persistent relationship ledger for named characters whose relationship with {{user}} matters. This ledger is the single source of truth for relationship meters. Output ONLY the ledger block. No prose, commentary, or explanation.\n\nPERSONA SCOPING (apply first):\n- Relationships are tracked PER PLAYER PERSONA. The top level is \"personas\", keyed by persona name; each persona holds its own \"characters\" ledger. A player may alternate personas within one chat, and each keeps a separate relationship record.\n- Attribute this update to the CURRENTLY ACTIVE persona, whose name is {{user}}: create or update characters under personas.{{user}}.characters. PRESERVE every other persona already present unchanged — never delete or overwrite another persona's ledger.\n- Meters are directional from the named character toward the persona under which they are recorded.\n- If the current tracked state still uses an old top-level \"characters\" object without persona keys, migrate it under personas.{{user}}.\n\nOUTPUT FORMAT (compact JSON):\n[RELATIONSHIP_LEDGER]\n{\"personas\":{\"{{user}}\":{\"characters\":{\"Name\":{\"affection\":30,\"attraction\":10,\"trust\":25,\"comfort\":20,\"respect\":40,\"familiarity\":15,\"loyalty\":15,\"fear\":0,\"jealousy\":0,\"relationship\":\"New acquaintance\",\"interpretation\":\"Interested but cautious\",\"stance\":\"Polite and observant\",\"milestones\":[],\"significantEvents\":[]}}}}}\n[/RELATIONSHIP_LEDGER]\n\nCONTINUITY:\n1. Copy every existing character forward, including characters absent from the latest scene. Never delete an entry merely because someone is off-screen.\n2. Add a named character when they meaningfully interact with {{user}} or their relationship becomes narratively relevant. Do not add incidental crowds.\n3. Preserve values unless the latest scene provides evidence for change. Normal meter changes are 0–10 points. Fear and jealousy may move more sharply when the scene clearly warrants it.\n4. Numbers record pressures and dispositions; they do not invent milestones. High attraction does not prove acceptance, confession, consent, reciprocation, or an established romance.\n\nMETERS (0–100, directional from the named character toward {{user}}):\n- affection: warmth and fondness, whether platonic or romantic.\n- attraction: romantic or physical pull, independent of affection.\n- trust: belief in {{user}}'s honesty and safety.\n- comfort: ease with proximity, vulnerability, and unguarded behavior.\n- respect: esteem for {{user}}'s judgment, competence, or character.\n- familiarity: accumulated knowledge and shared history; it never decreases.\n- loyalty: willingness to act for {{user}} at personal cost.\n- fear: fear of {{user}} specifically, not general danger.\n- jealousy: current possessive or comparative tension concerning {{user}}.\n\nTEXT STATE:\n- relationship: the bond the character currently believes exists, stated plainly and without assuming reciprocity.\n- interpretation: how the character explains their own feelings to themself. This may differ sharply from the meters—for example, strong attraction rationalized as rivalry or protectiveness.\n- stance: the behavior posture they currently bring to interactions with {{user}}.\n\nRELATIONSHIP-ARC MILESTONES (use these exact labels only when canon supports them):\n- \"love acknowledged\": the character has privately or explicitly recognized their own love. Attraction, affection, genre expectation, or the narrator's guess is insufficient.\n- \"relationship constraint established\": a specific duty, danger, commitment, taboo, role, distance, incompatible goal, fear of harm, concealed identity, or other concrete obstacle canonically limits what the character can do about that love.\n- \"relationship constraint challenged\": the established obstacle was meaningfully tested in the story but remains in force.\n- \"relationship constraint transformed\": canon changed the obstacle's form or terms without necessarily removing it.\n- \"relationship constraint resolved\": canon removed the established obstacle. This does not establish reciprocation or a relationship.\n- \"shared meaningful vulnerability\": the character deliberately allowed {{user}} access to something personally consequential. Ordinary disclosure or accidental exposure is insufficient.\n- \"trust broken\": a canonical breach changed the character's willingness to rely on or grant access to {{user}}.\n- \"trust re-earned\": after a prior breach, canon shows the character recognizes meaningful repair. An apology or recovered score alone is insufficient.\n- \"betrayal by character established\": the tracked character canonically violated {{user}}'s justified reliance, commitment, loyalty, consent, or shared terms. Mere disappointment, incompatibility, secrecy allowed by the relationship, or an unresolved accusation is insufficient.\n- \"betrayal by persona established\": {{user}} canonically violated the tracked character's justified reliance, commitment, loyalty, consent, or shared terms. Do not infer this from the character's suspicion or write it to make a conflict symmetrical.\n- When both betrayal labels apply, preserve the two acts and harms separately. Mutual wrongdoing does not imply equal responsibility or cancellation.\n- Betrayal direction and trust-meter direction are distinct. If the character betrayed {{user}}, do not lower the character's trust in {{user}} unless canon separately changed it. Use \"trust broken\" only when the character's own reliance on {{user}} was breached.\n- \"betrayal confronted\": the established betrayal was openly named, questioned, admitted, or directly addressed. Discovery without confrontation is insufficient.\n- \"accountability accepted\": the responsible party explicitly acknowledges their action, its harm, and their responsibility without replacing acknowledgment with excuse. If {{user}} is responsible, add this only after {{user}} actually does so.\n- \"restitution attempted\": the responsible party began a concrete reparative action or accepted a real cost. A promise, apology, or intention alone is insufficient.\n- \"restitution demonstrated\": canon contains sustained or consequential evidence that reparative behavior changed something real. This does not establish forgiveness or restored relationship status.\n- \"forgiveness expressed\": the harmed party canonically offered forgiveness. If {{user}} was harmed, add this only after {{user}} actually expresses it. Forgiveness does not restore trust, access, contact, intimacy, or the former relationship.\n- \"relationship redefined after betrayal\": canon establishes durable new terms after the betrayal, including possible estrangement, ended contact, limited cooperation, cautious rebuilding, or restored partnership with changed boundaries. Do not assume a preferred outcome.\n- \"sexual intimacy established\": canon shows the tracked character and {{user}} engaged in sexual contact together. This records shared history only; it does not establish satisfaction, romance, exclusivity, future consent, or any particular act beyond what canon actually shows.\n- \"sexual boundary explicitly established\": the tracked character or {{user}} plainly stated a concrete sexual limit, condition, or preference that became part of their interaction. Preserve who stated it and the actual terms in significantEvents. Hesitation, assumption, generic safety advice, or a score is insufficient.\n- \"sexual boundary explicitly revised\": canon explicitly changed a previously established sexual boundary or term. Preserve the earlier boundary and record who changed what and in which direction in significantEvents. Participation, silence, arousal, or one exception does not create a blanket revision.\n- \"relationship redefined after sexual intimacy\": after established sexual intimacy, canon explicitly creates durable new relationship terms. Sex alone, affection, attraction, awkwardness, regret, or genre expectation is insufficient; the new terms may be closer, more distant, casual, formal, conditional, temporary, or otherwise canonically stated.\n- \"devotion established\": canon shows the tracked character holds a durable, action-relevant commitment to {{user}}. This may be romantic love, chosen family, sworn protection, comradeship, loyalty, or another bond, but affection, attraction, habit, dependence, or a single sacrifice is insufficient.\n- \"duty established\": canon gives the tracked character a concrete obligation beyond devotion to {{user}}, such as an office, oath, command, family responsibility, faction, cause, profession, dependents, law, or prior commitment. Name the actual duty in relationship, interpretation, stance, or significantEvents; do not create this milestone from generic busyness.\n- \"devotion and duty conflict established\": canon makes the established devotion and duty impossible to satisfy fully at the same time. Competing priorities or inconvenience alone are insufficient until the incompatibility and stakes become concrete.\n- \"duty chosen over devotion\": in a direct canonical conflict, the tracked character acted to fulfill the established duty at a meaningful cost to devotion or the bond. This records the choice, not moral correctness, ended devotion, or {{user}}'s reaction.\n- \"devotion chosen over duty\": in a direct canonical conflict, the tracked character acted for devotion to {{user}} at a meaningful cost to the established duty. This does not prove {{user}} requested, welcomes, rewards, or reciprocates the sacrifice, and it does not make the duty false or corrupt.\n- \"devotion and duty renegotiated\": canon establishes concrete new terms intended to carry both commitments differently, such as recusal, delegation, disclosure, changed office, divided time, limited contact, boundaries, or contingency plans. A proposal or private intention is insufficient.\n- \"devotion and duty reconciled\": canon materially resolves or integrates the prior conflict through fulfilled or released duty, durable new terms, transformed commitments, or another explicit solution. This does not erase costs, guarantee stakeholder approval, establish romance, or determine {{user}}'s participation.\n- Devotion and loyalty meter direction are related but not interchangeable. A high loyalty score does not establish devotion, duty, conflict, or a canonical choice. Choosing duty does not prove devotion false; choosing devotion does not prove duty insincere.\n- If both choice milestones eventually occur, preserve their order, circumstances, stakeholders, and costs separately. A later opposite choice does not cancel the earlier one or prove a final hierarchy between devotion and duty.\n- Affection may remain high behind low trust. Preserve that warmth without using it to unlock access, consent, private space, touch, secrets, or vulnerability.\n- After \"trust broken\", positive trust changes normally remain 0–5 and require fresh evidence of reliability; restore permissions one at a time rather than snapping back to the former relationship.\n\n\nCANON:\n- milestones: short, durable facts that change what the relationship can mean, such as \"confessed attraction\", \"first kiss\", \"agreed to date\", \"trust broken\", or \"reconciled after betrayal\". Preserve all previous milestones. Add one only when it actually occurred in prose.\n- significantEvents: retain up to 12 concise relationship-defining events. Preserve the most consequential; replace the least useful only when the limit is reached.\n\nRULES:\n- Track each narrative character under their actual name, not the scenario card title, unless the card title truly is that character's name.\n- In multi-character and scenario cards, maintain separate entries for each relevant character.\n- Never equate a score threshold with an event that did not happen.\n- Output valid compact JSON and only the required block.",
     "phase": "post",
     "injection": {
         "position": 1,
@@ -43,45 +50,156 @@
             "jsonField": "json",
             "schemaVersion": 3,
             "invariants": [
-                { "type": "nondecreasing", "path": "personas.*.characters.*.familiarity" },
-                { "type": "maxDelta", "path": "personas.*.characters.*.affection", "maximum": 10 },
-                { "type": "maxDelta", "path": "personas.*.characters.*.attraction", "maximum": 10 },
-                { "type": "maxDelta", "path": "personas.*.characters.*.trust", "maximum": 10 },
-                { "type": "maxDelta", "path": "personas.*.characters.*.comfort", "maximum": 10 },
-                { "type": "maxDelta", "path": "personas.*.characters.*.respect", "maximum": 10 },
-                { "type": "maxDelta", "path": "personas.*.characters.*.loyalty", "maximum": 10 },
-                { "type": "appendOnlySet", "path": "personas.*.characters.*.milestones" }
+                {
+                    "type": "nondecreasing",
+                    "path": "personas.*.characters.*.familiarity"
+                },
+                {
+                    "type": "maxDelta",
+                    "path": "personas.*.characters.*.affection",
+                    "maximum": 10
+                },
+                {
+                    "type": "maxDelta",
+                    "path": "personas.*.characters.*.attraction",
+                    "maximum": 10
+                },
+                {
+                    "type": "maxDelta",
+                    "path": "personas.*.characters.*.trust",
+                    "maximum": 10
+                },
+                {
+                    "type": "maxDelta",
+                    "path": "personas.*.characters.*.comfort",
+                    "maximum": 10
+                },
+                {
+                    "type": "maxDelta",
+                    "path": "personas.*.characters.*.respect",
+                    "maximum": 10
+                },
+                {
+                    "type": "maxDelta",
+                    "path": "personas.*.characters.*.loyalty",
+                    "maximum": 10
+                },
+                {
+                    "type": "appendOnlySet",
+                    "path": "personas.*.characters.*.milestones"
+                }
             ],
             "schema": {
                 "type": "object",
-                "required": ["personas"],
+                "required": [
+                    "personas"
+                ],
                 "properties": {
                     "personas": {
                         "type": "object",
                         "additionalProperties": {
                             "type": "object",
-                            "required": ["characters"],
+                            "required": [
+                                "characters"
+                            ],
                             "properties": {
                                 "characters": {
                                     "type": "object",
                                     "additionalProperties": {
                                         "type": "object",
-                                        "required": ["affection", "attraction", "trust", "comfort", "respect", "familiarity", "loyalty", "fear", "jealousy", "relationship", "interpretation", "stance", "milestones", "significantEvents"],
+                                        "required": [
+                                            "affection",
+                                            "attraction",
+                                            "trust",
+                                            "comfort",
+                                            "respect",
+                                            "familiarity",
+                                            "loyalty",
+                                            "fear",
+                                            "jealousy",
+                                            "relationship",
+                                            "interpretation",
+                                            "stance",
+                                            "milestones",
+                                            "significantEvents"
+                                        ],
                                         "properties": {
-                                            "affection": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "attraction": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "trust": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "comfort": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "respect": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "familiarity": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "loyalty": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "fear": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "jealousy": { "type": "number", "minimum": 0, "maximum": 100 },
-                                            "relationship": { "type": "string", "minLength": 1, "maxLength": 120 },
-                                            "interpretation": { "type": "string", "minLength": 1, "maxLength": 180 },
-                                            "stance": { "type": "string", "minLength": 1, "maxLength": 180 },
-                                            "milestones": { "type": "array", "maxItems": 30, "items": { "type": "string", "maxLength": 120 } },
-                                            "significantEvents": { "type": "array", "maxItems": 12, "items": { "type": "string", "maxLength": 220 } }
+                                            "affection": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "attraction": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "trust": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "comfort": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "respect": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "familiarity": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "loyalty": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "fear": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "jealousy": {
+                                                "type": "number",
+                                                "minimum": 0,
+                                                "maximum": 100
+                                            },
+                                            "relationship": {
+                                                "type": "string",
+                                                "minLength": 1,
+                                                "maxLength": 120
+                                            },
+                                            "interpretation": {
+                                                "type": "string",
+                                                "minLength": 1,
+                                                "maxLength": 180
+                                            },
+                                            "stance": {
+                                                "type": "string",
+                                                "minLength": 1,
+                                                "maxLength": 180
+                                            },
+                                            "milestones": {
+                                                "type": "array",
+                                                "maxItems": 30,
+                                                "items": {
+                                                    "type": "string",
+                                                    "maxLength": 120
+                                                }
+                                            },
+                                            "significantEvents": {
+                                                "type": "array",
+                                                "maxItems": 12,
+                                                "items": {
+                                                    "type": "string",
+                                                    "maxLength": 220
+                                                }
+                                            }
                                         },
                                         "additionalProperties": false
                                     }
@@ -98,7 +216,9 @@
         "personaScoped": true,
         "variableName": "sa_relationship_ledger",
         "extractPattern": "\\[RELATIONSHIP_LEDGER\\]\\s*([\\s\\S]*?)\\s*\\[\\/RELATIONSHIP_LEDGER\\]",
-        "fieldNames": ["json"],
+        "fieldNames": [
+            "json"
+        ],
         "keyFields": [],
         "mode": "snapshot",
         "stripFromResponse": true,
@@ -109,7 +229,7 @@
         "mainContext": {
             "presencePath": "characters",
             "formatHeader": "CURRENT RELATIONSHIP STATE for the active persona ({{user}}):",
-            "formatItem": "<relationship_state>\nRead-only, directional context. Each entry describes a character's feelings and interpretation toward the active persona; it does not describe the persona's feelings or guarantee future behavior.\n\n{{#each json.characters}}- {{@key}} → active persona\n  Relationship: {{relationship}}\n  Affection {{affection}}/100 | Attraction {{attraction}}/100 | Trust {{trust}}/100 | Comfort {{comfort}}/100 | Respect {{respect}}/100\n  Familiarity {{familiarity}}/100 | Loyalty {{loyalty}}/100 | Fear {{fear}}/100 | Jealousy {{jealousy}}/100\n  Interpretation: {{interpretation}}\n  Current stance: {{stance}}\n{{#if milestones}}  Milestones: {{milestones}}\n{{/if}}{{#if significantEvents}}  Significant events: {{significantEvents}}\n{{/if}}{{/each}}</relationship_state>",
+            "formatItem": "<relationship_state>\nRead-only, directional context. Each entry describes a character's feelings and interpretation toward the active persona; it does not describe the persona's feelings or guarantee future behavior.\n\n{{#each json.characters}}- {{@key}} → {{@root.user}}\n  Relationship: {{relationship}}\n  Affection {{affection}}/100 | Attraction {{attraction}}/100 | Trust {{trust}}/100 | Comfort {{comfort}}/100 | Respect {{respect}}/100\n  Familiarity {{familiarity}}/100 | Loyalty {{loyalty}}/100 | Fear {{fear}}/100 | Jealousy {{jealousy}}/100\n  Interpretation: {{interpretation}}\n  Current stance: {{stance}}\n{{#if milestones}}  Milestones: {{milestones}}\n{{/if}}{{#if significantEvents}}  Significant events: {{significantEvents}}\n{{/if}}{{/each}}</relationship_state>",
             "formatEmpty": ""
         }
     },
@@ -119,20 +239,76 @@
         "order": 20,
         "schema": {
             "characterTextFields": [
-                { "key": "relationship", "label": "Relationship", "type": "badge", "badgeColor": "#AFA9EC" },
-                { "key": "interpretation", "label": "Interpretation" },
-                { "key": "stance", "label": "Stance" }
+                {
+                    "key": "relationship",
+                    "label": "Relationship",
+                    "type": "badge",
+                    "badgeColor": "#AFA9EC"
+                },
+                {
+                    "key": "interpretation",
+                    "label": "Interpretation"
+                },
+                {
+                    "key": "stance",
+                    "label": "Stance"
+                }
             ],
             "meters": [
-                { "key": "affection", "label": "Affection", "color": "#7F77DD", "max": 100 },
-                { "key": "attraction", "label": "Attraction", "color": "#D4537E", "max": 100 },
-                { "key": "trust", "label": "Trust", "color": "#5DCAA5", "max": 100 },
-                { "key": "comfort", "label": "Comfort", "color": "#6AAED6", "max": 100 },
-                { "key": "respect", "label": "Respect", "color": "#D19A52", "max": 100 },
-                { "key": "familiarity", "label": "Familiarity", "color": "#9A8C7A", "max": 100 },
-                { "key": "loyalty", "label": "Loyalty", "color": "#378ADD", "max": 100 },
-                { "key": "fear", "label": "Fear", "color": "#C0554D", "max": 100 },
-                { "key": "jealousy", "label": "Jealousy", "color": "#9D6FB0", "max": 100 }
+                {
+                    "key": "affection",
+                    "label": "Affection",
+                    "color": "#7F77DD",
+                    "max": 100
+                },
+                {
+                    "key": "attraction",
+                    "label": "Attraction",
+                    "color": "#D4537E",
+                    "max": 100
+                },
+                {
+                    "key": "trust",
+                    "label": "Trust",
+                    "color": "#5DCAA5",
+                    "max": 100
+                },
+                {
+                    "key": "comfort",
+                    "label": "Comfort",
+                    "color": "#6AAED6",
+                    "max": 100
+                },
+                {
+                    "key": "respect",
+                    "label": "Respect",
+                    "color": "#D19A52",
+                    "max": 100
+                },
+                {
+                    "key": "familiarity",
+                    "label": "Familiarity",
+                    "color": "#9A8C7A",
+                    "max": 100
+                },
+                {
+                    "key": "loyalty",
+                    "label": "Loyalty",
+                    "color": "#378ADD",
+                    "max": 100
+                },
+                {
+                    "key": "fear",
+                    "label": "Fear",
+                    "color": "#C0554D",
+                    "max": 100
+                },
+                {
+                    "key": "jealousy",
+                    "label": "Jealousy",
+                    "color": "#9D6FB0",
+                    "max": 100
+                }
             ]
         }
     },
@@ -142,7 +318,10 @@
     "conditions": {
         "triggerKeywords": [],
         "triggerProbability": 100,
-        "generationTypes": ["normal", "continue"]
+        "generationTypes": [
+            "normal",
+            "continue"
+        ]
     },
     "groupId": null,
     "sourceTemplateId": "tpl-relationship-ledger"

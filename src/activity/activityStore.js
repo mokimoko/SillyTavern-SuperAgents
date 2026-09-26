@@ -1,5 +1,7 @@
 /** Pure normalization, branch projection, and read-state helpers for Activity. */
 
+import { compactBranchPath, isBranchPathVisible } from '../core/branchPath.js';
+
 export const ACTIVITY_STATE_VERSION = 1;
 export const MAX_ACTIVITY_ARTIFACTS = 200;
 
@@ -57,9 +59,7 @@ export function normalizeActivityArtifact(artifact = {}) {
     const visibility = ['persona', 'shared', 'public'].includes(artifact.visibility)
         ? artifact.visibility
         : 'persona';
-    const branchPath = Array.isArray(artifact.branchPath)
-        ? artifact.branchPath.map(value => Math.max(0, Number(value) || 0)).slice(0, 500)
-        : null;
+    const branchPath = compactBranchPath(artifact.branchPath);
 
     const timestamp = Number(artifact.timestamp || Date.now());
     return {
@@ -101,11 +101,10 @@ export function normalizeActivityState(state = {}) {
 }
 
 export function isActivityArtifactVisible(artifact, chat, options = {}, currentPath = null) {
-    const storedPath = Array.isArray(artifact?.branchPath) ? artifact.branchPath : null;
-    if (storedPath?.length) {
+    const storedPath = compactBranchPath(artifact?.branchPath);
+    if (storedPath) {
         const resolvedPath = currentPath || resolveActivityBranch(chat, options).branchPath;
-        if (!resolvedPath || resolvedPath.length < storedPath.length) return false;
-        return storedPath.every((swipeId, index) => resolvedPath[index] === swipeId);
+        return isBranchPathVisible(storedPath, resolvedPath);
     }
 
     if (artifact?.messageIndex == null || !Number.isInteger(Number(artifact.messageIndex))) return true;
@@ -116,7 +115,7 @@ export function isActivityArtifactVisible(artifact, chat, options = {}, currentP
 
 export function projectActivityState(state, chat, options = {}) {
     const normalized = normalizeActivityState(state);
-    const currentPath = resolveActivityBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveActivityBranch(chat, options).branchPath);
     const artifacts = normalized.artifacts.filter(artifact => (
         isActivityArtifactVisible(artifact, chat, options, currentPath)
     ));
@@ -138,6 +137,30 @@ export function upsertActivityArtifact(state, artifact) {
     normalized.artifacts = normalized.artifacts.slice(-MAX_ACTIVITY_ARTIFACTS);
     normalized.lastActivity = Math.max(normalized.lastActivity, next.timestamp, Date.now());
     return { state: normalized, artifact: next, created };
+}
+
+export function upsertActivityArtifacts(state, artifacts) {
+    const normalized = normalizeActivityState(state);
+    const indexes = new Map(normalized.artifacts.map((artifact, index) => [artifact.id, index]));
+    let changed = 0;
+    for (const artifact of artifacts) {
+        const next = normalizeActivityArtifact(artifact);
+        if (!next) continue;
+        const index = indexes.get(next.id);
+        if (index === undefined) {
+            indexes.set(next.id, normalized.artifacts.length);
+            normalized.artifacts.push(next);
+        } else {
+            normalized.artifacts[index] = { ...normalized.artifacts[index], ...next };
+        }
+        normalized.lastActivity = Math.max(normalized.lastActivity, next.timestamp);
+        changed++;
+    }
+    if (changed) {
+        normalized.artifacts = normalized.artifacts.slice(-MAX_ACTIVITY_ARTIFACTS);
+        normalized.lastActivity = Math.max(normalized.lastActivity, Date.now());
+    }
+    return { state: normalized, changed };
 }
 
 export function markActivityRead(state, artifactId) {
@@ -169,7 +192,7 @@ export function removeSourceArtifacts(state, sourceApp, sourceIds = []) {
 
 export function markVisibleActivityRead(state, chat, options = {}) {
     const normalized = normalizeActivityState(state);
-    const currentPath = resolveActivityBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolveActivityBranch(chat, options).branchPath);
     for (const artifact of normalized.artifacts) {
         if (isActivityArtifactVisible(artifact, chat, options, currentPath)) artifact.unread = false;
     }

@@ -26,7 +26,7 @@
  * CSS prefix: sam- (super-agents modal). Shared tokens come from style.css.
  */
 
-import { MODULE_NAME, debug } from '../../index.js';
+import { MODULE_NAME, debug } from '../core/runtime.js';
 import {
     getAgents,
     getAgentById,
@@ -34,6 +34,7 @@ import {
     toggleAgentPaused,
     deleteAgent,
     deleteAgents,
+    reorderAgents,
     setAgentsEnabled,
     getGlobalSettings,
     setGlobalSettings,
@@ -42,11 +43,13 @@ import {
     deleteGroup,
     toggleGroup,
     instantiateTemplate,
+    applyUsageModeToLibraryAgents,
 } from '../data/store.js';
 import { AGENT_CATEGORIES } from '../data/normalize.js';
 import { readMergeArray, clearAgentChatState } from '../modes/mergeVariable.js';
 import { resolveAgentIcon, resolveGroupIcon } from './iconResolver.js';
 import { listBuiltInTemplates } from '../data/templateSync.js';
+import { isTemplateLinked } from '../data/templateLink.js';
 import { importAgents, exportAllAgents, exportAgent } from '../data/importExport.js';
 import { runAgentOnLastMessage, runGroupOnLastMessage, rerollAgentPreGen } from '../core/lifecycle.js';
 import { renderAgentEditor } from './editor.js';
@@ -78,6 +81,7 @@ import {
     syncWeatherCycleIntegration,
 } from '../integration/weatherCycle.js';
 import { listConnectionProfiles } from '../core/profiles.js';
+import { bindAgentListOrdering, sortAgentsForStacking } from './agentListOrdering.js';
 
 const LOG_PREFIX = '[SuperAgents/modal]';
 
@@ -108,6 +112,24 @@ let editingAgentId = null;
 // shows the group editor instead of the active tab. editingGroupId null = new.
 let groupEditorOpen = false;
 let editingGroupId = null;
+let disposeEditorView = null;
+
+function cleanupEditorView() {
+    const dispose = disposeEditorView;
+    disposeEditorView = null;
+    if (typeof dispose === 'function') {
+        dispose();
+        return;
+    }
+    // Keep the modal closable if a future editor renderer becomes async.
+    if (dispose && typeof dispose.then === 'function') {
+        void dispose
+            .then(resolved => {
+                if (typeof resolved === 'function') resolved();
+            })
+            .catch(error => console.error(`${LOG_PREFIX} editor cleanup failed`, error));
+    }
+}
 
 /**
  * Registered floating-panel controls, surfaced as toggles in the Settings tab.
@@ -185,6 +207,7 @@ export function openModal(tab = null) {
 /** Close the modal (DOM is kept for reuse). */
 export function closeModal() {
     if (!isOpen) return;
+    cleanupEditorView();
     document.getElementById(OVERLAY_ID)?.classList.remove('sam-visible');
     document.getElementById(MODAL_ID)?.classList.remove('sam-visible');
     clearAgentSelection();
@@ -256,6 +279,7 @@ function renderRail() {
 
     rail.querySelectorAll('.sam-rail-item').forEach(el => {
         el.addEventListener('click', () => {
+            cleanupEditorView();
             editorOpen = false;       // leave the editor sub-view on any tab switch
             editingAgentId = null;
             groupEditorOpen = false;  // and the group editor sub-view
@@ -267,13 +291,14 @@ function renderRail() {
 }
 
 function renderContent() {
+    cleanupEditorView();
     renderRail();
     const content = document.getElementById('sam-content');
     if (!content) return;
 
     // Editor sub-view takes over the content pane when open.
     if (editorOpen) {
-        renderAgentEditor(content, editingAgentId, {
+        disposeEditorView = renderAgentEditor(content, editingAgentId, {
             onSaved: () => { editorOpen = false; editingAgentId = null; activeTab = 'manage'; renderContent(); },
             onCancel: () => { editorOpen = false; editingAgentId = null; renderContent(); },
         });
@@ -282,7 +307,7 @@ function renderContent() {
 
     // Group-editor sub-view likewise takes over the content pane when open.
     if (groupEditorOpen) {
-        renderGroupEditor(content, editingGroupId, {
+        disposeEditorView = renderGroupEditor(content, editingGroupId, {
             onSaved: () => { groupEditorOpen = false; editingGroupId = null; activeTab = 'groups'; renderContent(); },
             onCancel: () => { groupEditorOpen = false; editingGroupId = null; activeTab = 'groups'; renderContent(); },
         });
@@ -303,7 +328,7 @@ function renderContent() {
 // ============================================================================
 
 function renderManageTab(container) {
-    const agents = getAgents();
+    const agents = sortAgentsForStacking(getAgents());
     const agentIds = agents.map(agent => agent.id);
     const selectionState = getAgentSelectionState(agentIds);
     const selectedIds = getSelectedAgentIds();
@@ -402,6 +427,7 @@ function renderAgentCard(agent, bulkSelected = false) {
         : 'title="Run on last message"';
     return `
     <div class="sam-card sam-agent-card ${bulkSelected ? 'sam-bulk-selected' : ''} ${agent.paused ? 'sam-agent-frozen' : ''}" data-agent-id="${agent.id}" aria-selected="${bulkSelected}">
+        <button type="button" class="sam-agent-drag-handle" draggable="true" title="Drag to change stacking order" aria-label="Reorder ${esc(agent.name || 'Unnamed')}" aria-grabbed="false"><i class="fa-solid fa-grip-vertical" aria-hidden="true"></i></button>
         <label class="sam-agent-select" title="Select this agent for bulk actions">
             <input type="checkbox" data-act="select-agent" data-id="${agent.id}" ${bulkSelected ? 'checked' : ''} aria-label="Select ${esc(agent.name || 'Unnamed')} for bulk actions">
         </label>
@@ -494,9 +520,13 @@ function bindManageTab(container) {
 
     container.querySelectorAll('#sam-agent-list .sam-agent-card').forEach(card => {
         card.addEventListener('click', event => {
-            if (event.target.closest('button, input, label, .sam-card-actions')) return;
+            if (event.target.closest('button, input, label, .sam-card-actions, .sam-agent-drag-handle')) return;
             onEditAgent(card.dataset.agentId);
         });
+    });
+
+    bindAgentListOrdering(container.querySelector('#sam-agent-list'), orderedIds => {
+        if (reorderAgents(orderedIds)) reconcilePanels();
     });
 }
 
@@ -519,12 +549,18 @@ function bindGroupsTab(container) {
 
 function refreshManage() {
     const content = document.getElementById('sam-content');
-    if (content && activeTab === 'manage') renderManageTab(content);
+    if (content && activeTab === 'manage') rerenderPreservingScroll(content, renderManageTab);
 }
 
 function refreshGroups() {
     const content = document.getElementById('sam-content');
-    if (content && activeTab === 'groups') renderGroupsTab(content);
+    if (content && activeTab === 'groups') rerenderPreservingScroll(content, renderGroupsTab);
+}
+
+function rerenderPreservingScroll(container, renderer) {
+    const scrollTop = container.scrollTop;
+    renderer(container);
+    container.scrollTop = scrollTop;
 }
 
 async function onDeleteAgent(id) {
@@ -669,6 +705,8 @@ function renderSettingsTab(container) {
     const globalSettings = getGlobalSettings();
     const connectionProfiles = listConnectionProfiles();
     const defaultConnectionEnabled = globalSettings.useDefaultConnection === true;
+    const economyMode = globalSettings.economyMode === true;
+    const deferPostAgentsOnSwipe = globalSettings.deferPostAgentsOnSwipe === true;
     const defaultConnectionRef = String(globalSettings.connectionProfile || '');
     const selectedDefaultProfile = connectionProfiles.find(profile =>
         profile.name === defaultConnectionRef || profile.id === defaultConnectionRef,
@@ -743,6 +781,34 @@ function renderSettingsTab(container) {
                 </label>
             </div>
         </div>
+        <div class="sam-divider-label"><i class="fa-solid fa-leaf"></i> Usage</div>
+        <div class="sam-row">
+            <div class="sam-row-info">
+                <div class="sam-row-title">Economy Mode</div>
+                <div class="sam-row-desc">New agents added from the built-in Library use curated lower-call cadences. Existing and custom agents remain unchanged until you explicitly apply the mode.</div>
+            </div>
+            <label class="sam-switch" title="Use Economy defaults for future Library agents">
+                <input type="checkbox" data-setting="economyMode" ${economyMode ? 'checked' : ''}>
+                <span class="sam-switch-track"></span>
+            </label>
+        </div>
+        <div class="sam-row">
+            <div class="sam-row-info">
+                <div class="sam-row-title">Defer post-agents while swiping</div>
+                <div class="sam-row-desc">Skip automatic post-reply model calls on swipes and regenerations, then catch them up once after your next regular reply. Pre-generation helpers still prepare each reroll.</div>
+            </div>
+            <label class="sam-switch" title="Defer post-generation agents while choosing a swipe">
+                <input type="checkbox" data-setting="deferPostAgentsOnSwipe" ${deferPostAgentsOnSwipe ? 'checked' : ''}>
+                <span class="sam-switch-track"></span>
+            </label>
+        </div>
+        <div class="sam-row">
+            <div class="sam-row-info">
+                <div class="sam-row-title">Apply ${economyMode ? 'Economy' : 'Standard'} defaults now</div>
+                <div class="sam-row-desc">Update cadence, swipe behavior, snapshot reuse, and cadence-safe history windows on existing Library agents. Custom agents are never changed.</div>
+            </div>
+            <button class="sam-btn sam-btn-sm sam-apply-usage-btn" data-act="apply-usage-mode" type="button">Apply to existing</button>
+        </div>
         <div class="sam-divider-label"><i class="fa-solid fa-sliders"></i> General</div>
         <div class="sam-row">
             <div class="sam-row-info">
@@ -768,6 +834,16 @@ function renderSettingsTab(container) {
                 <div class="sam-row-desc">Drag the Story Apps button row anywhere on screen. Reset returns it to the top-left corner.</div>
             </div>
             <button class="sam-btn sam-btn-sm" data-act="reset-story-apps" type="button">Reset</button>
+        </div>
+        <div class="sam-row">
+            <div class="sam-row-info">
+                <div class="sam-row-title">Enable Group Chat</div>
+                <div class="sam-row-desc">Show the OOC writers’ room in Utilities. Turning this off also stops autonomous Group Chat commentary.</div>
+            </div>
+            <label class="sam-switch">
+                <input type="checkbox" data-setting="groupChatEnabled" ${globalSettings.groupChatEnabled !== false ? 'checked' : ''}>
+                <span class="sam-switch-track"></span>
+            </label>
         </div>
         <div class="sam-row">
             <div class="sam-row-info">
@@ -849,8 +925,47 @@ function renderSettingsTab(container) {
     container.querySelector('[data-setting="connectionProfile"]')?.addEventListener('change', function () {
         setGlobalSettings({ connectionProfile: this.value || '' });
     });
+    container.querySelector('[data-setting="economyMode"]')?.addEventListener('change', function () {
+        setGlobalSettings({ economyMode: this.checked });
+        renderSettingsTab(container);
+    });
+    container.querySelector('[data-setting="deferPostAgentsOnSwipe"]')?.addEventListener('change', function () {
+        setGlobalSettings({ deferPostAgentsOnSwipe: this.checked });
+    });
+    container.querySelector('[data-act="apply-usage-mode"]')?.addEventListener('click', async () => {
+        const useEconomy = getGlobalSettings().economyMode === true;
+        const label = useEconomy ? 'Economy' : 'Standard';
+        const confirmed = await samConfirm(
+            `Apply ${label} usage defaults to all existing Library agents? This replaces their current cadence-related settings, but leaves custom agents, prompts, profiles, groups, and token ceilings unchanged.`,
+            { confirmText: `Apply ${label}`, danger: false },
+        );
+        if (!confirmed) return;
+
+        let templates = templateCache;
+        if (!templates) {
+            try {
+                templates = await listBuiltInTemplates();
+                templateCache = templates || [];
+            } catch (err) {
+                console.warn(`${LOG_PREFIX} could not load templates for usage mode:`, err);
+                toastr.error('Could not load the built-in Library.');
+                return;
+            }
+        }
+
+        const changedCount = applyUsageModeToLibraryAgents(templates, useEconomy);
+        toastr.success(`${label} defaults applied to ${changedCount} Library agent${changedCount === 1 ? '' : 's'}.`);
+    });
     container.querySelector('[data-setting="showNotificationsLauncher"]')?.addEventListener('change', function () {
         setGlobalSettings({ showNotificationsLauncher: this.checked });
+        refreshSurfaceDock();
+    });
+    container.querySelector('[data-setting="groupChatEnabled"]')?.addEventListener('change', function () {
+        setGlobalSettings({ groupChatEnabled: this.checked });
+        document.dispatchEvent(new CustomEvent('superagents:group-chat-enabled-changed', {
+            detail: { enabled: this.checked },
+        }));
+        if (!this.checked) window.SuperAgents?.ui?.groupChat?.hide?.();
         refreshSurfaceDock();
     });
     container.querySelector('[data-setting="showCalendarLauncher"]')?.addEventListener('change', function () {
@@ -907,11 +1022,14 @@ function renderSettingsTab(container) {
 let templateCache = null;
 
 function renderLibraryTab(container) {
+    const economyMode = getGlobalSettings().economyMode === true;
     container.innerHTML = `
         <div class="sam-tab-head"><div class="sam-tab-title">Library</div></div>
         <div class="sam-note">
             <p>Add a built-in template to your agents, then tweak it in the editor.
-            Adding creates an independent copy — you can add the same template more than once.</p>
+            New copies start linked for template updates; turn that link off in the editor when using one as a starting point for your own agent.
+            You can add the same template more than once.
+            New copies currently use <strong>${economyMode ? 'Economy' : 'Standard'}</strong> usage defaults.</p>
         </div>
         <div class="sam-divider-label"><i class="fa-solid fa-book-open"></i> Built-in Templates</div>
         <div class="sam-list" id="sam-library-list">
@@ -943,7 +1061,7 @@ function renderLibraryCards() {
     }
     const addedCounts = new Map();
     for (const agent of getAgents()) {
-        if (!agent.sourceTemplateId) continue;
+        if (!isTemplateLinked(agent)) continue;
         addedCounts.set(agent.sourceTemplateId, (addedCounts.get(agent.sourceTemplateId) || 0) + 1);
     }
     return templateCache.map(template => renderTemplateCard(
@@ -958,7 +1076,7 @@ function renderTemplateCard(tpl, addedCount = 0) {
     const iconClass = (tpl.icon || '').replace(/^fa-solid\s+/, '') || cat.icon;
 
     const action = addedCount > 0
-        ? `<span class="sam-badge sam-badge-soft" title="${addedCount} instance(s) in your agents"><i class="fa-solid fa-check"></i> Added${addedCount > 1 ? ` ×${addedCount}` : ''}</span>
+        ? `<span class="sam-badge sam-badge-soft" title="${addedCount} linked agent(s), including disabled agents"><i class="fa-solid fa-link"></i> Linked${addedCount > 1 ? ` ×${addedCount}` : ''}</span>
            <button class="sam-btn sam-btn-sm" data-act="add-template" data-id="${tpl.id}" title="Add another copy">Add again</button>`
         : `<button class="sam-btn sam-btn-accent sam-btn-sm" data-act="add-template" data-id="${tpl.id}"><i class="fa-solid fa-plus"></i> Add</button>`;
 

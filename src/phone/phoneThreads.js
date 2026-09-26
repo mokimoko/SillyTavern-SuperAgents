@@ -1,28 +1,14 @@
 /** Pure branch and unread helpers for chat-scoped Phone threads. */
 
+import { cloneBranchPath, compactBranchPath, isBranchPathVisible, resolveChatBranch } from '../core/branchPath.js';
+
 function activeSwipeId(message) {
     const value = Number(message?.swipe_id ?? 0);
     return Number.isInteger(value) && value >= 0 ? value : 0;
 }
 
 export function resolvePhoneBranch(chat, options = {}) {
-    if (!Array.isArray(chat) || chat.length === 0) {
-        return { messageIndex: null, swipeId: null, branchPath: null };
-    }
-
-    const requestedIndex = options.messageIndex == null ? NaN : Number(options.messageIndex);
-    const messageIndex = Number.isInteger(requestedIndex)
-        ? Math.max(0, Math.min(requestedIndex, chat.length - 1))
-        : chat.length - 1;
-    const requestedSwipe = options.swipeId == null ? NaN : Number(options.swipeId);
-    const swipeId = Number.isInteger(requestedSwipe) && requestedSwipe >= 0
-        ? requestedSwipe
-        : activeSwipeId(chat[messageIndex]);
-    const branchPath = chat.slice(0, messageIndex + 1).map((message, index) => (
-        index === messageIndex ? swipeId : activeSwipeId(message)
-    ));
-
-    return { messageIndex, swipeId, branchPath };
+    return resolveChatBranch(chat, options);
 }
 
 export function stampPhoneMessage(message, branch) {
@@ -30,16 +16,15 @@ export function stampPhoneMessage(message, branch) {
         ...message,
         messageIndex: branch?.messageIndex ?? null,
         swipeId: branch?.swipeId ?? null,
-        branchPath: Array.isArray(branch?.branchPath) ? [...branch.branchPath] : null,
+        branchPath: cloneBranchPath(branch?.branchPath),
     };
 }
 
 export function isPhoneMessageVisible(message, chat, options = {}, currentPath = null) {
-    const storedPath = Array.isArray(message?.branchPath) ? message.branchPath : null;
-    if (storedPath?.length) {
+    const storedPath = compactBranchPath(message?.branchPath);
+    if (storedPath) {
         const resolvedPath = currentPath || resolvePhoneBranch(chat, options).branchPath;
-        if (!resolvedPath || resolvedPath.length < storedPath.length) return false;
-        return storedPath.every((swipeId, index) => resolvedPath[index] === swipeId);
+        return isBranchPathVisible(storedPath, resolvedPath);
     }
 
     // Pre-v4 user/reply texts were unanchored. Keep them universal so an
@@ -52,7 +37,10 @@ export function isPhoneMessageVisible(message, chat, options = {}, currentPath =
 
 export function normalizePhoneThread(thread = {}) {
     const messages = Array.isArray(thread.messages)
-        ? thread.messages.map(message => ({ ...message }))
+        ? thread.messages.map(message => ({
+            ...message,
+            branchPath: compactBranchPath(message.branchPath),
+        }))
         : [];
     const explicitUnread = messages.filter(message => message.unread === true).length;
     let legacyUnread = Math.max(0, Number(thread.unread || 0) - explicitUnread);
@@ -76,7 +64,7 @@ export function normalizePhoneThread(thread = {}) {
 
 export function projectPhoneThread(thread, chat, options = {}) {
     const normalized = normalizePhoneThread(thread);
-    const currentPath = resolvePhoneBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolvePhoneBranch(chat, options).branchPath);
     const messages = normalized.messages.filter(message => (
         isPhoneMessageVisible(message, chat, options, currentPath)
     ));
@@ -89,7 +77,7 @@ export function projectPhoneThread(thread, chat, options = {}) {
 
 export function markVisiblePhoneMessagesRead(thread, chat, options = {}) {
     const normalized = normalizePhoneThread(thread);
-    const currentPath = resolvePhoneBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolvePhoneBranch(chat, options).branchPath);
     for (const message of normalized.messages) {
         if (isPhoneMessageVisible(message, chat, options, currentPath)) message.unread = false;
     }
@@ -99,7 +87,7 @@ export function markVisiblePhoneMessagesRead(thread, chat, options = {}) {
 
 export function clearVisiblePhoneMessages(thread, chat, options = {}) {
     const normalized = normalizePhoneThread(thread);
-    const currentPath = resolvePhoneBranch(chat, options).branchPath;
+    const currentPath = compactBranchPath(resolvePhoneBranch(chat, options).branchPath);
     normalized.messages = normalized.messages.filter(
         message => !isPhoneMessageVisible(message, chat, options, currentPath),
     );

@@ -15,15 +15,15 @@
  * compatibility.js coordinates by watching the generation lifecycle rather than
  * grabbing the mutex itself. We mirror that: a lightweight, event-driven flag
  * that tracks whether a *foreign* generation is currently in flight, so the
- * lifecycle can defer its own post-gen work until the coast is clear.
+ * lifecycle can diagnose overlap without taking a second lock.
  *
  * This module deliberately holds no locks of its own. It only OBSERVES. The
  * lifecycle consults isExternalGenerationActive() before running post-gen and
- * reschedules if a foreign pass is mid-flight. Cooperative, not preemptive.
+ * logs overlap; SillyTavern's generation mutex remains the serializer.
  */
 
 import { eventSource, event_types } from '../../../../../events.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/compat]';
 
@@ -39,7 +39,8 @@ let externalGenDepth = 0;
 // Set true only while SuperAgents itself is the active generator, so our own
 // lifecycle-driven sidecar calls don't get counted as "external" and make us
 // defer against ourselves.
-let selfGenerating = false;
+let selfGenerationDepth = 0;
+let initialized = false;
 
 // The deadline guard: if an END event is somehow missed (an extension throws
 // mid-pass and never emits GENERATION_ENDED), a stuck flag would deadlock our
@@ -56,11 +57,11 @@ let lastCaptureAt = 0;
  * The lifecycle wraps its own LLM-driving sections with begin/endSelfGeneration.
  */
 export function beginSelfGeneration() {
-    selfGenerating = true;
+    selfGenerationDepth++;
 }
 
 export function endSelfGeneration() {
-    selfGenerating = false;
+    selfGenerationDepth = Math.max(0, selfGenerationDepth - 1);
 }
 
 /**
@@ -86,14 +87,14 @@ export function getExternalGenerationDepth() {
 function onGenerationStarted() {
     // A generation began. If it's ours, ignore — our own sidecar/pre-gen calls
     // are bracketed by beginSelfGeneration() and must not count as foreign.
-    if (selfGenerating) return;
+    if (selfGenerationDepth > 0) return;
     externalGenDepth++;
     lastCaptureAt = Date.now();
     debug(`${LOG_PREFIX} external generation captured (depth=${externalGenDepth})`);
 }
 
 function onGenerationSettled(reason) {
-    if (selfGenerating) return;
+    if (selfGenerationDepth > 0) return;
     if (externalGenDepth > 0) {
         externalGenDepth--;
         debug(`${LOG_PREFIX} external generation ${reason} (depth=${externalGenDepth})`);
@@ -109,16 +110,32 @@ function onGenerationSettled(reason) {
  * initLifecycle so the guard is live before any post-gen work can run.
  */
 export function initCompatibility() {
+    if (initialized) return;
+    initialized = true;
     eventSource.on(event_types.GENERATION_STARTED, onGenerationStarted);
-    eventSource.on(event_types.GENERATION_ENDED, () => onGenerationSettled('ended'));
-    eventSource.on(event_types.GENERATION_STOPPED, () => onGenerationSettled('stopped'));
+    eventSource.on(event_types.GENERATION_ENDED, onGenerationEnded);
+    eventSource.on(event_types.GENERATION_STOPPED, onGenerationStopped);
 
     debug(`${LOG_PREFIX} compatibility guard initialized (watching for: ${KNOWN_DRIVERS.join(', ')})`);
 }
 
 /** Reset all coexistence state. Used on unload / re-init. */
 export function destroyCompatibility() {
+    if (initialized) {
+        eventSource.removeListener(event_types.GENERATION_STARTED, onGenerationStarted);
+        eventSource.removeListener(event_types.GENERATION_ENDED, onGenerationEnded);
+        eventSource.removeListener(event_types.GENERATION_STOPPED, onGenerationStopped);
+    }
+    initialized = false;
     externalGenDepth = 0;
-    selfGenerating = false;
+    selfGenerationDepth = 0;
     lastCaptureAt = 0;
+}
+
+function onGenerationEnded() {
+    onGenerationSettled('ended');
+}
+
+function onGenerationStopped() {
+    onGenerationSettled('stopped');
 }

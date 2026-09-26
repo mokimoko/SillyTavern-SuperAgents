@@ -22,11 +22,11 @@
 import { chat, chat_metadata, saveChatDebounced } from '../../../../../../script.js';
 import { getContext } from '../../../../../extensions.js';
 import { getEveryN, bumpAgentCounter, resetAgentCounter } from '../core/everyN.js';
-import { getEnabledAgents } from '../data/store.js';
+import { getEnabledAgents, isAgentsPaused } from '../data/store.js';
 import { readMergeArray } from './mergeVariable.js';
 import { detectContinuityBreak, parseStateBlob } from './continuityDetect.js';
 import { refreshMessage } from '../render/renderer.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/continuityGuard]';
 
@@ -222,6 +222,7 @@ function esc(str) {
 function onPostGenTurn(messageIndex, opts = {}) {
     const force = opts.force === true;
     const NOT_READY = { flagged: false, hadFinding: false, ready: false };
+    if (isAgentsPaused() && !force) return NOT_READY;
     try {
         const mesId = Number(messageIndex);
         const message = chat[mesId];

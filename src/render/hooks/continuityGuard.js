@@ -32,7 +32,7 @@ import { getAgentById, isAgentsPaused } from '../../data/store.js';
 import { recordAgentRun } from '../../core/idempotency.js';
 import { readMergeArray } from '../../modes/mergeVariable.js';
 import { refreshMessage } from '../renderer.js';
-import { debug } from '../../../index.js';
+import { debug } from '../../core/runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/continuityGuard]';
 

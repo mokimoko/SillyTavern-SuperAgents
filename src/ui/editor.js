@@ -21,7 +21,7 @@
 import { characters } from '../../../../../../script.js';
 import { groups } from '../../../../../group-chats.js';
 import { tags as stTags } from '../../../../../tags.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import { createDefaultAgent, getAgentById, getGlobalSettings, saveAgent } from '../data/store.js';
 import { listConnectionProfiles } from '../core/profiles.js';
 import { refreshMacros } from '../core/macros.js';
@@ -32,7 +32,6 @@ import { createStructuredMemoryBuilder } from './structuredMemoryBuilder.js';
 const LOG_PREFIX = '[SuperAgents/editor]';
 
 // Escape key handler reference, so we can detach it on close.
-let escHandler = null;
 
 // Live icon-picker instance for the open editor, so readFormToAgent (a
 // standalone function) can read the chosen class without a closure.
@@ -56,6 +55,7 @@ function buildEditorHTML(agent, profiles) {
     const inheritedProfileLabel = globalSettings.useDefaultConnection && defaultProfileRef
         ? `Use default connection — ${defaultProfile?.name || `${defaultProfileRef} (missing)`}`
         : 'Use current SillyTavern connection';
+    const templateLinked = Boolean(agent.sourceTemplateId) && agent.sourceTemplateLinked !== false;
 
     const pp = agent.postProcess;
     const cond = agent.conditions;
@@ -65,7 +65,7 @@ function buildEditorHTML(agent, profiles) {
     const inj = agent.injection;
     const rc = agent.sidecarCall?.richContext ?? {
         enabled: false, character: false, persona: false, worldInfo: false,
-        summary: false, authorsNote: false, pendingUser: false, historyCount: 0,
+        summary: false, simpleSummarizer: false, authorsNote: false, pendingUser: false, historyCount: 0,
         selfMemory: false, selfMemoryCount: 0,
     };
     const mv = agent.mergeVariable ?? {};
@@ -96,7 +96,11 @@ function buildEditorHTML(agent, profiles) {
     // true, the Prompt section is replaced with a short explainer + N field.
     const isGuard = agent.sourceTemplateId === 'tpl-continuity-guard'
         || agent.continuityGuard?.enabled === true;
-    const lockedExecution = isGuard || !!agent.phoneConfig || !!agent.feedConfig;
+    const isWorldEvents = agent.worldEventsConfig?.enabled === true
+        || agent.sourceTemplateId === 'tpl-world-events';
+    const isAfterDark = agent.afterDarkConfig?.enabled === true
+        || agent.sourceTemplateId === 'tpl-after-dark';
+    const lockedExecution = isGuard || isWorldEvents || isAfterDark || !!agent.phoneConfig || !!agent.feedConfig;
     // Current N for whichever field renders (top-level first, then legacy block).
     const everyNValue = (typeof agent.everyN === 'number' && agent.everyN > 0)
         ? agent.everyN
@@ -143,8 +147,17 @@ function buildEditorHTML(agent, profiles) {
         </div>
     </div>
 
-    <div class="sae-form" data-special="${isGuard ? 'guard' : (agent.phoneConfig ? 'phone' : (agent.feedConfig ? 'feed' : ''))}">
+    <div class="sae-form" data-special="${isGuard ? 'guard' : (isWorldEvents ? 'world-events' : (isAfterDark ? 'after-dark' : (agent.phoneConfig ? 'phone' : (agent.feedConfig ? 'feed' : ''))))}">
         <div class="sam-divider-label"><i class="fa-solid fa-id-card"></i> Identity</div>
+
+        ${agent.sourceTemplateId ? `
+        <label class="sae-template-link">
+            <input type="checkbox" id="sae-template-linked" ${templateLinked ? 'checked' : ''}>
+            <span>
+                <strong>Keep linked to the Library template</strong>
+                <small>Linked agents receive future template updates and mark the Library card as Linked. Turn this off when using the template as a starting point for your own agent; the current agent stays unchanged.</small>
+            </span>
+        </label>` : ''}
 
         <div class="sae-row sae-identity-row">
             <div class="sae-field sae-identity-name">
@@ -250,10 +263,11 @@ function buildEditorHTML(agent, profiles) {
             <div class="sae-desc">When every N skips this agent, keep its last branch snapshot available to the main prompt, macros, and integrations without making another provider call.</div>
         </div>
         <div class="sae-field">
-            <div class="sae-label">Initialization / one-shot policy</div>
-            <div class="sae-desc">Evaluated at the first eligible generation in each chat or branch. Clearing this agent re-arms it.</div>
+            <div class="sae-label">Run policy</div>
+            <div class="sae-desc">Choose normal automatic cadence, manual-only use, or a one-shot lifecycle.</div>
             <select id="sae-activation-policy" class="sae-select">
                 <option value="always" ${activationPolicyMode === 'always' ? 'selected' : ''}>Keep using the normal cadence</option>
+                <option value="manual" ${activationPolicyMode === 'manual' ? 'selected' : ''}>Only when I click Run</option>
                 <option value="until-state" ${activationPolicyMode === 'until-state' ? 'selected' : ''}>Run until remembered state exists, then sleep</option>
                 <option value="once-per-chat" ${activationPolicyMode === 'once-per-chat' ? 'selected' : ''}>Run once per chat</option>
                 <option value="once-per-branch" ${activationPolicyMode === 'once-per-branch' ? 'selected' : ''}>Run once per story branch</option>
@@ -585,6 +599,7 @@ function buildEditorHTML(agent, profiles) {
                 </div>
                 <div class="sae-check-row">
                     <label class="sae-check"><input type="checkbox" id="sae-rc-summary" ${rc.summary ? 'checked' : ''}> Running summary</label>
+                    <label class="sae-check"><input type="checkbox" id="sae-rc-simple-summarizer" ${rc.simpleSummarizer ? 'checked' : ''}> Simple Summarizer memory</label>
                     <label class="sae-check"><input type="checkbox" id="sae-rc-authorsnote" ${rc.authorsNote ? 'checked' : ''}> Author's Note</label>
                     <label class="sae-check"><input type="checkbox" id="sae-rc-pendinguser" ${rc.pendingUser ? 'checked' : ''}> Pending user message</label>
                 </div>
@@ -776,7 +791,8 @@ function updateSectionVisibility() {
     const $mode = $('#sae-execution-mode');
     let mode = $mode.val() || 'direct';
     const specialRoute = $('.sae-form').attr('data-special') || '';
-    const ownsSpecialLlmCall = specialRoute === 'phone' || specialRoute === 'feed' || specialRoute === 'guard';
+    const ownsSpecialLlmCall = specialRoute === 'phone' || specialRoute === 'feed'
+        || specialRoute === 'guard' || specialRoute === 'world-events' || specialRoute === 'after-dark';
 
     // A rewrite has no pre-generation target. Keep the form in a valid route
     // instead of saving a combination the lifecycle cannot execute.
@@ -839,6 +855,9 @@ function updateSectionVisibility() {
     if (special === 'guard') {
         summary = 'After the reply · deterministic continuity guard';
         routeNote = 'This library agent has its own guarded runtime.';
+    } else if (special === 'world-events') {
+        summary = 'After the reply · user-guided world-event proposals';
+        routeNote = 'Generates a private chooser; only events you approve enter the story prompt.';
     } else if (special === 'phone') {
         summary = 'After the reply · phone-message evaluator';
         routeNote = 'This library agent uses its specialized phone configuration.';
@@ -964,6 +983,8 @@ function readFormToAgent(existingAgent) {
 
     const result = {
         ...existingAgent,
+        sourceTemplateLinked: Boolean(existingAgent.sourceTemplateId)
+            && $('#sae-template-linked').is(':checked'),
         name,
         description: ($('#sae-desc').val() || '').trim(),
         icon: iconPicker ? iconPicker.getValue() : (existingAgent.icon || ''),
@@ -1040,6 +1061,7 @@ function readFormToAgent(existingAgent) {
                 persona: $('#sae-rc-persona').is(':checked'),
                 worldInfo: $('#sae-rc-worldinfo').is(':checked'),
                 summary: $('#sae-rc-summary').is(':checked'),
+                simpleSummarizer: $('#sae-rc-simple-summarizer').is(':checked'),
                 authorsNote: $('#sae-rc-authorsnote').is(':checked'),
                 pendingUser: $('#sae-rc-pendinguser').is(':checked'),
                 historyCount: parseInt($('#sae-rc-history').val()) || 0,
@@ -1225,7 +1247,7 @@ function readFormToAgent(existingAgent) {
  * @param {string|null} agentId  null/undefined → new agent
  * @param {{onSaved?:function(object):void, onCancel?:function():void}} [cb]
  */
-export async function renderAgentEditor(container, agentId, cb = {}) {
+export function renderAgentEditor(container, agentId, cb = {}) {
     const existing = agentId ? getAgentById(agentId) : null;
     const agent = existing ? { ...existing } : createDefaultAgent();
     // A brand-new prompt should do something useful without hidden switches.
@@ -1279,8 +1301,17 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
         if (!iconPicker?.getValue()) updateIconSummary('');
     });
 
+    let disposed = false;
+    const onEscape = (event) => {
+        if (event.key === 'Escape') {
+            event.stopPropagation();
+            cancel();
+        }
+    };
     const cleanup = () => {
-        if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
+        if (disposed) return;
+        disposed = true;
+        document.removeEventListener('keydown', onEscape);
         iconPicker = null;
         structuredMemoryBuilder?.destroy();
         structuredMemoryBuilder = null;
@@ -1381,8 +1412,7 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
 
     $('#sae-back, #sae-cancel').on('click', cancel);
 
-    escHandler = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cancel(); } };
-    document.addEventListener('keydown', escHandler);
+    document.addEventListener('keydown', onEscape);
 
     $('#sae-save').on('click', () => {
         let updated;
@@ -1413,6 +1443,8 @@ export async function renderAgentEditor(container, agentId, cb = {}) {
         cleanup();
         cb.onSaved?.(saved);
     });
+
+    return cleanup;
 }
 
 // ============================================================================

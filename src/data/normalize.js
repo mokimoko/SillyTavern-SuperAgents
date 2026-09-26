@@ -128,10 +128,14 @@ export function createDefaultAgent() {
         groupId: null,
         sourceTemplateId: '',
         sourceTemplateVersion: 0,
+        sourceTemplateLinked: false,
         mergeVariable: defaultMergeVariable(),
         stateCard: null,
+        worldEventsConfig: null,
         phoneConfig: null,
         feedConfig: null,
+        afterDarkConfig: null,
+        dramaQueenConfig: null,
         sidecarCall: defaultSidecarCall(),
     };
 }
@@ -146,6 +150,7 @@ export function createDefaultGroup() {
         builtin: false,
         agentIds: [],
         executionMode: 'parallel',
+        batchMaxTokens: null,
         phase: 'post',
         order: 100,
         enabled: true,
@@ -222,6 +227,7 @@ function defaultSidecarCall() {
             hookClass: '',
             dataMap: {},
             contentField: '',
+            inheritState: true,
         },
     };
 }
@@ -234,6 +240,7 @@ function defaultRichContext() {
         persona: false,
         worldInfo: false,
         summary: false,
+        simpleSummarizer: false,
         authorsNote: false,
         pendingUser: false,
         historyCount: 0,
@@ -352,6 +359,7 @@ function normalizeSidecarCall(raw) {
             contentField: typeof rawDisplay.contentField === 'string'
                 ? rawDisplay.contentField.trim()
                 : '',
+            inheritState: rawDisplay.inheritState !== false,
         },
     };
 }
@@ -369,6 +377,7 @@ function normalizeRichContext(raw) {
         persona: Boolean(raw.persona),
         worldInfo: Boolean(raw.worldInfo),
         summary: Boolean(raw.summary),
+        simpleSummarizer: Boolean(raw.simpleSummarizer),
         authorsNote: Boolean(raw.authorsNote),
         pendingUser: Boolean(raw.pendingUser),
         historyCount: Number.isFinite(Number(raw.historyCount))
@@ -505,7 +514,7 @@ function normalizeScope(raw) {
 }
 
 function normalizeActivationPolicy(raw) {
-    const modes = new Set(['always', 'until-state', 'once-per-chat', 'once-per-branch']);
+    const modes = new Set(['always', 'manual', 'until-state', 'once-per-chat', 'once-per-branch']);
     return {
         mode: modes.has(raw?.mode) ? raw.mode : 'always',
     };
@@ -594,10 +603,43 @@ export function normalizeAgent(raw = {}) {
         sourceTemplateVersion: Number.isFinite(Number(raw.sourceTemplateVersion))
             ? Number(raw.sourceTemplateVersion)
             : 0,
+        // Existing saves predate this flag. A stamped template source was
+        // historically always linked until the user explicitly detaches it.
+        sourceTemplateLinked: Boolean(raw.sourceTemplateId)
+            && raw.sourceTemplateLinked !== false,
         mergeVariable,
         stateCard: raw.stateCard && typeof raw.stateCard === 'object' ? raw.stateCard : null,
+        worldEventsConfig: raw.worldEventsConfig && typeof raw.worldEventsConfig === 'object'
+            ? {
+                ...raw.worldEventsConfig,
+                enabled: raw.worldEventsConfig.enabled !== false,
+                maxRoster: Math.floor(clamp(Number(raw.worldEventsConfig.maxRoster) || 8, 1, 8)),
+            }
+            : null,
         phoneConfig: raw.phoneConfig && typeof raw.phoneConfig === 'object' ? raw.phoneConfig : null,
         feedConfig: raw.feedConfig && typeof raw.feedConfig === 'object' ? raw.feedConfig : null,
+        afterDarkConfig: raw.afterDarkConfig && typeof raw.afterDarkConfig === 'object'
+            ? {
+                enabled: raw.afterDarkConfig.enabled !== false,
+                probeTerms: Array.isArray(raw.afterDarkConfig.probeTerms)
+                    ? raw.afterDarkConfig.probeTerms.map(value => String(value || '').trim()).filter(Boolean).slice(0, 20)
+                    : [],
+                pitchCount: Math.max(4, Math.min(6, Math.floor(Number(raw.afterDarkConfig.pitchCount) || 4))),
+                showBeatController: raw.afterDarkConfig.showBeatController !== false,
+                smartNudge: raw.afterDarkConfig.smartNudge === true,
+            }
+            : null,
+        dramaQueenConfig: raw.dramaQueenConfig && typeof raw.dramaQueenConfig === 'object'
+            ? {
+                enabled: raw.dramaQueenConfig.enabled === true,
+                probeTerms: Array.isArray(raw.dramaQueenConfig.probeTerms)
+                    ? raw.dramaQueenConfig.probeTerms.map(value => String(value || '').trim()).filter(Boolean).slice(0, 20)
+                    : [],
+                proposalCount: Math.max(1, Math.min(6, Math.floor(Number(raw.dramaQueenConfig.proposalCount) || 4))),
+                showBeatController: raw.dramaQueenConfig.showBeatController !== false,
+                smartNudge: raw.dramaQueenConfig.smartNudge === true,
+            }
+            : null,
         continuityGuard,
         sidecarCall,
     };
@@ -619,6 +661,9 @@ export function normalizeGroup(raw = {}) {
             ? raw.agentIds.map(id => String(id ?? '').trim()).filter(Boolean)
             : d.agentIds,
         executionMode: raw.executionMode === 'sequential' ? 'sequential' : 'parallel',
+        batchMaxTokens: Number.isFinite(Number(raw.batchMaxTokens)) && Number(raw.batchMaxTokens) > 0
+            ? clamp(Math.floor(Number(raw.batchMaxTokens)), 256, 1000000)
+            : d.batchMaxTokens,
         phase: ['pre', 'post'].includes(raw.phase) ? raw.phase : d.phase,
         order: Number.isFinite(Number(raw.order)) ? Number(raw.order) : d.order,
         enabled: raw.enabled !== false,

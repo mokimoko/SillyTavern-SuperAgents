@@ -361,6 +361,7 @@
 .sam-row-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .sam-default-connection-controls { min-width: min(330px, 48%); }
 .sam-default-connection-select { min-width: 230px; }
+.sam-apply-usage-btn { min-width: 120px; justify-content: center; white-space: nowrap; }
 
 /* ── Switch (toggle) ───────────────────────────────────────── */
 /* Intentionally minimal: the checkbox renders as the active ST theme's own
@@ -381,6 +382,28 @@
 }
 .sam-card:hover { border-color: var(--sa-border-mid); background: var(--sa-surface-rail); }
 .sam-agent-card { cursor: pointer; }
+.sam-agent-drag-handle {
+    width: 18px;
+    height: 30px;
+    padding: 0;
+    flex: 0 0 18px;
+    display: grid;
+    place-items: center;
+    color: var(--sa-text-faint);
+    background: transparent;
+    border: 0;
+    cursor: grab;
+}
+.sam-agent-drag-handle:hover,
+.sam-agent-drag-handle:focus-visible { color: var(--sa-accent-text); }
+.sam-agent-drag-handle:focus-visible { outline: 2px solid var(--sa-accent); outline-offset: 1px; }
+.sam-agent-card-dragging {
+    opacity: 0.55;
+    border-color: var(--sa-accent-soft);
+    cursor: grabbing;
+}
+.sam-agent-card-dragging .sam-agent-drag-handle,
+.sam-agent-list-dragging .sam-agent-drag-handle { cursor: grabbing; }
 .sam-agent-card.sam-bulk-selected {
     border-color: color-mix(in srgb, #5ac896 45%, var(--sa-border-mid));
     background: color-mix(in srgb, #5ac896 9%, var(--sa-surface-info));
@@ -522,6 +545,15 @@
 .sa-panel--dragging { user-select: none; cursor: grabbing; }
 .sa-panel--dragging * { cursor: grabbing !important; }
 
+/* Glass blur is costly while the backing layer moves; restore it after interaction. */
+.sa-panel--dragging,
+.sa-panel--resizing,
+.sam-modal-dragging,
+.sa-surface-dock--dragging {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+}
+
 /* ============================================================
    SuperAgents — agent editor (sae-), rendered in the modal pane
    ============================================================ */
@@ -541,6 +573,22 @@
 .sae-back { padding: 5px 10px; }
 
 .sae-form { display: flex; flex-direction: column; }
+
+.sae-template-link {
+    display: flex;
+    align-items: flex-start;
+    gap: 9px;
+    margin-top: 9px;
+    padding: 10px 11px;
+    background: var(--sa-surface-info);
+    border: 1px solid var(--sa-border-faint);
+    border-left: 2px solid var(--sa-accent-soft);
+    cursor: pointer;
+}
+.sae-template-link input { margin-top: 2px; accent-color: var(--sa-accent); }
+.sae-template-link span { display: flex; flex-direction: column; gap: 2px; }
+.sae-template-link strong { color: var(--sa-text-primary); font-size: var(--sa-font-label); font-weight: 600; }
+.sae-template-link small { color: var(--sa-text-muted); font-size: var(--sa-font-meta); line-height: 1.4; }
 
 .sae-execution-intro {
     display: flex;
@@ -1126,3 +1174,181 @@
     font-size: var(--sa-font-label);
 }
 .sae-iconpicker-custom .sae-iconpicker-customclass { flex: 1; }
+
+/* ============================================
+   Character Diary
+   ============================================ */
+
+.character-diary-rendered {
+    margin: 8px 0;
+    border-left: 2px solid rgba(170, 119, 104, 0.72);
+    font-size: 11px;
+}
+
+.character-diary-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--sa-border-soft, rgba(255, 255, 255, 0.06));
+    background: var(--sa-surface-input, rgba(255, 255, 255, 0.02));
+    color: var(--sa-text-secondary, rgba(255, 255, 255, 0.65));
+    cursor: pointer;
+    font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+    list-style: none;
+    user-select: none;
+    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.character-diary-summary::-webkit-details-marker { display: none; }
+
+.character-diary-summary:hover {
+    border-left-color: rgba(170, 119, 104, 0.75);
+    background: var(--sa-surface-rail-hot, rgba(255, 255, 255, 0.04));
+    color: var(--sa-text-primary, rgba(255, 255, 255, 0.85));
+}
+
+.character-diary-summary-icon {
+    color: color-mix(in srgb, rgb(190, 132, 112) 70%, var(--SmartThemeBodyColor, #fff) 30%);
+    font-size: 12px;
+}
+
+.character-diary-summary-label {
+    overflow: hidden;
+    letter-spacing: 0.16em;
+    opacity: 0.78;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.character-diary-summary-meta {
+    min-width: 0;
+    margin-left: auto;
+    overflow: hidden;
+    color: var(--sa-text-secondary, rgba(255, 255, 255, 0.65));
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 11px;
+    font-style: italic;
+    letter-spacing: 0.02em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.character-diary-chevron {
+    flex-shrink: 0;
+    font-size: 9px;
+    opacity: 0.58;
+    transition: transform 0.18s ease;
+}
+
+.character-diary-rendered[open] .character-diary-chevron { transform: rotate(180deg); }
+
+.character-diary-page {
+    position: relative;
+    overflow: hidden;
+    padding: 28px 32px 24px;
+    border: 1px solid #8b6b3d;
+    border-top: none;
+    background-color: #c6aa76;
+    background-image:
+        radial-gradient(ellipse at 8% 4%, rgba(104, 69, 32, 0.16), transparent 24%),
+        radial-gradient(ellipse at 92% 88%, rgba(91, 52, 22, 0.13), transparent 28%),
+        radial-gradient(circle at 72% 19%, rgba(255, 244, 199, 0.21), transparent 20%),
+        repeating-linear-gradient(7deg, rgba(87, 57, 25, 0.025) 0 1px, transparent 1px 5px),
+        repeating-linear-gradient(97deg, rgba(255, 247, 211, 0.035) 0 1px, transparent 1px 8px);
+    box-shadow:
+        inset 0 0 34px rgba(75, 42, 17, 0.16),
+        inset 0 8px 15px rgba(255, 245, 207, 0.11);
+    color: #302016;
+    text-shadow: none !important;
+    -webkit-text-stroke: 0 !important;
+}
+
+.character-diary-page * {
+    text-shadow: none !important;
+    -webkit-text-stroke: 0 !important;
+}
+
+.character-diary-page::before {
+    content: '';
+    position: absolute;
+    inset: 7px;
+    border: 1px solid rgba(91, 57, 25, 0.15);
+    box-shadow: inset 0 0 12px rgba(255, 241, 194, 0.09);
+    pointer-events: none;
+}
+
+.character-diary-page::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 24px;
+    height: 24px;
+    background: linear-gradient(225deg,
+        var(--sa-surface-input, #282a2f) 0 48%,
+        #8b6b3d 49% 52%,
+        #af915f 53% 100%);
+}
+
+.character-diary-heading {
+    position: relative;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding-bottom: 7px;
+    border-bottom: 1px solid rgba(91, 57, 25, 0.32);
+}
+
+.character-diary-title {
+    color: #302016;
+    font-family: 'Segoe Print', 'Bradley Hand', cursive;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.character-diary-dateline {
+    margin-left: auto;
+    color: #5d4329;
+    font-family: ui-monospace, 'Cascadia Code', Consolas, monospace;
+    font-size: 9.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.character-diary-entry {
+    position: relative;
+    color: #302016;
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 14px;
+    line-height: 1.85;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+}
+
+.character-diary-signature {
+    position: relative;
+    margin-top: 12px;
+    color: #5f3d2c;
+    font-family: 'Segoe Print', 'Bradley Hand', cursive;
+    font-size: 15px;
+    text-align: right;
+    transform: rotate(-2deg);
+}
+
+@media (max-width: 520px) {
+    .character-diary-summary-meta { display: none; }
+
+    .character-diary-page { padding: 24px 18px 21px; }
+
+    .character-diary-heading {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 3px;
+    }
+
+    .character-diary-dateline { margin-left: 0; }
+}

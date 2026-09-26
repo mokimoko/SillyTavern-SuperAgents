@@ -15,7 +15,7 @@
  * is a live signal, not saved data).
  */
 
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/stats]';
 

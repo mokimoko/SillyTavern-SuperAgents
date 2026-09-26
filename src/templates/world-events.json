@@ -1,0 +1,166 @@
+{
+    "id": "tpl-world-events",
+    "name": "World Events",
+    "description": "Every few replies, proposes varied events unfolding beyond the current scene. Nothing becomes active until you choose it; approved events form a branch-aware roster injected into the story prompt.",
+    "icon": "fa-solid fa-earth-americas",
+    "category": "randomizer",
+    "tags": ["world", "events", "orchestrator", "suggestions", "choice"],
+    "version": 2,
+    "author": "",
+    "prompt": "### World Events — User-Guided Event Orchestrator\n\nROLE: Propose five plausible events unfolding parallel to the current scene. You are not writing these events into canon. The user will privately choose whether one joins the active world-event roster. Do not narrate the current scene, write dialogue, or decide {{user}}'s actions.\n\nGROUNDING:\n- Build from the setting, era, geography, institutions, factions, active pressures, character/persona information, World Info, earlier memories, and recent scene history supplied below.\n- An event may be unknown to the present characters. Distance describes where it occurs relative to their current location, not whether they know about it.\n- Respect the established genre and available technology/magic. Do not import modern news, real-world facts, institutions, or conveniences into a fictional setting unless canon supports them.\n- Do not contradict the ACTIVE ROSTER. Propose distinct new developments, consequences, escalations, relief, rumors, opportunities, or distant motion.\n\nTHIS RUN'S RANDOMIZED CREATIVE SEEDS:\n1. {{random::major::average::minor}} / {{random::local::distant}} / {{random::positive::neutral::negative}} / {{random::politics::trade::community::nature::culture::crime::discovery::infrastructure::conflict::celebration}}\n2. {{random::major::average::minor}} / {{random::local::distant}} / {{random::positive::neutral::negative}} / {{random::politics::trade::community::nature::culture::crime::discovery::infrastructure::conflict::celebration}}\n3. {{random::major::average::minor}} / {{random::local::distant}} / {{random::positive::neutral::negative}} / {{random::politics::trade::community::nature::culture::crime::discovery::infrastructure::conflict::celebration}}\n4. {{random::major::average::minor}} / {{random::local::distant}} / {{random::positive::neutral::negative}} / {{random::politics::trade::community::nature::culture::crime::discovery::infrastructure::conflict::celebration}}\n5. {{random::major::average::minor}} / {{random::local::distant}} / {{random::positive::neutral::negative}} / {{random::politics::trade::community::nature::culture::crime::discovery::infrastructure::conflict::celebration}}\n\nUse each line as a creative push, not a command to violate canon. If seeds collide, vary the nearest axis. Across the final set, cover at least two importance levels, both distances when the setting permits, at least two tones, and several domains.\n\nLABELS:\n- importance: major = setting/faction-wide force; average = district, institution, community, or meaningful network; minor = intimate locality, small group, or background thread.\n- distance: local = in or near the characters' current area; distant = elsewhere in the established world.\n- tone: positive = opportunity/relief/celebration; neutral = change, mystery, or mixed pressure; negative = danger/loss/conflict/disruption. Tone describes likely effect, not moral judgment.\n\nOUTPUT:\nReturn exactly one compact JSON object inside the tag below. Copy roster and history forward unchanged. Generate exactly five proposals. Titles should be vivid and short. Descriptions should be one concrete sentence (max 240 characters) explaining what is happening now, without forcing it into the current scene.\n\n[WORLD_EVENTS]\n{\"roster\":[],\"proposals\":[{\"title\":\"Short title\",\"description\":\"One concrete sentence.\",\"importance\":\"average\",\"distance\":\"distant\",\"tone\":\"neutral\"}],\"history\":[]}\n[/WORLD_EVENTS]\n\nOutput only the tagged JSON block.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 84,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 900
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "variableName": "sa_world_events",
+        "extractPattern": "\\[WORLD_EVENTS\\]\\s*([\\s\\S]*?)\\s*\\[/WORLD_EVENTS\\]",
+        "fieldNames": ["json"],
+        "keyFields": [],
+        "mode": "snapshot",
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "autoInject": true,
+        "formatHeader": "CURRENT USER-APPROVED WORLD-EVENT STATE — copy the roster and history forward unchanged; proposals are temporary and must be replaced with five new suggestions:",
+        "formatItem": "{{json}}",
+        "formatEmpty": "No world events have been approved yet. Return an empty roster, five grounded proposals, and an empty history.",
+        "mainContext": {
+            "enabled": true,
+            "mode": "full",
+            "presencePath": "roster",
+            "formatHeader": "",
+            "formatItem": "{{#if json.roster}}<world_events>\nThe following events are happening in the world right now. Treat them as active background reality. Let their effects reach the current scene only when distance, information flow, and narrative timing make that plausible.\n{{#each json.roster}}- [{{importance}} / {{distance}} / {{tone}}] {{title}} — {{description}}\n{{/each}}</world_events>{{/if}}",
+            "formatEmpty": ""
+        },
+        "validation": {
+            "enabled": true,
+            "jsonField": "json",
+            "schemaVersion": 2,
+            "invariants": [],
+            "schema": {
+                "type": "object",
+                "required": ["roster", "proposals", "history"],
+                "properties": {
+                    "roster": {
+                        "type": "array",
+                        "maxItems": 8,
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "title", "description", "importance", "distance", "tone", "addedAtMessage"],
+                            "properties": {
+                                "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+                                "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+                                "description": { "type": "string", "minLength": 1, "maxLength": 320 },
+                                "importance": { "type": "string", "enum": ["major", "average", "minor"] },
+                                "distance": { "type": "string", "enum": ["local", "distant"] },
+                                "tone": { "type": "string", "enum": ["positive", "neutral", "negative"] },
+                                "addedAtMessage": { "type": "integer", "minimum": 0 }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "proposals": {
+                        "type": "array",
+                        "maxItems": 5,
+                        "items": {
+                            "type": "object",
+                            "required": ["title", "description", "importance", "distance", "tone"],
+                            "properties": {
+                                "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+                                "description": { "type": "string", "minLength": 1, "maxLength": 320 },
+                                "importance": { "type": "string", "enum": ["major", "average", "minor"] },
+                                "distance": { "type": "string", "enum": ["local", "distant"] },
+                                "tone": { "type": "string", "enum": ["positive", "neutral", "negative"] }
+                            },
+                            "additionalProperties": false
+                        }
+                    },
+                    "history": {
+                        "type": "array",
+                        "maxItems": 20,
+                        "items": {
+                            "type": "object",
+                            "required": ["id", "title", "description", "importance", "distance", "tone", "addedAtMessage", "resolvedAtMessage"],
+                            "properties": {
+                                "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+                                "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+                                "description": { "type": "string", "minLength": 1, "maxLength": 320 },
+                                "importance": { "type": "string", "enum": ["major", "average", "minor"] },
+                                "distance": { "type": "string", "enum": ["local", "distant"] },
+                                "tone": { "type": "string", "enum": ["positive", "neutral", "negative"] },
+                                "addedAtMessage": { "type": "integer", "minimum": 0 },
+                                "resolvedAtMessage": { "type": "integer", "minimum": 0 }
+                            },
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "additionalProperties": false
+            }
+        }
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 900,
+    "everyN": 8,
+    "everyNCadence": "new-replies",
+    "reuseSnapshotBetweenRuns": true,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 100,
+        "generationTypes": ["normal", "continue"]
+    },
+    "worldEventsConfig": {
+        "enabled": true,
+        "maxRoster": 8
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 900,
+        "responseKey": "world_events",
+        "includeHistory": false,
+        "historyMessageCount": 10,
+        "genesisHistoryCount": 0,
+        "richContext": {
+            "enabled": true,
+            "character": true,
+            "persona": true,
+            "worldInfo": true,
+            "summary": true,
+            "simpleSummarizer": true,
+            "authorsNote": false,
+            "pendingUser": false,
+            "historyCount": 12,
+            "selfMemory": false,
+            "selfMemoryCount": 0
+        },
+        "display": {
+            "enabled": false,
+            "position": "top",
+            "hookClass": "",
+            "dataMap": {},
+            "contentField": ""
+        }
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-world-events"
+}

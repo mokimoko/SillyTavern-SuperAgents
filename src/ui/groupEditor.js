@@ -22,25 +22,25 @@
  *     - onCancel()             → called on back/cancel/Escape
  */
 
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import {
     getAgents,
     getGroupById,
     saveGroup,
     createDefaultGroup,
+    getGlobalSettings,
 } from '../data/store.js';
 import { AGENT_CATEGORIES } from '../data/normalize.js';
 
 const LOG_PREFIX = '[SuperAgents/groupEditor]';
 
 // Escape key handler reference, so we can detach it on close.
-let escHandler = null;
 
 // ============================================================================
 // BUILD HTML
 // ============================================================================
 
-function buildEditorHTML(group, allAgents) {
+function buildEditorHTML(group, allAgents, inheritedBatchMaxTokens) {
     const selected = new Set(group.agentIds);
 
     const agentRows = allAgents.length === 0
@@ -83,6 +83,11 @@ function buildEditorHTML(group, allAgents) {
                 <option value="parallel" ${group.executionMode === 'parallel' ? 'selected' : ''}>Parallel</option>
                 <option value="sequential" ${group.executionMode === 'sequential' ? 'selected' : ''}>Sequential</option>
             </select>
+        </div>
+        <div class="sae-field">
+            <div class="sae-label">Batch output token ceiling</div>
+            <div class="sae-desc">Maximum output requested for each connection-profile batch in this parallel group. Leave blank to use the SuperAgents default (${Number(inheritedBatchMaxTokens).toLocaleString()}). Raise it only as far as that profile's provider/model supports. Sequential groups ignore this setting.</div>
+            <input type="number" id="sae-group-batch-max-tokens" class="sae-input" min="256" max="1000000" step="256" value="${Number.isFinite(group.batchMaxTokens) ? group.batchMaxTokens : ''}" placeholder="Use global default (${Number(inheritedBatchMaxTokens).toLocaleString()})">
         </div>
         <div class="sae-row">
             <div class="sae-field sae-grow">
@@ -128,11 +133,13 @@ function readFormToGroup(existingGroup) {
         if (id) selectedIds.push(id);
     });
 
+    const rawBatchMaxTokens = String($('#sae-group-batch-max-tokens').val() || '').trim();
     return {
         ...existingGroup,
         name: ($('#sae-group-name').val() || '').trim(),
         description: ($('#sae-group-desc').val() || '').trim(),
         executionMode: $('#sae-group-exec-mode').val() === 'sequential' ? 'sequential' : 'parallel',
+        batchMaxTokens: rawBatchMaxTokens ? Number(rawBatchMaxTokens) : null,
         phase: $('#sae-group-phase').val() === 'pre' ? 'pre' : 'post',
         order: parseInt($('#sae-group-order').val()) || 0,
         agentIds: selectedIds,
@@ -161,11 +168,21 @@ export function renderGroupEditor(container, groupId, cb = {}) {
         : createDefaultGroup();
 
     const allAgents = getAgents();
-    container.innerHTML = buildEditorHTML(group, allAgents);
+    const inheritedBatchMaxTokens = Number(getGlobalSettings().batchMaxTokens) || 16384;
+    container.innerHTML = buildEditorHTML(group, allAgents, inheritedBatchMaxTokens);
     updateCount();
 
+    let disposed = false;
+    const onEscape = (event) => {
+        if (event.key === 'Escape') {
+            event.stopPropagation();
+            cancel();
+        }
+    };
     const cleanup = () => {
-        if (escHandler) { document.removeEventListener('keydown', escHandler); escHandler = null; }
+        if (disposed) return;
+        disposed = true;
+        document.removeEventListener('keydown', onEscape);
     };
     const cancel = () => { cleanup(); cb.onCancel?.(); };
 
@@ -175,8 +192,7 @@ export function renderGroupEditor(container, groupId, cb = {}) {
     $('#sae-group-none').on('click', () => { $('.sae-group-cb').prop('checked', false); updateCount(); });
     container.querySelectorAll('.sae-group-cb').forEach(cb2 => cb2.addEventListener('change', updateCount));
 
-    escHandler = (e) => { if (e.key === 'Escape') { e.stopPropagation(); cancel(); } };
-    document.addEventListener('keydown', escHandler);
+    document.addEventListener('keydown', onEscape);
 
     $('#sae-group-save').on('click', () => {
         const updated = readFormToGroup(group);
@@ -191,6 +207,8 @@ export function renderGroupEditor(container, groupId, cb = {}) {
         cleanup();
         cb.onSaved?.(saved);
     });
+
+    return cleanup;
 }
 
 // ============================================================================

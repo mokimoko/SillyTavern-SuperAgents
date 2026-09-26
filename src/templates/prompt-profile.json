@@ -67,7 +67,7 @@
         "triggerKeywords": [],
         "triggerPatterns": [],
         "triggerProbability": 100,
-        "generationTypes": ["normal", "continue", "impersonate", "swipe"],
+        "generationTypes": ["normal", "swipe"],
         "generationTypesVersion": 2,
         "stateGate": { "enabled": false, "variableName": "", "jsonField": "json", "path": "", "operator": "eq", "value": "true", "requireFresh": true }
     },

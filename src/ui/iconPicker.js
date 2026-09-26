@@ -120,6 +120,7 @@ const ICON_SET = [
     ['fa-wine-glass', 'social drink scene tavern'],
     ['fa-utensils', 'food meal scene dining'],
     ['fa-bed', 'rest intimacy scene sleep'],
+    ['fa-martini-glass-citrus', 'after dark spicy planner nightlife'],
     ['fa-moon', 'night dark mood'],
     ['fa-sun', 'day light bright mood'],
     ['fa-cloud', 'weather sky mood'],

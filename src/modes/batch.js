@@ -22,7 +22,7 @@
 
 import { substituteParams, setExtensionPrompt } from '../../../../../../script.js';
 import { chat } from '../../../../../../script.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import { AgentCallAbortedError, callAgentLLM, isAbortError } from '../core/llm.js';
 import { recordAgentRun } from '../core/idempotency.js';
 import {
@@ -50,21 +50,10 @@ import { evaluateStateGate, hasStateGate } from '../core/stateGate.js';
 import { recoverBatchEnvelope } from '../data/structuredOutput.js';
 import { validateMergeItems } from '../data/stateValidation.js';
 import { getConfiguredParticipantExclusion } from '../core/participants.js';
+import { calculateBatchBudget } from './batchBudget.js';
 
 const LOG_PREFIX = '[SuperAgents/batch]';
 const PROMPT_KEY_PREFIX = 'sa_agent_';
-
-// Fallback envelope output ceiling. The per-agent maxTokens sum is clamped to
-// this so a large batch doesn't ask for an envelope the backend silently
-// truncates (a truncated envelope fails JSON.parse and drops every agent's data
-// that turn). Used only when globalSettings.batchMaxTokens isn't a sane number.
-const BATCH_MAXTOKENS_CEILING = 8192;
-
-// Fraction of the ceiling reserved for JSON envelope scaffolding (the keys,
-// braces, quotes, commas) so the agents' actual content budget doesn't get
-// crowded out by structure on a big batch. 8% empirically clears the overhead
-// for typical key counts without meaningfully shrinking content room.
-const ENVELOPE_OVERHEAD_FRACTION = 0.08;
 
 /**
  * Per-call timeout for batch / pre-gen LLM calls. There's no cancel controller
@@ -115,34 +104,27 @@ async function yieldToUi() {
  * shape and surface the pressure.
  *
  * @param {object[]} agents
+ * @param {number|null} [groupMaxTokens]
  * @returns {number}
  */
-function batchMaxTokens(agents) {
-    const configured = Number(getGlobalSettings().batchMaxTokens);
-    const ceiling = Number.isFinite(configured) && configured > 0
-        ? configured
-        : BATCH_MAXTOKENS_CEILING;
+function batchMaxTokens(agents, groupMaxTokens = null) {
+    const budget = calculateBatchBudget(agents, {
+        groupMaxTokens,
+        globalMaxTokens: getGlobalSettings().batchMaxTokens,
+    });
 
-    // Usable content budget after reserving envelope scaffolding overhead.
-    const usable = Math.max(1, Math.floor(ceiling * (1 - ENVELOPE_OVERHEAD_FRACTION)));
-
-    const sum = agents.reduce(
-        (n, a) => n + (a.sidecarCall?.maxTokens || a.maxTokens || 2048), 0,
-    );
-
-    if (sum > usable) {
-        const perKeyWanted = Math.round(sum / agents.length);
-        const perKeyActual = Math.floor(usable / agents.length);
+    if (budget.constrained) {
+        const perKeyWanted = Math.round(budget.requestedContent / agents.length);
+        const perKeyActual = Math.floor(budget.usableContent / agents.length);
+        const source = budget.source === 'group' ? 'group override' : `${budget.source} setting`;
         console.warn(
-            `${LOG_PREFIX} batch of ${agents.length} agent(s) wants ${sum} tokens but the ` +
-            `envelope is capped at ${usable} (ceiling ${ceiling} − overhead). Each key now ` +
+            `${LOG_PREFIX} batch of ${agents.length} agent(s) wants ${budget.requestedContent} content tokens but the ` +
+            `${source} caps the request at ${budget.ceiling} (~${budget.usableContent} after envelope overhead). Each key now ` +
             `gets ~${perKeyActual} vs ~${perKeyWanted} requested — truncation/salvage is more ` +
-            `likely. Split this group across profiles or raise globalSettings.batchMaxTokens.`,
+            `likely. Split the group across profiles or raise its batch output token ceiling.`,
         );
-        return usable;
     }
-
-    return sum;
+    return budget.maxTokens;
 }
 
 /**
@@ -287,6 +269,7 @@ function salvageKey(text, key) {
  */
 async function buildBatchedPrompt(agents, sceneText, message, generationType, messageIndex = chat.length) {
     const keys = agents.map(a => a.sidecarCall?.responseKey || a.id);
+    const contextCache = {};
 
     const taskBlocks = (await Promise.all(agents.map(async agent => {
         const key = agent.sidecarCall?.responseKey || agent.id;
@@ -311,7 +294,7 @@ async function buildBatchedPrompt(agents, sceneText, message, generationType, me
         // an optimization, not a different execution mode, so preserve the same
         // card/persona/WI/summary/history inputs inside each task block.
         const maxTokens = agent.sidecarCall?.maxTokens || agent.maxTokens || 8192;
-        const richContext = await buildAgentRichContext(agent, messageIndex, '', maxTokens);
+        const richContext = await buildAgentRichContext(agent, messageIndex, '', maxTokens, { contextCache });
         if (richContext) prompt += '\n\n' + richContext;
 
         const batchContract = `BATCH OUTPUT CONTRACT (overrides any task-local wrapper/tag instruction):\n` +
@@ -381,9 +364,10 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
     if (!sceneText?.trim()) return { changed: false, dataStored: false };
 
     const keys = batch.map(a => a.sidecarCall?.responseKey || a.id);
-    const maxTokens = batchMaxTokens(batch);
+    const maxTokens = batchMaxTokens(batch, opts.batchMaxTokens);
     const profileId = batch[0].connectionProfile || '';
-    const showNotifications = getGlobalSettings().showNotifications;
+    const showNotifications = getGlobalSettings().showNotifications
+        && batch.some(agent => !agent.utilityAnalysis?.silent);
     const batchNames = batch.map(a => a.name).join(', ');
     const ensureRunCurrent = () => {
         if (!opts.signal?.aborted) return;
@@ -554,6 +538,7 @@ export async function executeSidecarBatch(batch, message, messageIndex, generati
  */
 async function buildBatchedPreGenPrompt(agents, contextText, generationType, pendingUserText = '') {
     const keys = agents.map(a => a.sidecarCall?.responseKey || a.id);
+    const contextCache = {};
 
     const taskBlocks = await Promise.all(agents.map(async (agent) => {
         const key = agent.sidecarCall?.responseKey || agent.id;
@@ -569,7 +554,13 @@ async function buildBatchedPreGenPrompt(agents, contextText, generationType, pen
         // Per-agent rich context — only the sections this agent enabled. The
         // pending message is handled batch-wide below, so suppress it here to
         // avoid duplicating it in every task block.
-        const richContext = await buildAgentRichContext(agent, chat.length - 1, '');
+        const richContext = await buildAgentRichContext(
+            agent,
+            chat.length - 1,
+            '',
+            8192,
+            { contextCache },
+        );
         if (richContext) prompt += '\n\n' + richContext;
 
         return `=== Task: ${key} ===\n${prompt}`;
@@ -617,7 +608,7 @@ export async function executePreGenSidecarBatch(batch, contextText, generationTy
     }
 
     const keys = batch.map(a => a.sidecarCall?.responseKey || a.id);
-    const maxTokens = batchMaxTokens(batch);
+    const maxTokens = batchMaxTokens(batch, opts.batchMaxTokens);
     const profileId = batch[0].connectionProfile || '';
     const showNotifications = getGlobalSettings().showNotifications;
     const batchNames = batch.map(a => a.name).join(', ');
@@ -870,6 +861,7 @@ function buildPreGenExecutionPlan(agents) {
             id: groupId,
             order: groupConfig.order ?? 100,
             executionMode: groupConfig.executionMode || 'parallel',
+            batchMaxTokens: groupConfig.batchMaxTokens ?? null,
             agents: groupAgents,
         });
     }
@@ -879,6 +871,7 @@ function buildPreGenExecutionPlan(agents) {
             id: '__ungrouped__',
             order: 9999,
             executionMode: 'parallel',
+            batchMaxTokens: null,
             agents: ungrouped,
         });
     }
@@ -997,7 +990,10 @@ export async function processPreGenAgents(activeAgents, generationType, contextT
                     const stored = await runPreGenSequentialGroup(group.agents, generationType, contextText, pendingUserText, opts);
                     stored.forEach(variable => storedVariables.add(variable));
                 } else {
-                    const stored = await runPreGenParallelGroup(group.agents, generationType, contextText, pendingUserText, opts);
+                    const stored = await runPreGenParallelGroup(group.agents, generationType, contextText, pendingUserText, {
+                        ...opts,
+                        batchMaxTokens: group.batchMaxTokens,
+                    });
                     stored.forEach(variable => storedVariables.add(variable));
                 }
             } catch (err) {

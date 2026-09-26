@@ -10,6 +10,7 @@ const STORE_KEY = 'saActivationPolicyRuns';
 
 export const ActivationPolicyMode = Object.freeze({
     ALWAYS: 'always',
+    MANUAL: 'manual',
     UNTIL_STATE: 'until-state',
     ONCE_PER_CHAT: 'once-per-chat',
     ONCE_PER_BRANCH: 'once-per-branch',
@@ -54,6 +55,7 @@ function readRecord(agentId) {
 export function activationPolicyAllows(agent) {
     const mode = policyMode(agent);
     if (mode === ActivationPolicyMode.ALWAYS) return true;
+    if (mode === ActivationPolicyMode.MANUAL) return false;
     if (mode === ActivationPolicyMode.UNTIL_STATE) return !hasTrackedState(agent);
 
     const record = readRecord(agent?.id);
@@ -90,4 +92,3 @@ export function clearActivationPolicyState(agent) {
     saveChatDebounced();
     return true;
 }
-

@@ -16,24 +16,20 @@
  * Ported from VM's regexProcessor.js. Namespace updated vm→sa; logic verbatim.
  */
 
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/regex]';
 
 // --- Regex safety caps (gameplan problem #5) --------------------------------
 // User/LLM-authored patterns are untrusted once agent packs become shareable.
-// JS regex runs synchronously, so a single catastrophic exec() can't be
-// interrupted mid-match — but we bound every other axis: pattern length, input
-// length, match count, and total wall-clock time across the match loop. The
-// nested-quantifier heuristic in buildRegex surfaces the classic ReDoS shape so
-// a stall is at least traceable in the console.
+// Match in a worker so a stalled exec() can be terminated. If workers are
+// unavailable, only a conservative pattern subset runs on the main thread.
 const MAX_PATTERN_LENGTH = 2000;    // chars; reject longer patterns outright
 const MAX_INPUT_LENGTH = 200000;    // chars of message text scanned per script
+const MAX_FALLBACK_INPUT_LENGTH = 4096;
 const MAX_MATCHES = 5000;           // hard ceiling on matches per script
 const MATCH_TIME_BUDGET_MS = 250;   // wall-clock budget across the match loop
-// (a+)+ / (.*)* / (\d+)* style — an inner quantifier inside a group that the
-// group itself then quantifies. Heuristic only; documented as such.
-const NESTED_QUANTIFIER_RE = /\([^)]*[+*][^)]*\)[+*]/;
+const MATCH_WORKER_DEADLINE_MS = 600;
 
 const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 
@@ -99,9 +95,9 @@ function normalizeDepth(value) {
  * @param {object} agent - Agent definition with regexScripts[]
  * @param {object} message - The chat message object (chat[n])
  * @param {number} messageIndex - Index in chat array
- * @returns {{ changed: boolean, extractionCount: number }}
+ * @returns {Promise<{ changed: boolean, extractionCount: number }>}
  */
-export function processAgentRegex(agent, message, messageIndex) {
+export async function processAgentRegex(agent, message, messageIndex) {
     const scripts = agent.regexScripts;
     if (!Array.isArray(scripts) || scripts.length === 0) {
         return { changed: false, extractionCount: 0 };
@@ -127,7 +123,9 @@ export function processAgentRegex(agent, message, messageIndex) {
             const regex = buildRegex(script.findRegex);
             if (!regex) continue;
 
-            const matches = collectMatches(regex, message.mes);
+            const textAtStart = message.mes;
+            const matches = await collectMatchesBounded(regex, textAtStart);
+            if (message.mes !== textAtStart) continue;
             if (matches.length === 0) continue;
 
             const extractions = matches.map(m => ({
@@ -182,6 +180,88 @@ export function processAgentRegex(agent, message, messageIndex) {
     return { changed: mesChanged, extractionCount: totalExtractions };
 }
 
+const matchQueue = [];
+let matchWorker = null;
+let activeMatch = null;
+let workerUnavailable = false;
+
+function finishActiveMatch(matches) {
+    const job = activeMatch;
+    if (!job) return;
+    clearTimeout(job.timer);
+    activeMatch = null;
+    job.resolve(matches);
+    pumpMatchQueue();
+}
+
+function resetMatchWorker() {
+    matchWorker?.terminate();
+    matchWorker = null;
+}
+
+function pumpMatchQueue() {
+    if (activeMatch || matchQueue.length === 0) return;
+    if (workerUnavailable) {
+        for (const job of matchQueue.splice(0)) {
+            job.resolve(isSafeRegexPattern(job.regex.source)
+                ? collectMatches(job.regex, job.text.slice(0, MAX_FALLBACK_INPUT_LENGTH))
+                : []);
+        }
+        return;
+    }
+    if (!matchWorker) {
+        try {
+            matchWorker = new Worker(new URL('./regexMatchWorker.js', import.meta.url), { type: 'module' });
+            const currentWorker = matchWorker;
+            currentWorker.onmessage = event => {
+                if (matchWorker === currentWorker) finishActiveMatch(event.data?.matches || []);
+            };
+            currentWorker.onerror = () => {
+                if (matchWorker !== currentWorker) return;
+                workerUnavailable = true;
+                resetMatchWorker();
+                finishActiveMatch([]);
+            };
+        } catch (error) {
+            workerUnavailable = true;
+            console.warn(`${LOG_PREFIX} regex worker unavailable; using restricted main-thread matcher`, error);
+            pumpMatchQueue();
+            return;
+        }
+    }
+    const job = matchQueue.shift();
+    activeMatch = job;
+    job.timer = setTimeout(() => {
+        console.warn(`${LOG_PREFIX} regex match exceeded ${MATCH_WORKER_DEADLINE_MS}ms; skipping script`);
+        resetMatchWorker();
+        finishActiveMatch([]);
+    }, MATCH_WORKER_DEADLINE_MS);
+    try {
+        matchWorker.postMessage({ source: job.regex.source, flags: job.regex.flags, text: job.text });
+    } catch (error) {
+        console.warn(`${LOG_PREFIX} regex worker request failed:`, error);
+        resetMatchWorker();
+        finishActiveMatch([]);
+    }
+}
+
+function collectMatchesBounded(regex, text) {
+    const canUseWorker = typeof Worker === 'function' && !workerUnavailable;
+    const input = String(text ?? '').slice(0,
+        canUseWorker ? MAX_INPUT_LENGTH : MAX_FALLBACK_INPUT_LENGTH);
+    if (!canUseWorker) {
+        if (!isSafeRegexPattern(regex.source)) {
+            console.warn(`${LOG_PREFIX} skipped expensive regex without worker support: ${regex.source}`);
+            return Promise.resolve([]);
+        }
+        return Promise.resolve(collectMatches(regex, input));
+    }
+    return new Promise(resolve => {
+        matchQueue.push({ regex, text: input, resolve, timer: null });
+        pumpMatchQueue();
+    });
+}
+
 // ============================================================================
 // HELPERS
 // ============================================================================
@@ -207,20 +287,67 @@ function buildRegex(regexStr) {
         const pattern = slashMatch ? slashMatch[1] : regexStr;
         const flags = slashMatch ? slashMatch[2] : 'g';
 
-        // Cheap catastrophic-backtracking heuristic: nested quantifiers like
-        // (a+)+ or (.*)* are the classic ReDoS shape. We don't block (false
-        // positives are too easy) but we surface a warning so a hang is
-        // traceable. The match loop in collectMatches is time-budgeted, but a
-        // single pathological exec() is synchronous and can still stall.
-        if (NESTED_QUANTIFIER_RE.test(pattern)) {
-            debug(`${LOG_PREFIX} regex "${pattern}" has a nested-quantifier shape that can backtrack catastrophically; matching is time-budgeted but a single pathological match may still block.`);
-        }
-
         return new RegExp(pattern, flags);
     } catch (err) {
         debug(`${LOG_PREFIX} Invalid regex: "${regexStr}"`, err);
         return null;
     }
+}
+
+export function isSafeRegexPattern(pattern) {
+    let repetitions = 0;
+    let inClass = false;
+    let lastGroupHadAlternation = false;
+    const groups = [];
+    for (let i = 0; i < pattern.length; i++) {
+        const char = pattern[i];
+        if (char === '\\') {
+            if (/[1-9]/.test(pattern[i + 1] || '')) return false;
+            i++;
+            lastGroupHadAlternation = false;
+            continue;
+        }
+        if (inClass) {
+            if (char === ']') inClass = false;
+            continue;
+        }
+        if (char === '[') {
+            inClass = true;
+            lastGroupHadAlternation = false;
+            continue;
+        }
+        if (char === '(') {
+            if (pattern.startsWith('(?=', i) || pattern.startsWith('(?!', i)
+                || pattern.startsWith('(?<=', i) || pattern.startsWith('(?<!', i)) return false;
+            groups.push({ alternation: false });
+            if (pattern.startsWith('(?:', i)) i += 2;
+            lastGroupHadAlternation = false;
+            continue;
+        }
+        if (char === ')') {
+            lastGroupHadAlternation = groups.pop()?.alternation ?? false;
+            continue;
+        }
+        if (char === '|') {
+            if (groups.length) groups.at(-1).alternation = true;
+            lastGroupHadAlternation = false;
+            continue;
+        }
+        const bounded = char === '{' ? /^\{(\d+)(?:,(\d*))?\}/.exec(pattern.slice(i)) : null;
+        const lazySuffix = char === '?' && /[+*}]/.test(pattern[i - 1] || '');
+        if (char === '*' || char === '+' || (char === '?' && !lazySuffix) || bounded) {
+            if (++repetitions > 1 || lastGroupHadAlternation) return false;
+            if (bounded) {
+                const upper = Number(bounded[2] || bounded[1]);
+                if (upper > 1000) return false;
+                i += bounded[0].length - 1;
+            }
+            lastGroupHadAlternation = false;
+            continue;
+        }
+        lastGroupHadAlternation = false;
+    }
+    return true;
 }
 
 /**
@@ -261,8 +388,7 @@ function collectMatches(regex, text) {
 
         // Wall-clock budget across the loop. Catches a global pattern that
         // keeps finding matches slowly. Cannot interrupt a single catastrophic
-        // exec() (JS regex is synchronous) — the length cap + nested-quantifier
-        // warning in buildRegex bound that residual risk.
+        // exec() (JS regex is synchronous); the fallback accepts restricted patterns.
         if (now() > deadline) {
             debug(`${LOG_PREFIX} match time budget (${MATCH_TIME_BUDGET_MS}ms) exceeded; stopping after ${matches.length} match(es)`);
             break;
@@ -342,5 +468,7 @@ export function clearAgentData(message, agentId) {
         if (Object.keys(message.extra.saAgentData).length === 0) {
             delete message.extra.saAgentData;
         }
+        return true;
     }
+    return false;
 }

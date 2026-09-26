@@ -2,7 +2,7 @@
 
 import { saveSettingsDebounced } from '../../../../../../script.js';
 import { extension_settings } from '../../../../../extensions.js';
-import { MODULE_NAME } from '../../index.js';
+import { MODULE_NAME } from '../core/runtime.js';
 
 const POSITION_KEY = 'storyAppsPosition';
 const MOVE_THRESHOLD = 4;

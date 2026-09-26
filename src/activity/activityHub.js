@@ -6,8 +6,9 @@ import {
     saveChatDebounced,
 } from '../../../../../../script.js';
 import { eventSource, event_types } from '../../../../../events.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import { SUPERAGENTS_EVENTS } from '../integration/events.js';
+import { deletedTailStart, isAnchoredInDeletedTail } from '../core/branchPath.js';
 import {
     markActivityRead,
     markSourceArtifactsRead,
@@ -17,6 +18,7 @@ import {
     removeSourceArtifacts,
     resolveActivityBranch,
     upsertActivityArtifact,
+    upsertActivityArtifacts,
 } from './activityStore.js';
 
 const LOG_PREFIX = '[SuperAgents/activity]';
@@ -188,42 +190,44 @@ function commitmentArtifact(commitment) {
 }
 
 function hydrateVisibleSources() {
-    let state = readState();
+    const state = readState();
     const known = new Set(state.artifacts.map(artifact => artifact.id));
-    let added = 0;
+    const missing = [];
     const threads = producers.phone?.listThreads?.() || {};
     for (const [character, thread] of Object.entries(threads)) {
         for (const message of thread?.messages || []) {
             const artifact = phoneArtifact(message, character);
             if (known.has(artifact.id)) continue;
-            state = upsertActivityArtifact(state, artifact).state;
+            missing.push(artifact);
             known.add(artifact.id);
-            added += 1;
         }
     }
     for (const post of producers.feed?.listPosts?.() || []) {
         const artifact = feedArtifact(post);
         if (known.has(artifact.id)) continue;
-        state = upsertActivityArtifact(state, artifact).state;
+        missing.push(artifact);
         known.add(artifact.id);
-        added += 1;
     }
     for (const commitment of producers.calendar?.listCommitments?.() || []) {
         const artifact = commitmentArtifact(commitment);
         if (known.has(artifact.id)) continue;
-        state = upsertActivityArtifact(state, artifact).state;
+        missing.push(artifact);
         known.add(artifact.id);
-        added += 1;
     }
-    if (added) persist(state, { kind: 'hydrated', count: added });
-    return added;
+    if (missing.length) {
+        persist(upsertActivityArtifacts(state, missing).state, { kind: 'hydrated', count: missing.length });
+    }
+    return missing.length;
 }
 
 function handlePhoneActivity(event = {}) {
     const messages = Array.isArray(event.messages) ? event.messages : [];
     if (event.kind === 'message') {
-        for (const message of messages) {
-            publishActivity(phoneArtifact(message, event.character));
+        if (messages.length) {
+            const artifacts = messages.map(message => phoneArtifact(message, event.character));
+            persist(upsertActivityArtifacts(readState(), artifacts).state, {
+                kind: 'recorded', sourceApp: 'phone', count: artifacts.length,
+            });
         }
         return;
     }
@@ -341,6 +345,19 @@ export function initActivityHub({ phone = {}, feed = {}, calendar = {} } = {}) {
     });
     if (event_types.MESSAGE_SWIPED) {
         eventSource.on(event_types.MESSAGE_SWIPED, () => {
+            if (!hydrateVisibleSources()) notifyListeners({ kind: 'branch-changed' });
+        });
+    }
+    if (event_types.MESSAGE_DELETED) {
+        eventSource.on(event_types.MESSAGE_DELETED, messageIndex => {
+            const state = readState();
+            const start = deletedTailStart(chat, messageIndex);
+            const kept = state.artifacts.filter(artifact => !isAnchoredInDeletedTail(artifact, start));
+            if (kept.length !== state.artifacts.length) {
+                state.artifacts = kept;
+                writeState(state);
+                saveChatDebounced();
+            }
             if (!hydrateVisibleSources()) notifyListeners({ kind: 'branch-changed' });
         });
     }

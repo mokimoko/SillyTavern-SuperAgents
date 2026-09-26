@@ -1,0 +1,135 @@
+{
+  "id": "tpl-drama-queen",
+  "name": "Drama Queen",
+  "description": "A private dramatic-pressure planner that turns established fault lines into steerable, consequence-aware story arcs.",
+  "icon": "fa-solid fa-masks-theater",
+  "category": "content",
+  "tags": ["drama", "conflict", "planner", "manual", "utility"],
+  "version": 5,
+  "author": "",
+  "prompt": "### Drama Queen — Private Dramatic-Pressure Planner\n\nYou are an author-facing story planner, not an argument generator or an ethics summarizer. Invent playable chains of trouble: a non-player character actively wants something, uses a character-specific tactic, triggers a new development after the latest scene moment, meets an incompatible agenda, and creates an earned turn with a concrete price. Do not write the scene or declare proposals canon. Never author the player persona's thoughts, dialogue, choices, emotions, or reactions.\n\nReturn exactly one compact JSON object inside [DRAMA_QUEEN] tags using the validated schema. Return the exact number of genuinely divergent proposals required by the output contract; never collapse the result to a single option. Keep every scalar field and beat direction to one short sentence so all requested options finish cleanly. Do not return several readings of the same immediate act. Vary the dramatic machinery when canon permits: a secret or lie coming due, a tempting bargain with an ugly price, a loyalty or alliance shift, a status reversal, a public/private contradiction, or a character-specific wildcard. A catalyst must change what someone can or must do next; never quote or paraphrase something that already happened as the catalyst. Make stakes concrete rather than merely saying trust, dignity, tension, or a relationship is at risk.\n\nUse exactly these six stage labels in order: Expose the Fault Line; Test the Boundary; Remove the Easy Exit; Force a Choice; Make It Cost Something; Live With the Change. Each direction must be self-contained because only the current beat will reach the writer. By the middle beats, change who has leverage, what someone believes, which alliance holds, or which safe option remains; do not repeat the opening conflict more loudly six times.\n\nPrefer established canon and earn surprise from it. Clearly label a deliberately introduced catalyst as new-catalyst. Avoid generic insults, passive discomfort, arbitrary misunderstandings, melodramatic randomness, frictionless apologies, instant forgiveness, consequence-erasing reconciliation, and premature resolution. Build pressure without assuming catastrophe; the user sets the damage ceiling later. Output valid compact JSON and nothing outside the tagged block.",
+  "phase": "post",
+  "injection": { "position": 1, "depth": 1, "role": 0, "order": 61, "scan": false, "template": "", "injectResult": false },
+  "postProcess": { "enabled": false, "type": "regex", "regexFind": "", "regexReplace": "", "regexFlags": "g", "appendText": "", "extractPattern": "", "extractVariable": "", "rewriteEnabled": false, "rewriteMode": "rewrite", "rewriteMaxTokens": 4000 },
+  "sidecarCall": {
+    "enabled": true,
+    "maxTokens": 6000,
+    "responseKey": "drama_queen",
+    "includeHistory": false,
+    "historyMessageCount": 18,
+    "genesisHistoryCount": 30,
+    "richContext": { "enabled": false, "character": false, "persona": false, "worldInfo": false, "summary": false, "simpleSummarizer": false, "authorsNote": false, "pendingUser": false, "historyCount": 0, "selfMemory": false, "selfMemoryCount": 0 },
+    "display": { "enabled": false, "position": "top", "hookClass": "", "dataMap": {}, "contentField": "" }
+  },
+  "mergeVariable": {
+    "validation": {
+      "enabled": true,
+      "jsonField": "json",
+      "canonicalizer": "drama-queen",
+      "schemaVersion": 1,
+      "invariants": [],
+      "schema": {
+        "type": "object",
+        "required": ["version", "sceneRead", "proposals", "active"],
+        "properties": {
+          "version": { "type": "number", "const": 1 },
+          "sceneRead": { "type": "string", "maxLength": 1000 },
+          "proposals": {
+            "type": "array", "minItems": 1, "maxItems": 6,
+            "items": {
+              "type": "object",
+              "required": ["id", "title", "cast", "intent", "faultLine", "incompatibleAgendas", "refusal", "leverage", "stakes", "catalyst", "easyExit", "consequences", "stages", "guardrails"],
+              "properties": {
+                "id": { "type": "string", "minLength": 1, "maxLength": 60 },
+                "title": { "type": "string", "minLength": 1, "maxLength": 100 },
+                "cast": { "type": "array", "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 100 } },
+                "intent": { "type": "string", "enum": ["find-fault-lines", "stir-the-pot", "make-it-worse", "let-it-haunt-them"] },
+                "faultLine": { "type": "string", "minLength": 1, "maxLength": 800 },
+                "incompatibleAgendas": { "type": "array", "minItems": 2, "maxItems": 8, "items": { "type": "string", "minLength": 1, "maxLength": 400 } },
+                "refusal": { "type": "string", "maxLength": 600 },
+                "leverage": { "type": "string", "maxLength": 600 },
+                "stakes": { "type": "string", "maxLength": 700 },
+                "catalyst": {
+                  "type": "object", "required": ["event", "provenance", "basis"],
+                  "properties": {
+                    "event": { "type": "string", "maxLength": 700 },
+                    "provenance": { "type": "string", "enum": ["established", "inferred", "new-catalyst", "user-note"] },
+                    "basis": { "type": "string", "maxLength": 500 }
+                  },
+                  "additionalProperties": false
+                },
+                "easyExit": { "type": "string", "maxLength": 600 },
+                "consequences": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 500 } },
+                "stages": {
+                  "type": "array", "minItems": 6, "maxItems": 6,
+                  "items": {
+                    "type": "object", "required": ["label", "direction"],
+                    "properties": {
+                      "label": { "type": "string", "enum": ["Expose the Fault Line", "Test the Boundary", "Remove the Easy Exit", "Force a Choice", "Make It Cost Something", "Live With the Change"] },
+                      "direction": { "type": "string", "minLength": 1, "maxLength": 900 }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "guardrails": { "type": "array", "maxItems": 8, "items": { "type": "string", "maxLength": 300 } }
+              },
+              "additionalProperties": false
+            }
+          },
+          "active": {
+            "type": ["object", "null"],
+            "required": ["proposalIndex", "beatIndex", "pressure", "damageCeiling", "activatedAtMessage"],
+            "properties": {
+              "proposalIndex": { "type": "number", "minimum": 0, "maximum": 5 },
+              "beatIndex": { "type": "number", "minimum": 0, "maximum": 5 },
+              "pressure": { "type": "string", "enum": ["simmer", "press", "corner", "break"] },
+              "damageCeiling": { "type": "string", "enum": ["sting", "strain", "rupture", "catastrophe"] },
+              "activatedAtMessage": { "type": "number", "minimum": 0 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "enabled": true,
+    "variableName": "sa_drama_queen",
+    "extractPattern": "\\[DRAMA_QUEEN\\]\\s*([\\s\\S]*?)\\s*\\[\\/DRAMA_QUEEN\\]",
+    "fieldNames": ["json"],
+    "keyFields": [],
+    "mode": "snapshot",
+    "stripFromResponse": true,
+    "injectFormatted": false,
+    "autoInject": false,
+    "macroName": "drama_queen",
+    "formatHeader": "",
+    "formatItem": "{{json}}",
+    "formatEmpty": ""
+  },
+  "dramaQueenConfig": {
+    "enabled": true,
+    "probeTerms": ["conflict", "secret", "promise", "betrayal", "loyalty"],
+    "proposalCount": 4,
+    "showBeatController": true,
+    "smartNudge": false
+  },
+  "regexScripts": [],
+  "connectionProfile": "",
+  "maxTokens": 6000,
+  "everyN": 1,
+  "everyNCadence": "new-replies",
+  "activationPolicy": { "mode": "manual" },
+  "scope": { "mode": "any", "characterBindings": [], "tagBindings": [], "groupBindings": [] },
+  "enabled": false,
+  "paused": false,
+  "conditions": {
+    "triggerKeywords": [],
+    "triggerPatterns": [],
+    "triggerProbability": 100,
+    "generationTypes": ["normal", "continue", "impersonate", "swipe"],
+    "generationTypesVersion": 2,
+    "stateGate": { "enabled": false, "variableName": "", "jsonField": "json", "path": "", "operator": "eq", "value": "true", "requireFresh": true }
+  },
+  "groupId": null,
+  "sourceTemplateId": "tpl-drama-queen"
+}

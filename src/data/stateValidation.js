@@ -287,6 +287,7 @@ export function normalizeValidationConfig(raw) {
         return {
             enabled: false,
             jsonField: '',
+            canonicalizer: '',
             schemaVersion: 1,
             canonicalizeJson: true,
             maxErrors: DEFAULT_MAX_ERRORS,
@@ -299,6 +300,7 @@ export function normalizeValidationConfig(raw) {
     return {
         enabled: Boolean(raw.enabled),
         jsonField: typeof raw.jsonField === 'string' ? raw.jsonField.trim() : '',
+        canonicalizer: typeof raw.canonicalizer === 'string' ? raw.canonicalizer.trim() : '',
         schemaVersion: Number.isFinite(Number(raw.schemaVersion))
             ? Math.max(1, Math.floor(Number(raw.schemaVersion)))
             : 1,

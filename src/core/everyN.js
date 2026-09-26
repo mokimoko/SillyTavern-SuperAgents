@@ -24,7 +24,7 @@
  */
 
 import { chat_metadata } from '../../../../../../script.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/everyN]';
 const STORE_KEY = 'saEveryNCounters';   // chat_metadata[STORE_KEY] = { [agentId]: int }

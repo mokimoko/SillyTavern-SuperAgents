@@ -21,7 +21,7 @@
 
 import { chat, extension_prompt_types } from '../../../../../../script.js';
 import { getContext } from '../../../../../extensions.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/richContext]';
 
@@ -35,6 +35,23 @@ const WORLD_INFO_SCAN_CAP = 100;
 // Core Author's Note module key in extensionPrompts (authors-note.js MODULE_NAME).
 const AUTHORS_NOTE_KEY = '2_floating_prompt';
 
+function cacheMap(cache, key) {
+    if (!cache) return null;
+    if (!(cache[key] instanceof Map)) cache[key] = new Map();
+    return cache[key];
+}
+
+/** Collect only the requested recent non-system messages without filtering the whole chat. */
+function recentChatMessages(mesNum, count) {
+    const out = [];
+    const end = Math.min(Number(mesNum), chat.length - 1);
+    for (let index = end; index >= 0 && out.length < count; index--) {
+        const message = chat[index];
+        if (message && !message.is_system) out.push(message);
+    }
+    return out.reverse();
+}
+
 /**
  * The default rich-context flag set. Every flag defaults OFF so an agent only
  * pays for the context it opts into. normalizeRichContext (normalize.js) mirrors
@@ -45,6 +62,7 @@ const AUTHORS_NOTE_KEY = '2_floating_prompt';
  * @property {boolean} persona       Include the {{user}} persona (### Player character).
  * @property {boolean} worldInfo     Include active lorebook entries (### World Info).
  * @property {boolean} summary       Include the running Summarize state (### Summary).
+ * @property {boolean} simpleSummarizer Include eligible Simple Summarizer batches and context archives when installed.
  * @property {boolean} authorsNote   Include the active Author's Note (### Author's Note).
  * @property {boolean} pendingUser   Include the user's not-yet-committed message (### Pending user message).
  * @property {number}  historyCount  How many recent messages to include (0 = none; history is rendered by the caller).
@@ -163,7 +181,7 @@ function getAuthorsNote(ctx) {
  * @param {number} mesNum
  * @returns {string}
  */
-function getRunningSummary(ctx, mesNum) {
+function getRunningSummary(ctx, mesNum, cache = null) {
     const extract = (mem) => {
         if (!mem) return '';
         if (typeof mem === 'string') return mem.trim();
@@ -175,20 +193,57 @@ function getRunningSummary(ctx, mesNum) {
         }
         return '';
     };
+    const summaries = cacheMap(cache, 'summaries');
+    const key = Math.min(Number(mesNum), chat.length - 1);
+    if (summaries?.has(key)) return summaries.get(key);
     try {
         const end = Math.min(Number(mesNum), chat.length - 1);
         for (let i = end; i >= 0; i--) {
             const text = extract(chat[i]?.extra?.memory);
-            if (text) return text;
+            if (text) {
+                summaries?.set(key, text);
+                return text;
+            }
         }
         for (const key of ['tech_summarize', '1_memory']) {
             const live = ctx.extensionPrompts?.[key]?.value;
-            if (live && String(live).trim()) return String(live).trim();
+            if (live && String(live).trim()) {
+                const text = String(live).trim();
+                summaries?.set(Math.min(Number(mesNum), chat.length - 1), text);
+                return text;
+            }
         }
     } catch (e) {
         debug(`${LOG_PREFIX} summary read failed:`, e?.message);
     }
+    summaries?.set(key, '');
     return '';
+}
+
+/** Optional prompt-safe memory exposed by Simple Summarizer's public API/macros. */
+async function getSimpleSummarizerMemory(ctx, cache = null) {
+    if (cache?.simpleSummarizerPromise) return cache.simpleSummarizerPromise;
+    const build = async () => {
+        try {
+            const api = globalThis.Summarizer;
+            if (!api?.isInstalled || api.isEnabled?.() === false) return '';
+
+            const batchText = sub(ctx, '{{batch_summaries}}').trim();
+            const batches = batchText === '{{batch_summaries}}' ? '' : batchText;
+            let archives = '';
+            if (api.contextArchives?.isEnabled?.() !== false
+                && typeof api.contextArchives?.buildContent === 'function') {
+                archives = String(await api.contextArchives.buildContent() || '').trim();
+            }
+            return [batches, archives].filter(Boolean).join('\n\n');
+        } catch (e) {
+            debug(`${LOG_PREFIX} Simple Summarizer memory read failed:`, e?.message);
+            return '';
+        }
+    };
+    const promise = build();
+    if (cache) cache.simpleSummarizerPromise = promise;
+    return promise;
 }
 
 // ============================================================================
@@ -204,13 +259,20 @@ function getRunningSummary(ctx, mesNum) {
  * @param {number} maxContext  token budget hint for WI activation
  * @returns {Promise<string>}
  */
-async function getActiveWorldInfo(ctx, mesNum, maxContext) {
+async function getActiveWorldInfo(ctx, mesNum, maxContext, scanText = '', cache = null) {
     try {
         if (typeof ctx.getWorldInfoPrompt !== 'function') return '';
-        const messages = chat
-            .filter((c, index) => !c.is_system && index <= mesNum)
-            .slice(-WORLD_INFO_SCAN_CAP)
-            .map(c => `${c.name}: ${String(c.mes || '').replace(BLOCK_RE, '').trim()}`);
+        const messageCache = cacheMap(cache, 'worldInfoMessages');
+        const key = Math.min(Number(mesNum), chat.length - 1);
+        let baseMessages = messageCache?.get(key);
+        if (!baseMessages) {
+            baseMessages = recentChatMessages(mesNum, WORLD_INFO_SCAN_CAP)
+                .map(c => `${c.name}: ${String(c.mes || '').replace(BLOCK_RE, '').trim()}`);
+            messageCache?.set(key, baseMessages);
+        }
+        const messages = [...baseMessages];
+        const probe = String(scanText || '').replace(/\s+/g, ' ').trim();
+        if (probe) messages.push(`Private author utility probe: ${probe}`);
         if (messages.length === 0) return '';
         const chatForWI = messages.slice().reverse(); // getWorldInfoPrompt expects most-recent-first
         const budget = Number(maxContext) || Number(ctx.maxContext) || 8192;
@@ -244,7 +306,9 @@ async function getActiveWorldInfo(ctx, mesNum, maxContext) {
 export function buildHistoryLines(ctx, mesNum, count, opts = {}) {
     if (!count || count <= 0) return '';
     const bracket = opts.speakerStyle === 'bracket';
-    const end = Math.min(Number(mesNum) + 1, chat.length);
+    const historyCache = cacheMap(opts.cache, 'history');
+    const cacheKey = `${Math.min(Number(mesNum), chat.length - 1)}|${count}|${bracket ? 'b' : 'p'}`;
+    if (historyCache?.has(cacheKey)) return historyCache.get(cacheKey);
     const label = (c) => {
         // Use the message's real author name for user turns too, not a flattened
         // {{user}}: a chat may alternate player personas, and trackers (esp. the
@@ -254,12 +318,12 @@ export function buildHistoryLines(ctx, mesNum, count, opts = {}) {
         const name = c.is_user ? (c.name || '{{user}}') : (c.name || 'Assistant');
         return bracket ? `[${name}]` : name;
     };
-    const slice = chat
-        .filter((c, index) => !c.is_system && index < end)
-        .slice(-count)
+    const slice = recentChatMessages(mesNum, count)
         .map(c => `${label(c)}: ${String(c.mes || '').replace(BLOCK_RE, '').trim()}`)
         .filter(line => line.split(': ').slice(1).join(': ').trim());
-    return sub(ctx, slice.join('\n\n')).trim();
+    const result = sub(ctx, slice.join('\n\n')).trim();
+    historyCache?.set(cacheKey, result);
+    return result;
 }
 
 /**
@@ -269,8 +333,8 @@ export function buildHistoryLines(ctx, mesNum, count, opts = {}) {
  * @param {number} count
  * @returns {string}
  */
-function getHistory(ctx, mesNum, count) {
-    return buildHistoryLines(ctx, mesNum, count, { speakerStyle: 'plain' });
+function getHistory(ctx, mesNum, count, cache = null) {
+    return buildHistoryLines(ctx, mesNum, count, { speakerStyle: 'plain', cache });
 }
 
 // ============================================================================
@@ -347,15 +411,17 @@ function buildSelfMemorySection(ctx, memoryItems, formatItem = '{{plan}}', field
  * @param {RichContextFlags} opts.flags        which sections to include.
  * @param {string} [opts.pendingUserText='']   the not-yet-committed user message.
  * @param {number} [opts.maxContext=8192]      token budget hint for WI activation.
+ * @param {string} [opts.worldInfoScanText=''] private extra terms used only for the dry-run lore scan.
  * @param {object[][]} [opts.selfMemoryItems]  the agent's own recent outputs
  *        (collectRecentStates output), supplied by the caller when flags.selfMemory
  *        is on. Kept as a caller-supplied input so this module needs no chat-walk
  *        imports. Ignored unless flags.selfMemory is true.
  * @param {string} [opts.selfMemoryFormatItem]  agent mergeVariable.formatItem.
  * @param {string[]} [opts.selfMemoryFieldNames]  agent mergeVariable.fieldNames.
+ * @param {object} [opts.contextCache]         generation-local shared read cache.
  * @returns {Promise<string>}                  the composed context (may be '').
  */
-export async function buildRichContext({ mesNum, flags, pendingUserText = '', maxContext = 8192, selfMemoryItems = [], selfMemoryFormatItem, selfMemoryFieldNames }) {
+export async function buildRichContext({ mesNum, flags, pendingUserText = '', maxContext = 8192, worldInfoScanText = '', selfMemoryItems = [], selfMemoryFormatItem, selfMemoryFieldNames, contextCache = null }) {
     if (!flags?.enabled) return '';
     const ctx = getContext();
     const sections = [];
@@ -383,13 +449,18 @@ export async function buildRichContext({ mesNum, flags, pendingUserText = '', ma
     }
 
     if (flags.worldInfo) {
-        const wi = await getActiveWorldInfo(ctx, mesNum, maxContext);
+        const wi = await getActiveWorldInfo(ctx, mesNum, maxContext, worldInfoScanText, contextCache);
         if (wi) sections.push(`### World Info\n${wi}`);
     }
 
     if (flags.summary) {
-        const summary = getRunningSummary(ctx, mesNum);
+        const summary = getRunningSummary(ctx, mesNum, contextCache);
         if (summary) sections.push(`### Summary\n${summary}`);
+    }
+
+    if (flags.simpleSummarizer) {
+        const memory = await getSimpleSummarizerMemory(ctx, contextCache);
+        if (memory) sections.push(`### Simple Summarizer memory\n${memory}`);
     }
 
     // In-chat Author's Note has no clean "depth" home in a flat string; fold it
@@ -399,7 +470,7 @@ export async function buildRichContext({ mesNum, flags, pendingUserText = '', ma
     }
 
     if (flags.historyCount > 0) {
-        const history = getHistory(ctx, mesNum, flags.historyCount);
+        const history = getHistory(ctx, mesNum, flags.historyCount, contextCache);
         if (history) sections.push(`### Recent history\n${history}`);
     }
 

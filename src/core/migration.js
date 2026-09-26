@@ -25,7 +25,7 @@
  */
 
 import { extension_settings } from '../../../../../extensions.js';
-import { MODULE_NAME, debug } from '../../index.js';
+import { MODULE_NAME, debug } from './runtime.js';
 import { loadFromSettings, _internal } from '../data/store.js';
 
 const LOG_PREFIX = '[SuperAgents/migration]';

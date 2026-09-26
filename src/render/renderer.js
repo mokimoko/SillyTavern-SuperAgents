@@ -22,8 +22,10 @@
  */
 
 import { chat, eventSource, event_types } from '../../../../../../script.js';
-import { debug } from '../../index.js';
+import { DOMPurify } from '../../../../../../lib.js';
+import { debug } from '../core/runtime.js';
 import { getAgentById, getEnabledAgents, onStoreChange } from '../data/store.js';
+import { canRenderSidecarData } from './sidecarDisplayPolicy.js';
 
 const LOG_PREFIX = '[SuperAgents/renderer]';
 const RENDERED_ATTR = 'data-sa-agent-rendered';
@@ -53,6 +55,16 @@ let observer = null;
 let unsubscribeStoreChange = null;
 let enabledAgentSignature = '';
 let enabledRefreshQueued = false;
+let initRetryTimer = null;
+let initAttempts = 0;
+const chatMutationListeners = new Set();
+
+/** Reuse the renderer's chat observer instead of installing parallel subtree observers. */
+export function onChatDomMutation(listener) {
+    if (typeof listener !== 'function') return () => {};
+    chatMutationListeners.add(listener);
+    return () => chatMutationListeners.delete(listener);
+}
 
 // ============================================================================
 // INIT / DESTROY
@@ -60,19 +72,24 @@ let enabledRefreshQueued = false;
 
 /** Initialize the renderer: MutationObserver + event hooks. */
 export function initRenderer() {
-    if (observer) return;
-
-    const chatContainer = document.getElementById('chat');
-    if (!chatContainer) {
-        console.warn(`${LOG_PREFIX} #chat not found, deferring init`);
-        setTimeout(() => {
-            const retry = document.getElementById('chat');
-            if (retry && !observer) startObserver(retry);
-        }, 1000);
-        return;
-    }
-
-    startObserver(chatContainer);
+    if (observer || initRetryTimer) return;
+    const tryStart = () => {
+        initRetryTimer = null;
+        if (observer) return;
+        const chatContainer = document.getElementById('chat');
+        if (chatContainer) {
+            initAttempts = 0;
+            startObserver(chatContainer);
+            return;
+        }
+        if (++initAttempts < 20) {
+            initRetryTimer = setTimeout(tryStart, 250);
+        } else {
+            initAttempts = 0;
+            console.warn(`${LOG_PREFIX} #chat not found; renderer not bound`);
+        }
+    };
+    tryStart();
 }
 
 function startObserver(chatContainer) {
@@ -81,6 +98,11 @@ function startObserver(chatContainer) {
             for (const node of mutation.addedNodes) {
                 if (node.nodeType !== Node.ELEMENT_NODE) continue;
                 processNode(node);
+            }
+        }
+        for (const listener of chatMutationListeners) {
+            try { listener(mutations); } catch (error) {
+                console.warn(`${LOG_PREFIX} chat-mutation listener failed:`, error);
             }
         }
     });
@@ -103,6 +125,9 @@ function startObserver(chatContainer) {
 
 /** Tear down the renderer and detach listeners. */
 export function destroyRenderer() {
+    if (initRetryTimer) clearTimeout(initRetryTimer);
+    initRetryTimer = null;
+    initAttempts = 0;
     if (observer) {
         observer.disconnect();
         observer = null;
@@ -154,7 +179,8 @@ function renderMessage(mesEl) {
     const entries = Object.entries(agentData).filter(([agentId, data]) => {
         const sourceAgent = getAgentById(data?.agentId || agentId);
         return sourceAgent?.enabled
-            && (data._swipeId === undefined || data._swipeId === currentSwipeId);
+            && (data._swipeId === undefined || data._swipeId === currentSwipeId)
+            && canRenderSidecarData(sourceAgent, message, currentSwipeId);
     });
     if (entries.length === 0) {
         mesEl.setAttribute(RENDERED_ATTR, 'empty');
@@ -188,7 +214,7 @@ function renderMessage(mesEl) {
     if (topFragments.length > 0) {
         const topContainer = document.createElement('div');
         topContainer.className = 'sa-agent-output sa-agent-output-top';
-        topContainer.innerHTML = topFragments.join('');
+        topContainer.innerHTML = DOMPurify.sanitize(topFragments.join(''));
         mesText.insertBefore(topContainer, mesText.firstChild);
         runRenderHooks(topContainer);
     }
@@ -196,7 +222,7 @@ function renderMessage(mesEl) {
     if (bottomFragments.length > 0) {
         const bottomContainer = document.createElement('div');
         bottomContainer.className = 'sa-agent-output sa-agent-output-bottom';
-        bottomContainer.innerHTML = bottomFragments.join('');
+        bottomContainer.innerHTML = DOMPurify.sanitize(bottomFragments.join(''));
         mesText.appendChild(bottomContainer);
         runRenderHooks(bottomContainer);
     }

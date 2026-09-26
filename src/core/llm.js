@@ -17,7 +17,7 @@
  *      borrowed from Recast — without this, reasoning leaks into structured
  *      extraction and breaks tracker JSON)
  *
- * Always returns a string. Never throws — failure surfaces as ''.
+ * Returns a string for ordinary failures; stop and timeout raise AgentCallAbortedError.
  */
 
 import { getContext } from '../../../../../extensions.js';
@@ -33,7 +33,7 @@ import {
     restoreProfileLegacy,
 } from './profiles.js';
 import { recordCall } from './callStats.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 import { getEffectiveConnectionProfile } from '../data/store.js';
 
 const LOG_PREFIX = '[SuperAgents/llm]';
@@ -55,44 +55,34 @@ export class AgentCallAbortedError extends Error {
 }
 
 /**
- * Race a promise against a timeout and/or an external AbortSignal.
- * Rejects with AgentCallAbortedError on either. Cleans up its timer and
- * listener whichever way it settles, so nothing leaks.
+ * Race a promise against the call-wide AbortSignal.
  *
  * @template T
  * @param {Promise<T>} promise
- * @param {number} timeoutMs   0/falsy disables the timeout.
  * @param {AbortSignal|null} signal
  * @returns {Promise<T>}
  */
-function withAbort(promise, timeoutMs, signal) {
-    if (!timeoutMs && !signal) return promise;
+function withAbort(promise, signal) {
+    if (!signal) return promise;
 
     return new Promise((resolve, reject) => {
         let settled = false;
-        let timer = null;
-
         const finish = (fn) => (val) => {
             if (settled) return;
             settled = true;
-            if (timer) clearTimeout(timer);
             if (signal) signal.removeEventListener('abort', onAbort);
             fn(val);
         };
         const ok = finish(resolve);
         const fail = finish(reject);
 
-        const onAbort = () => fail(new AgentCallAbortedError('cancel'));
+        const onAbort = () => fail(new AgentCallAbortedError(signal.reason === 'timeout' ? 'timeout' : 'cancel'));
 
+        promise.then(ok, fail);
         if (signal) {
             if (signal.aborted) { onAbort(); return; }
             signal.addEventListener('abort', onAbort, { once: true });
         }
-        if (timeoutMs) {
-            timer = setTimeout(() => fail(new AgentCallAbortedError('timeout')), timeoutMs);
-        }
-
-        promise.then(ok, fail);
     });
 }
 
@@ -197,6 +187,7 @@ async function cmrsSendOnce(ctx, profileId, messages, maxTokens, stream, onChunk
         includePreset: false,
         includeInstruct: false,
         stream,
+        signal,
     });
 
     // Streaming path: result is a generator factory. Drain it, return final text.
@@ -206,7 +197,7 @@ async function cmrsSendOnce(ctx, profileId, messages, maxTokens, stream, onChunk
         for await (const chunk of gen) {
             // Bail promptly if we've been aborted/timed out mid-stream, instead
             // of awaiting the next chunk that may never come.
-            if (signal?.aborted) throw new AgentCallAbortedError('cancel');
+            if (signal?.aborted) throw new AgentCallAbortedError(signal.reason === 'timeout' ? 'timeout' : 'cancel');
             if (chunk?.text !== undefined) {
                 last = chunk.text;
                 if (typeof onChunk === 'function') {
@@ -223,6 +214,20 @@ async function cmrsSendOnce(ctx, profileId, messages, maxTokens, stream, onChunk
 // ----------------------------------------------------------------------
 // Public: callAgentLLM
 // ----------------------------------------------------------------------
+
+let legacyTail = Promise.resolve();
+
+async function runLegacyExclusive(work) {
+    const previous = legacyTail;
+    let release;
+    legacyTail = new Promise(resolve => { release = resolve; });
+    await previous;
+    try {
+        return await work();
+    } finally {
+        release();
+    }
+}
 
 /**
  * Run one LLM call for an agent. See top-of-file for the resolution cascade.
@@ -246,7 +251,25 @@ async function cmrsSendOnce(ctx, profileId, messages, maxTokens, stream, onChunk
  *                                      should catch via isAbortError() and treat
  *                                      it as "stopped", not "empty".
  */
-export async function callAgentLLM({
+export async function callAgentLLM(options = {}) {
+    const controller = new AbortController();
+    const externalSignal = options.signal ?? null;
+    const timeoutMs = options.timeoutMs === undefined ? DEFAULT_CALL_TIMEOUT_MS : options.timeoutMs;
+    const onExternalAbort = () => controller.abort('cancel');
+    if (externalSignal?.aborted) throw new AgentCallAbortedError('cancel');
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+    const timer = Number.isFinite(timeoutMs) && timeoutMs > 0
+        ? setTimeout(() => controller.abort('timeout'), timeoutMs)
+        : null;
+    try {
+        return await callAgentLLMCore({ ...options, signal: controller.signal });
+    } finally {
+        if (timer) clearTimeout(timer);
+        externalSignal?.removeEventListener('abort', onExternalAbort);
+    }
+}
+
+async function callAgentLLMCore({
     systemPrompt,
     userContent,
     profileRef = '',
@@ -257,7 +280,6 @@ export async function callAgentLLM({
     onChunk = null,
     callerName = 'agent',
     signal = null,
-    timeoutMs = DEFAULT_CALL_TIMEOUT_MS,
 } = {}) {
     const ctx = getContext();
     profileRef = getEffectiveConnectionProfile(profileRef);
@@ -268,7 +290,7 @@ export async function callAgentLLM({
     }
 
     // Already cancelled before we even start? Honor it immediately.
-    if (signal?.aborted) throw new AgentCallAbortedError('cancel');
+    if (signal?.aborted) throw new AgentCallAbortedError(signal.reason === 'timeout' ? 'timeout' : 'cancel');
 
     // Inject scene context if asked — keeps the wrapping convention in one place.
     let finalUser = userContent;
@@ -281,12 +303,12 @@ export async function callAgentLLM({
         { role: 'user',   content: finalUser },
     ];
 
-    // One attempt, wrapped in the timeout/abort race. Abort errors thrown here
+    // One attempt, wrapped in the call-wide abort race. Abort errors thrown here
     // propagate (see the rethrow guards below) so they are NEVER swallowed into
     // the quiet-prompt fallback — a cancelled/timed-out call must stop, not
     // silently kick off another generation.
     const attempt = (pid, useStream, chunkCb) =>
-        withAbort(cmrsSendOnce(ctx, pid, messages, maxTokens, useStream, chunkCb, signal), timeoutMs, signal);
+        withAbort(cmrsSendOnce(ctx, pid, messages, maxTokens, useStream, chunkCb, signal), signal);
 
     // -------- Path A: CMRS cascade --------
     // Skip CMRS entirely if there's no resolvable target (CMRS off,
@@ -348,41 +370,38 @@ export async function callAgentLLM({
     }
 
     // -------- Path B: legacy profile swap + generateQuietPrompt --------
-    let originalName = null;
-    let didSwap = false;
-    try {
-        if (signal?.aborted) throw new AgentCallAbortedError('cancel');
-        if (profileRef && resolveProfileId(ctx, profileRef)) {
-            const swap = await swapProfileLegacy(ctx, profileRef);
-            if (swap.success) {
-                originalName = swap.originalProfileName;
-                didSwap = swap.swapped;
+    // generateQuietPrompt has no AbortSignal. Release the caller on stop, but
+    // retain the lock until the underlying request and profile restore finish.
+    const legacyTask = runLegacyExclusive(async () => {
+        let originalName = null;
+        let didSwap = false;
+        try {
+            if (signal?.aborted) throw new AgentCallAbortedError(signal.reason === 'timeout' ? 'timeout' : 'cancel');
+            if (profileRef && resolveProfileId(ctx, profileRef)) {
+                const swap = await swapProfileLegacy(ctx, profileRef);
+                if (swap.success) {
+                    originalName = swap.originalProfileName;
+                    didSwap = swap.swapped;
+                }
             }
-        }
-        const quietPrompt = `SYSTEM:\n${systemPrompt}\n\nUSER:\n${finalUser}`;
-        recordCall(); // legacy fallback round-trip — also a real request
-        // generateQuietPrompt has no abort hook of its own, so race it too:
-        // on timeout/cancel we stop awaiting it (it may still resolve in the
-        // background, but the caller is freed and the toast/flag are released).
-        const text = await withAbort(
-            generateQuietPrompt({
+            if (signal?.aborted) throw new AgentCallAbortedError(signal.reason === 'timeout' ? 'timeout' : 'cancel');
+            const quietPrompt = `SYSTEM:\n${systemPrompt}\n\nUSER:\n${finalUser}`;
+            recordCall();
+            const text = await generateQuietPrompt({
                 quietPrompt,
                 quietName: callerName,
                 skipWIAN: true,
                 responseLength: maxTokens,
-            }),
-            timeoutMs,
-            signal,
-        );
-        return String(text ?? '');
-    } catch (err) {
-        if (isAbortError(err)) throw err; // propagate cancel/timeout to caller
-        console.error(`${LOG_PREFIX} ${callerName}: quiet-prompt fallback failed`, err);
-        return '';
-    } finally {
-        if (didSwap && originalName) {
-            // Restore is fire-and-forget; never let it mask the result.
-            restoreProfileLegacy(ctx, originalName).catch(() => {});
+            });
+            if (signal?.aborted) throw new AgentCallAbortedError(signal.reason === 'timeout' ? 'timeout' : 'cancel');
+            return String(text ?? '');
+        } catch (err) {
+            if (isAbortError(err)) throw err;
+            console.error(`${LOG_PREFIX} ${callerName}: quiet-prompt fallback failed`, err);
+            return '';
+        } finally {
+            if (didSwap && originalName) await restoreProfileLegacy(ctx, originalName);
         }
-    }
+    });
+    return withAbort(legacyTask, signal);
 }

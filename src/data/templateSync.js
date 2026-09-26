@@ -21,7 +21,8 @@
 import { _internal } from './store.js';
 import { normalizeMergeVariable } from './normalize.js';
 import { normalizeRegexScript } from '../render/regexProcessor.js';
-import { debug } from '../../index.js';
+import { MODULE_NAME, debug } from '../core/runtime.js';
+import { isTemplateLinked } from './templateLink.js';
 
 const LOG_PREFIX = '[SuperAgents/templateSync]';
 
@@ -29,7 +30,7 @@ const LOG_PREFIX = '[SuperAgents/templateSync]';
 // Config
 // ----------------------------------------------------------------------
 
-const TEMPLATE_BASE_PATH = '/scripts/extensions/third-party/SillyTavern-SuperAgents/src/templates';
+const TEMPLATE_BASE_PATH = `/scripts/extensions/third-party/${MODULE_NAME}/src/templates`;
 
 // Only files actually present on disk are listed here. fetchAllTemplates
 // filters 404s in JS, but the browser still logs each failed GET — so this
@@ -37,6 +38,7 @@ const TEMPLATE_BASE_PATH = '/scripts/extensions/third-party/SillyTavern-SuperAge
 const TEMPLATE_FILES = [
     'world-state.json',
     'state-card.json',
+    'world-events.json',
     'relationship-ledger.json',
     'social-web-ledger.json',
     'knowledge-ledger.json',
@@ -54,13 +56,18 @@ const TEMPLATE_FILES = [
     'event-spark.json',
     'dead-dove-escalation.json',
     'intimacy-kink-randomiser.json',
+    'after-dark.json',
+    'drama-queen.json',
     'director.json',
     'soundtrack-suggester.json',
     'art-prompt-generator.json',
     'actor-interview.json',
+    'character-diary.json',
     'commentary-section.json',
     'wish-granter.json',
 ];
+
+let templateFetchPromise = null;
 
 /**
  * Fields that belong to the template author. These get refreshed when the
@@ -80,9 +87,12 @@ const TEMPLATE_SYNC_FIELDS = [
     'icon',
     'author',
     'stateCard',
+    'worldEventsConfig',
     'sidecarCall',
     'phoneConfig',
     'feedConfig',
+    'afterDarkConfig',
+    'dramaQueenConfig',
     'continuityGuard',
 ];
 
@@ -98,18 +108,23 @@ const TEMPLATE_SYNC_FIELDS = [
  * @returns {Promise<object[]>}
  */
 async function fetchAllTemplates() {
-    const results = await Promise.all(
-        TEMPLATE_FILES.map(async (file) => {
-            try {
-                const resp = await fetch(`${TEMPLATE_BASE_PATH}/${file}`);
-                if (!resp.ok) return null;
-                return await resp.json();
-            } catch {
-                return null;
-            }
-        }),
-    );
-    return results.filter(Boolean);
+    if (!templateFetchPromise) {
+        templateFetchPromise = Promise.all(
+            TEMPLATE_FILES.map(async (file) => {
+                try {
+                    const resp = await fetch(`${TEMPLATE_BASE_PATH}/${file}`);
+                    if (!resp.ok) return null;
+                    return await resp.json();
+                } catch {
+                    return null;
+                }
+            }),
+        ).then(results => results.filter(Boolean));
+    }
+    const templates = await templateFetchPromise;
+    return typeof structuredClone === 'function'
+        ? structuredClone(templates)
+        : JSON.parse(JSON.stringify(templates));
 }
 
 // ----------------------------------------------------------------------
@@ -131,14 +146,17 @@ function applyTemplateFields(agent, template) {
             const hasUserMainTemplate = typeof userMainContext?.formatItem === 'string';
             const hasLegacyRelationshipProjection = agent.sourceTemplateId === 'tpl-relationship-ledger'
                 && userMainContext?.formatItem?.includes('{{#each json.personas}}{{#each characters}}');
+            const hasLegacyActivePersonaLabel = agent.sourceTemplateId === 'tpl-relationship-ledger'
+                && userMainContext?.formatItem?.includes('{{#each json.characters}}- {{@key}} → active persona');
             agent.mergeVariable = normalizeMergeVariable(template.mergeVariable);
             if (userAutoInject !== undefined) agent.mergeVariable.autoInject = userAutoInject;
             if (userMacroName) agent.mergeVariable.macroName = userMacroName;
             // Once an agent has an explicit main-chat projection, treat that
-            // presentation as user-authored territory. Legacy built-ins used a
-            // null item template, so this release still upgrades them to the
-            // new structured defaults exactly once.
-            if (hasUserMainTemplate && !hasLegacyRelationshipProjection) {
+            // presentation as user-authored territory. Recognized legacy
+            // built-ins still upgrade to the current structured default once.
+            if (hasUserMainTemplate
+                && !hasLegacyRelationshipProjection
+                && !hasLegacyActivePersonaLabel) {
                 agent.mergeVariable.mainContext = {
                     ...agent.mergeVariable.mainContext,
                     formatHeader: userMainContext.formatHeader,
@@ -162,6 +180,12 @@ function applyTemplateFields(agent, template) {
             if (!currentAppName || currentAppName === 'Murmur') {
                 agent.feedConfig.appName = template.feedConfig.appName;
             }
+        } else if (field === 'afterDarkConfig' || field === 'dramaQueenConfig') {
+            // Lore probe terms are explicitly user-authored; template upgrades
+            // may add config defaults but must not replace that private list.
+            const userProbeTerms = agent[field]?.probeTerms;
+            agent[field] = { ...template[field], ...agent[field] };
+            if (Array.isArray(userProbeTerms)) agent[field].probeTerms = [...userProbeTerms];
         } else {
             agent[field] = template[field];
         }
@@ -195,7 +219,7 @@ export async function syncFromTemplates() {
     const updated = [];
 
     for (const agent of agents) {
-        if (!agent.sourceTemplateId) continue;
+        if (!isTemplateLinked(agent)) continue;
 
         const template = byId.get(agent.sourceTemplateId);
         if (!template) continue;

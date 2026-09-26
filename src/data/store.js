@@ -8,7 +8,7 @@
  * live in their own files. This module is intentionally focused.
  */
 
-import { MODULE_NAME, debug } from '../../index.js';
+import { MODULE_NAME, debug } from '../core/runtime.js';
 import { extension_settings } from '../../../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../../../script.js';
 
@@ -20,6 +20,8 @@ import {
     generateId,
 } from './normalize.js';
 import { reconcileGroupMembership } from './groupMembership.js';
+import { applyLibraryUsageSettings } from './libraryUsage.js';
+import { isTemplateLinked } from './templateLink.js';
 
 const LOG_PREFIX = '[SuperAgents/store]';
 
@@ -38,6 +40,15 @@ const agentsPauseListeners = new Set();
 const agentPauseListeners = new Set();
 const storeChangeListeners = new Set();
 
+// Story Apps use agent records for their configuration, but the active-set
+// switch controls only the ordinary agents that run in the story pipeline.
+function isStoryAppAgent(agent) {
+    return agent?.afterDarkConfig?.enabled === true
+        || agent?.dramaQueenConfig?.enabled === true
+        || agent?.sourceTemplateId === 'tpl-after-dark'
+        || agent?.sourceTemplateId === 'tpl-drama-queen';
+}
+
 /** Global agent settings (per-extension, not per-agent). */
 let globalSettings = {
     agentsPaused: false,            // global execution gate; individual enabled flags stay untouched
@@ -45,10 +56,13 @@ let globalSettings = {
     enabledSetSnapshot: [],         // IDs to restore; agents already off are intentionally absent
     useDefaultConnection: false,    // route blank-profile agents through the shared default below
     connectionProfile: '',          // default profile when an agent has none
+    economyMode: false,             // use lower-call defaults for new Library agents
+    deferPostAgentsOnSwipe: false,  // postpone costly post-reply calls until the next normal reply
     defaultExecutionMode: 'parallel',
     showNotifications: true,
     showNotificationsLauncher: true, // show the Notifications button in Story Apps
     showCalendarLauncher: true,      // show the Calendar button in Story Apps
+    groupChatEnabled: true,          // expose the OOC Group Chat UtilitiesApp
     calendarStorySync: true,        // accept validated hidden Calendar directives from story replies
     weatherCycleIntegration: false, // mirror eligible World State snapshots into st-weather-cycle
     weatherCycleAfternoonSkyColor: '#ffe09d',
@@ -135,6 +149,9 @@ export function loadFromSettings() {
     globalSettings.agentsPaused = Boolean(globalSettings.agentsPaused);
     globalSettings.useDefaultConnection = Boolean(globalSettings.useDefaultConnection);
     globalSettings.connectionProfile = String(globalSettings.connectionProfile ?? '').trim();
+    globalSettings.economyMode = Boolean(globalSettings.economyMode);
+    globalSettings.deferPostAgentsOnSwipe = Boolean(globalSettings.deferPostAgentsOnSwipe);
+    globalSettings.groupChatEnabled = globalSettings.groupChatEnabled !== false;
     globalSettings.weatherCycleIntegration = Boolean(globalSettings.weatherCycleIntegration);
     normalizeWeatherPhaseSettings();
     globalSettings.enabledSetDisabled = Boolean(globalSettings.enabledSetDisabled);
@@ -142,6 +159,19 @@ export function loadFromSettings() {
         ? [...new Set(globalSettings.enabledSetSnapshot.map(id => String(id ?? '').trim()).filter(Boolean))]
         : [];
     if (!globalSettings.enabledSetDisabled) globalSettings.enabledSetSnapshot = [];
+
+    // Older versions included Story Apps in the saved active set. Restore
+    // those apps now so an already-disabled set does not keep hiding them.
+    const savedStoryApps = new Set(globalSettings.enabledSetSnapshot.filter(id =>
+        agents.some(agent => agent.id === id && isStoryAppAgent(agent))));
+    if (savedStoryApps.size) {
+        for (const agent of agents) {
+            if (savedStoryApps.has(agent.id)) agent.enabled = true;
+        }
+        globalSettings.enabledSetSnapshot = globalSettings.enabledSetSnapshot.filter(id => !savedStoryApps.has(id));
+        if (!globalSettings.enabledSetSnapshot.length) globalSettings.enabledSetDisabled = false;
+        persist();
+    }
 
     // Groups historically stored the same relationship in two places. The UI
     // edits group.agentIds, while the executor reads agent.groupId. Reconcile on
@@ -183,6 +213,53 @@ export function getAgentById(id) {
 export function getAgentByName(name) {
     const lower = String(name ?? '').trim().toLowerCase();
     return agents.find(a => a.name.toLowerCase() === lower);
+}
+
+/**
+ * Persist the management list's stacking order in one write. Injection order
+ * controls execution; display agents also own a separate State Card order.
+ */
+export function reorderAgents(agentIds) {
+    const byId = new Map(agents.map(agent => [agent.id, agent]));
+    const seen = new Set();
+    const ordered = [];
+    const currentStack = agents
+        .map((agent, index) => ({
+            agent,
+            index,
+            order: Number(agent.stateCard?.order ?? agent.injection?.order ?? 100),
+        }))
+        .sort((left, right) => (
+            ((Number.isFinite(left.order) ? left.order : 100) - (Number.isFinite(right.order) ? right.order : 100))
+            || (left.index - right.index)
+        ))
+        .map(entry => entry.agent.id);
+
+    for (const id of agentIds || []) {
+        const agent = byId.get(id);
+        if (!agent || seen.has(id)) continue;
+        seen.add(id);
+        ordered.push(agent);
+    }
+    for (const agent of agents) {
+        if (!seen.has(agent.id)) ordered.push(agent);
+    }
+    if (ordered.length !== agents.length) return false;
+
+    const changed = ordered.some((agent, index) => agent.id !== currentStack[index]);
+    if (!changed) return false;
+
+    const step = ordered.length <= 99 ? 10 : 1;
+    ordered.forEach((agent, index) => {
+        const order = (index + 1) * step;
+        agent.injection = { ...agent.injection, order };
+        if (agent.stateCard && typeof agent.stateCard === 'object') {
+            agent.stateCard = { ...agent.stateCard, order };
+        }
+    });
+    agents = ordered;
+    persist();
+    return true;
 }
 
 /**
@@ -316,13 +393,13 @@ export function setAgentsEnabled(ids, enabled) {
 
 /** Read the reversible active-set power state used by the flyout. */
 export function getEnabledSetState() {
-    const liveIds = new Set(agents.map(agent => agent.id));
+    const liveIds = new Set(agents.filter(agent => !isStoryAppAgent(agent)).map(agent => agent.id));
     const savedIds = globalSettings.enabledSetSnapshot.filter(id => liveIds.has(id));
     return {
         disabled: globalSettings.enabledSetDisabled,
         count: globalSettings.enabledSetDisabled
             ? savedIds.length
-            : agents.filter(agent => agent.enabled).length,
+            : agents.filter(agent => agent.enabled && !isStoryAppAgent(agent)).length,
     };
 }
 
@@ -335,7 +412,7 @@ export function toggleEnabledAgentSet() {
         const savedIds = new Set(globalSettings.enabledSetSnapshot);
         let changedCount = 0;
         for (const agent of agents) {
-            if (!savedIds.has(agent.id) || agent.enabled) continue;
+            if (!savedIds.has(agent.id) || agent.enabled || isStoryAppAgent(agent)) continue;
             agent.enabled = true;
             changedCount++;
         }
@@ -346,7 +423,7 @@ export function toggleEnabledAgentSet() {
         return { disabled: false, changedCount, savedCount };
     }
 
-    const enabledIds = agents.filter(agent => agent.enabled).map(agent => agent.id);
+    const enabledIds = agents.filter(agent => agent.enabled && !isStoryAppAgent(agent)).map(agent => agent.id);
     if (!enabledIds.length) return { disabled: false, changedCount: 0, savedCount: 0 };
     const enabledIdSet = new Set(enabledIds);
     for (const agent of agents) {
@@ -371,14 +448,45 @@ export function toggleEnabledAgentSet() {
  */
 export function instantiateTemplate(template) {
     if (!template || typeof template !== 'object') return null;
+    const configured = applyLibraryUsageSettings(template, template, globalSettings.economyMode);
     return saveAgent({
-        ...template,
+        ...configured,
         id: generateId(),
         version: 1,
         sourceTemplateId: template.id || template.sourceTemplateId || '',
         sourceTemplateVersion: template.version ?? 0,
+        sourceTemplateLinked: true,
         enabled: true,
     });
+}
+
+/**
+ * Explicitly apply the selected usage preset to existing built-in instances.
+ * Custom agents are excluded; all changes are persisted in one store write.
+ */
+export function applyUsageModeToLibraryAgents(templates, economyMode = globalSettings.economyMode) {
+    const byId = new Map((templates || [])
+        .filter(template => template && typeof template === 'object')
+        .map(template => [templateIdForUsage(template), template]));
+    let changedCount = 0;
+
+    for (let index = 0; index < agents.length; index++) {
+        const agent = agents[index];
+        if (!isTemplateLinked(agent)) continue;
+        const template = byId.get(String(agent.sourceTemplateId || '').trim());
+        if (!template) continue;
+        const updated = applyLibraryUsageSettings(agent, template, economyMode);
+        if (JSON.stringify(updated) === JSON.stringify(agent)) continue;
+        agents[index] = normalizeAgent(updated);
+        changedCount++;
+    }
+
+    if (changedCount) persist();
+    return changedCount;
+}
+
+function templateIdForUsage(template) {
+    return String(template?.id || template?.sourceTemplateId || '').trim();
 }
 
 // ----------------------------------------------------------------------
@@ -468,6 +576,8 @@ export function setGlobalSettings(update) {
     globalSettings.agentsPaused = Boolean(globalSettings.agentsPaused);
     globalSettings.useDefaultConnection = Boolean(globalSettings.useDefaultConnection);
     globalSettings.connectionProfile = String(globalSettings.connectionProfile ?? '').trim();
+    globalSettings.economyMode = Boolean(globalSettings.economyMode);
+    globalSettings.deferPostAgentsOnSwipe = Boolean(globalSettings.deferPostAgentsOnSwipe);
     globalSettings.weatherCycleIntegration = Boolean(globalSettings.weatherCycleIntegration);
     normalizeWeatherPhaseSettings();
     persist();

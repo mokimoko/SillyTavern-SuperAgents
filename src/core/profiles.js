@@ -22,7 +22,7 @@ import {
     online_status,
 } from '../../../../../../script.js';
 import { SlashCommandParser } from '../../../../../slash-commands/SlashCommandParser.js';
-import { debug } from '../../index.js';
+import { debug } from './runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/profiles]';
 
@@ -185,13 +185,16 @@ export async function swapProfileLegacy(ctx, targetRef) {
         return { success: true, originalProfileName: originalName, swapped: true };
     } catch (err) {
         console.error(`${LOG_PREFIX} swap to "${targetName}" failed:`, err);
+        if (originalName && getCurrentProfileName(ctx) !== originalName) {
+            await restoreProfileLegacy(ctx, originalName);
+        }
         return { success: false, error: String(err?.message || err) };
     }
 }
 
 /**
  * Restore a previously-active profile (paired with swapProfileLegacy).
- * Fire-and-forget; never throws.
+ * Never throws. Await this before starting another legacy request.
  */
 export async function restoreProfileLegacy(ctx, originalName) {
     if (!originalName) return;

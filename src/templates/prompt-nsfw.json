@@ -1,13 +1,13 @@
 {
     "id": "tpl-prompt-nsfw",
     "name": "Prompt NSFW",
-    "description": "The conditional second stage of the Adaptive Prompt Kit. It runs only after Prompt Base freshly classifies nsfw=true, then records the focused character's sex, pairing configuration, virginity, first-time status, and relevant relationship dynamics.",
+    "description": "The conditional second stage of the Adaptive Prompt Kit. It runs only after Prompt Base freshly classifies nsfw=true, then records the focused character's sex, pairing and participant configuration, established experience, first-time status, and relevant relationship dynamics.",
     "icon": "fa-solid fa-fire-flame-curved",
     "category": "tracker",
     "tags": ["prompt routing", "classifier", "pre-gen", "validated", "conditional", "nsfw"],
-    "version": 3,
+    "version": 4,
     "author": "",
-    "prompt": "### Prompt NSFW — Conditional Silent Classifier\n\nPrompt Base has freshly classified this turn as NSFW:\n{{sa_prompt_base}}\n\nClassify only the requested NSFW details for the focus character and {{user}}. Do not write fiction or instructions. Output only the required block.\n\n[PROMPT_NSFW]\n{\"characterSex\":\"male\",\"pairingType\":\"m/f\",\"virginity\":\"neither\",\"firstTimeTogether\":false,\"closeFriends\":false,\"family\":false}\n[/PROMPT_NSFW]\n\nRULES:\n- characterSex: Choose exactly one: male, female, genderless, nonbinary, intersex, unknown. Genderless is for beings with no sense of gender. Intersex is for established complicated or mixed sex anatomy. Nonbinary is an established gender identity and does not imply anatomy. Use unknown rather than inventing identity or anatomy.\n- pairingType: Choose exactly one: m/f, m/m, f/f, other_or_unclear. This is a compact prompt-configuration label for the focus character and {{user}}, not a claim about identity. Use other_or_unclear whenever the three binary configurations do not accurately fit or the required information is not established.\n- virginity: Choose exactly one: virgin_character, virgin_user, both, neither. Unless {{user}}'s profile or canon mentions past partners or sexual experience, treat {{user}} as probably virgin. Do not invent experience for either participant.\n- firstTimeTogether: true only if the focus character and {{user}} have never had sex together.\n- closeFriends: true only when they are established close friends.\n- family: true only when they are established family. This is independent of firstTimeTogether.\n- Classify the currently relevant focus character only. Use established canon and necessary logical inference; never decide consent, intent, acts, or outcomes for {{user}}.\n- Output valid compact JSON and only the [PROMPT_NSFW] block.",
+    "prompt": "### Prompt NSFW — Conditional Silent Classifier\n\nPrompt Base has freshly classified this turn as NSFW:\n{{sa_prompt_base}}\n\nClassify only the requested NSFW details for the focus character and {{user}}. Do not write fiction or instructions. Output only the required block.\n\n[PROMPT_NSFW]\n{\"characterSex\":\"male\",\"pairingType\":\"m/f\",\"participantConfiguration\":\"pair\",\"virginity\":\"neither\",\"firstTimeTogether\":false,\"closeFriends\":false,\"family\":false}\n[/PROMPT_NSFW]\n\nRULES:\n- characterSex: Choose exactly one: male, female, genderless, nonbinary, intersex, unknown. Genderless is for beings with no sense of gender. Intersex is for established complicated or mixed sex anatomy. Nonbinary is an established gender identity and does not imply anatomy. Use unknown rather than inventing identity or anatomy.\n- pairingType: Choose exactly one: m/f, m/m, f/f, other_or_unclear. This is a compact prompt-configuration label for the focus character and {{user}}, not a claim about identity. Use other_or_unclear whenever the three binary configurations do not accurately fit, the scene is solo or group-focused, or the required information is not established.\n- participantConfiguration: Choose exactly one: solo, pair, group, unclear. Count currently active adult sexual participants, not observers or merely present characters. Use unclear rather than inventing participation or treating an invitation as acceptance.\n- virginity: Choose exactly one: virgin_character, virgin_user, both, neither, unknown. Use a virgin value only when canon establishes that lack of experience; use neither only when canon establishes prior experience for both. Otherwise use unknown. Never infer sexual history merely because no past partners were mentioned.\n- firstTimeTogether: true only when established canon supports that the focus character and {{user}} have not had sex together before; uncertainty is false and must not manufacture a first-time premise.\n- closeFriends: true only when they are established close friends.\n- family: true only when they are established family. This is independent of firstTimeTogether.\n- Classify the currently relevant focus character only. Use established canon and necessary logical inference; never decide consent, intent, acts, participation, or outcomes for {{user}}.\n- Output valid compact JSON and only the [PROMPT_NSFW] block.",
     "phase": "pre",
     "injection": { "position": 1, "depth": 0, "role": 0, "order": 50, "scan": false, "template": "", "injectResult": false },
     "postProcess": { "enabled": false, "type": "regex", "regexFind": "", "regexReplace": "", "regexFlags": "g", "appendText": "", "extractPattern": "", "extractVariable": "", "rewriteEnabled": false, "rewriteMode": "rewrite", "rewriteMaxTokens": 500 },
@@ -25,15 +25,16 @@
         "validation": {
             "enabled": true,
             "jsonField": "json",
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "invariants": [],
             "schema": {
                 "type": "object",
-                "required": ["characterSex", "pairingType", "virginity", "firstTimeTogether", "closeFriends", "family"],
+                "required": ["characterSex", "pairingType", "participantConfiguration", "virginity", "firstTimeTogether", "closeFriends", "family"],
                 "properties": {
                     "characterSex": { "type": "string", "enum": ["male", "female", "genderless", "nonbinary", "intersex", "unknown"] },
                     "pairingType": { "type": "string", "enum": ["m/f", "m/m", "f/f", "other_or_unclear"] },
-                    "virginity": { "type": "string", "enum": ["virgin_character", "virgin_user", "both", "neither"] },
+                    "participantConfiguration": { "type": "string", "enum": ["solo", "pair", "group", "unclear"] },
+                    "virginity": { "type": "string", "enum": ["virgin_character", "virgin_user", "both", "neither", "unknown"] },
                     "firstTimeTogether": { "type": "boolean" },
                     "closeFriends": { "type": "boolean" },
                     "family": { "type": "boolean" }
@@ -66,7 +67,7 @@
         "triggerKeywords": [],
         "triggerPatterns": [],
         "triggerProbability": 100,
-        "generationTypes": ["normal", "continue", "impersonate", "swipe"],
+        "generationTypes": ["normal", "swipe"],
         "generationTypesVersion": 2,
         "stateGate": { "enabled": true, "variableName": "sa_prompt_base", "jsonField": "json", "path": "nsfw", "operator": "eq", "value": "true", "requireFresh": true }
     },

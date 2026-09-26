@@ -14,11 +14,17 @@
  */
 
 import { chat } from '../../../../../../script.js';
-import { getEnabledAgents, getAgentById } from '../data/store.js';
+import { getEnabledAgents, getAgentById, getGlobalSettings } from '../data/store.js';
 import { readPendingUserMessage } from './richContext.js';
 import { evaluateGeneralGate, ownsCounterItself } from './everyN.js';
 import { agentMatchesCurrentScope } from './activationScope.js';
 import { activationPolicyAllows } from './activationPolicy.js';
+import {
+    clearDeferredSwipeAgentIds,
+    getDeferredSwipeAgentIds,
+    isDeferrablePostAgent,
+    pruneDeferredSwipeAgentIds,
+} from './swipeDeferral.js';
 
 // ============================================================================
 // GENERATION TYPE
@@ -170,6 +176,12 @@ export function buildActivationSnapshot(generationType, options) {
     const pendingUserText = readPendingUserMessage(options);
 
     const enabledAgents = getEnabledAgents();
+    pruneDeferredSwipeAgentIds(enabledAgents.map(agent => agent.id));
+    const deferPostAgentsOnSwipe = getGlobalSettings().deferPostAgentsOnSwipe;
+    if (!deferPostAgentsOnSwipe) clearDeferredSwipeAgentIds();
+    const deferredCatchUpIds = genType === 'normal' && deferPostAgentsOnSwipe
+        ? new Set(getDeferredSwipeAgentIds())
+        : new Set();
     const pausedAgents = enabledAgents.filter(agent => agent.paused);
 
     // Stage 1: activation gates only advance runnable agents. Individually
@@ -187,6 +199,13 @@ export function buildActivationSnapshot(generationType, options) {
     const activeAgents = [];
     const retainedSnapshotAgents = [];
     for (const agent of cadenceEligibleAgents) {
+        // A due reroll was deliberately postponed. Run it only in the post-pass
+        // below; do not advance its every-N counter or accidentally run a
+        // phase="both" agent before the main reply as part of catching up.
+        if (deferredCatchUpIds.has(agent.id) && isDeferrablePostAgent(agent)) {
+            retainedSnapshotAgents.push(agent);
+            continue;
+        }
         const runs = ownsCounterItself(agent) || evaluateGeneralGate(agent, generationType);
         if (runs) {
             activeAgents.push(agent);
@@ -199,16 +218,21 @@ export function buildActivationSnapshot(generationType, options) {
 
     const runnableIds = new Set(activeAgents.map(agent => agent.id));
     const retainedIds = new Set(retainedSnapshotAgents.map(agent => agent.id));
+    const catchUpAgents = enabledAgents.filter(agent => deferredCatchUpIds.has(agent.id)
+        && !agent.paused && isDeferrablePostAgent(agent));
+    const catchUpIds = new Set(catchUpAgents.map(agent => agent.id));
     const referenceIds = new Set([
         ...runnableIds,
         ...pausedAgents.map(agent => agent.id),
         ...retainedIds,
+        ...catchUpIds,
     ]);
     return {
         generationType: genType,
         activeAgentIds: enabledAgents.filter(agent => referenceIds.has(agent.id)).map(agent => agent.id),
         runnableAgentIds: enabledAgents.filter(agent => runnableIds.has(agent.id)).map(agent => agent.id),
         retainedSnapshotAgentIds: enabledAgents.filter(agent => retainedIds.has(agent.id)).map(agent => agent.id),
+        deferredCatchUpAgentIds: enabledAgents.filter(agent => catchUpIds.has(agent.id)).map(agent => agent.id),
         pendingUserText,
     };
 }

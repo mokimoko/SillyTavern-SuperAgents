@@ -13,6 +13,12 @@
     -webkit-user-select: none;
 }
 
+.sa-story-launchers {
+    display: flex;
+    gap: inherit;
+    align-items: center;
+}
+
 .sa-surface-dock.sa-surface-dock--dragging,
 .sa-surface-dock.sa-surface-dock--dragging * {
     cursor: grabbing !important;
@@ -61,7 +67,11 @@
 }
 
 .sa-surface-dock[hidden],
-.sa-surface-launcher[hidden] {
+.sa-surface-launcher[hidden],
+.sa-story-launchers[hidden],
+.sa-utility-launcher[hidden],
+.sa-utility-menu-row[hidden],
+.sa-utility-menu-secondary[hidden] {
     display: none !important;
 }
 
@@ -138,6 +148,157 @@
     border-radius: 50%;
 }
 
+/* Utilities belong to the authoring shell, so their launcher stays neutral
+   instead of borrowing the active story-world presentation. */
+#sa-surface-dock .sa-utility-launcher {
+    position: relative;
+    width: 34px !important;
+    min-width: 34px !important;
+    height: 34px !important;
+    min-height: 34px !important;
+    display: grid;
+    place-items: center;
+    margin: 0 !important;
+    padding: 0 !important;
+    color: rgb(184 192 198 / 76%) !important;
+    background: transparent !important;
+    border: 1px solid rgb(160 168 174 / 32%) !important;
+    border-radius: 4px !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+    backdrop-filter: none;
+    cursor: pointer;
+    transition: color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+#sa-surface-dock .sa-utility-launcher:hover,
+#sa-surface-dock .sa-utility-launcher.is-open {
+    color: var(--SmartThemeQuoteColor, #aeb7bd) !important;
+    background: color-mix(in srgb, var(--SmartThemeQuoteColor, #aeb7bd) 9%, transparent) !important;
+    border-color: color-mix(in srgb, var(--SmartThemeQuoteColor, #aeb7bd) 52%, transparent) !important;
+}
+
+.sa-utility-launcher-count {
+    position: absolute;
+    top: -7px;
+    right: -7px;
+    box-sizing: border-box;
+    min-width: 16px;
+    height: 16px;
+    display: grid;
+    place-items: center;
+    padding: 0 3px 2px;
+    color: var(--SmartThemeBlurTintColor, #171a1d);
+    background: var(--SmartThemeQuoteColor, #aeb7bd);
+    border: 0;
+    border-radius: 8px;
+    font-size: 8px;
+    font-weight: 850;
+    line-height: 1;
+    text-shadow: none !important;
+    filter: none !important;
+    transform: none;
+}
+
+.sa-utility-menu {
+    position: fixed;
+    z-index: 10030;
+    width: 210px;
+    padding: 4px;
+    overflow: hidden;
+    color: #d5dadd;
+    background: #191d20;
+    border: 1px solid #4a5055;
+    border-radius: 2px;
+    box-shadow: 0 8px 22px rgb(0 0 0 / 38%);
+}
+
+.sa-utility-menu[hidden] { display: none !important; }
+
+#sa-surface-dock .sa-utility-menu-row {
+    display: flex;
+    align-items: center;
+}
+
+#sa-surface-dock .sa-utility-menu-row > [data-sa-utility] {
+    position: relative;
+    width: auto !important;
+    min-width: 0 !important;
+    flex: 1 1 auto;
+    min-height: 34px !important;
+    display: grid;
+    grid-template-columns: 18px 1fr auto;
+    align-items: center;
+    gap: 7px;
+    margin: 0 !important;
+    padding: 5px 7px !important;
+    color: #c8ced2 !important;
+    text-align: left;
+    background: transparent !important;
+    border: 0 !important;
+    border-radius: 1px !important;
+    box-shadow: none !important;
+    cursor: pointer;
+}
+
+#sa-surface-dock .sa-utility-menu-row > [data-sa-utility]:hover,
+#sa-surface-dock .sa-utility-menu-row > [data-sa-utility]:focus-visible { color: #eef1f2 !important; background: #292e32 !important; outline: none; }
+.sa-utility-menu-row > [data-sa-utility] > i { color: var(--SmartThemeQuoteColor, #8e979e); font-size: 11px; text-align: center; }
+.sa-utility-menu-row > [data-sa-utility] > span { overflow: hidden; min-width: 0; font-size: 11px; font-weight: 550; line-height: 1; text-overflow: ellipsis; white-space: nowrap; }
+
+#sa-surface-dock .sa-utility-menu-secondary {
+    width: 30px !important;
+    min-width: 30px !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    flex: 0 0 30px;
+    display: grid;
+    place-items: center;
+    margin: 0 0 0 2px !important;
+    padding: 0 !important;
+    color: #8e979e !important;
+    background: transparent !important;
+    border: 0 !important;
+    border-right: 1px solid rgb(142 151 158 / 22%) !important;
+    border-radius: 1px !important;
+    box-shadow: none !important;
+    cursor: pointer;
+}
+
+#sa-surface-dock .sa-utility-menu-secondary:hover,
+#sa-surface-dock .sa-utility-menu-secondary:focus-visible,
+#sa-surface-dock .sa-utility-menu-secondary.is-open {
+    color: #eef1f2 !important;
+    background: #292e32 !important;
+    outline: none;
+}
+
+#sa-surface-dock .sa-utility-menu-secondary:disabled {
+    color: #606970 !important;
+    background: transparent !important;
+    cursor: default;
+    opacity: 0.58;
+}
+.sa-utility-menu-count {
+    min-width: 18px;
+    height: 16px;
+    display: inline-grid;
+    place-items: center;
+    box-sizing: border-box;
+    padding: 0 5px 2px;
+    color: var(--SmartThemeBlurTintColor, #171a1d);
+    background: var(--SmartThemeQuoteColor, #aeb7bd);
+    border: 0;
+    border-radius: 9px;
+    box-shadow: none !important;
+    font-size: 8px;
+    line-height: 1;
+    text-align: center;
+    text-shadow: none !important;
+    filter: none !important;
+    transform: none;
+}
+
 @media (max-width: 520px) {
     .sa-surface-dock { top: 8px; left: 8px; gap: 6px; }
     #sa-surface-dock .sa-surface-launcher {
@@ -150,7 +311,7 @@
 
 /* Cute Retro dock: chunky translucent consumer-electronics buttons. */
 
-html[data-sa-presentation-theme="cute-retro"] .sa-surface-dock {
+html[data-sa-presentation-theme="cute-retro"] .sa-story-launchers {
     gap: 7px;
     padding: 6px;
     background: rgb(239 229 201 / 88%);
@@ -195,7 +356,7 @@ html[data-sa-presentation-theme="cute-retro"] .sa-surface-launcher-dot {
 
 /* Retro Analog dock: a tiny pastel desktop taskbar. */
 
-html[data-sa-presentation-theme="retro-pc"] .sa-surface-dock {
+html[data-sa-presentation-theme="retro-pc"] .sa-story-launchers {
     gap: 3px;
     padding: 4px;
     background: #c9c9d7;
@@ -241,7 +402,7 @@ html[data-sa-presentation-theme="retro-pc"] .sa-surface-launcher-dot {
 
 /* Grounded Historical launchers: independent keepsakes, with State Card as a seal. */
 
-html[data-sa-presentation-theme="grounded-historical"] .sa-surface-dock {
+html[data-sa-presentation-theme="grounded-historical"] .sa-story-launchers {
     gap: 7px;
     padding: 0;
     background: transparent;
@@ -304,7 +465,7 @@ html[data-sa-presentation-theme="grounded-historical"] .sa-surface-launcher-dot 
 
 /* Gamer Modern dock: a compact VRMMO hotbar with distinct channel telemetry. */
 
-html[data-sa-presentation-theme="game-ui"] .sa-surface-dock {
+html[data-sa-presentation-theme="game-ui"] .sa-story-launchers {
     gap: 4px;
     padding: 5px;
     background: linear-gradient(145deg, rgb(20 34 52 / 38%), rgb(6 10 17 / 24%));
@@ -360,7 +521,7 @@ html[data-sa-presentation-theme="game-ui"] .sa-surface-launcher-dot {
 
 /* Xianxia dock: loose celadon keepsakes floating together like charms in mist. */
 
-html[data-sa-presentation-theme="xianxia"] .sa-surface-dock {
+html[data-sa-presentation-theme="xianxia"] .sa-story-launchers {
     gap: 7px;
     padding: 5px 7px;
     background:
@@ -423,7 +584,7 @@ html[data-sa-presentation-theme="xianxia"] .sa-surface-launcher-dot {
 
 /* Post-Apocalyptic dock: compact salvaged controls in one smoked equipment rail. */
 
-html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-dock {
+html[data-sa-presentation-theme="post-apocalyptic"] .sa-story-launchers {
     gap: 5px;
     padding: 5px 6px;
     background:
@@ -486,7 +647,7 @@ html[data-sa-presentation-theme="post-apocalyptic"] .sa-surface-launcher-dot {
 
 /* Near Future dock: independent glass controls without a containing tray. */
 
-html[data-sa-presentation-theme="near-future"] .sa-surface-dock {
+html[data-sa-presentation-theme="near-future"] .sa-story-launchers {
     gap: 7px;
     padding: 0;
     background: transparent;
@@ -547,7 +708,7 @@ html[data-sa-presentation-theme="near-future"] .sa-surface-launcher-dot {
 
 /* Historical Fantasy dock: a compact obsidian guild rail with crimson seals. */
 
-html[data-sa-presentation-theme="mythic-fantasy"] .sa-surface-dock {
+html[data-sa-presentation-theme="mythic-fantasy"] .sa-story-launchers {
     gap: 6px;
     padding: 6px;
     background:

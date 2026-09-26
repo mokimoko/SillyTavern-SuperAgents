@@ -26,8 +26,7 @@ import { eventSource, event_types } from '../../../../../../script.js';
 import { getContext } from '../../../../../extensions.js';
 import { extension_settings } from '../../../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../../../script.js';
-import { MODULE_NAME, debug } from '../../index.js';
-import { isAgentsPaused } from '../data/store.js';
+import { MODULE_NAME, debug } from '../core/runtime.js';
 import { makeDraggablePanel, mountDraggablePanel } from '../ui/draggablePanel.js';
 import { registerPanelControl } from '../ui/modal.js';
 import { refreshSurfaceDock } from '../ui/surfaceDock.js';
@@ -292,6 +291,12 @@ export function initPhonePanel() {
     });
     if (event_types.MESSAGE_SWIPED) {
         eventSource.on(event_types.MESSAGE_SWIPED, () => {
+            updateBadge();
+            if (isOpen()) openView();
+        });
+    }
+    if (event_types.MESSAGE_DELETED) {
+        eventSource.on(event_types.MESSAGE_DELETED, () => {
             updateBadge();
             if (isOpen()) openView();
         });
@@ -616,7 +621,7 @@ function handleClear() {
 async function handleSend(inputEl) {
     const text = inputEl.value.trim();
     if (!text || !activeThread || isPhoneBusy()) return;
-    if (isAgentsPaused() || getPhoneAgent()?.paused) {
+    if (getPhoneAgent()?.paused) {
         toastr.info('The Phone agent is paused. Its state is frozen.');
         return;
     }

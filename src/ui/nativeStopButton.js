@@ -29,7 +29,7 @@
  */
 
 import { cancelAgentRun, onRunStateChange, isAgentRunActive } from '../core/lifecycle.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 
 const LOG_PREFIX = '[SuperAgents/nativeStop]';
 

@@ -1,0 +1,89 @@
+{
+    "id": "tpl-character-diary",
+    "name": "Character Diary",
+    "description": "An occasional post-generation sidecar that writes a private diary entry from the focus character's point of view. It exposes thoughts the character would not necessarily say aloud while staying inside their knowledge, biases, and established voice. Entries appear as a collapsible parchment page beneath the message and can use World State's in-story date and time when available.",
+    "icon": "fa-solid fa-book-open",
+    "category": "content",
+    "tags": ["diary", "journal", "character", "pov", "inner-thoughts", "post-gen", "flavor"],
+    "version": 3,
+    "author": "",
+    "prompt": "### Character Diary — Private Post-Generation POV\n\nROLE: After the scene, write one private diary entry from the focus character's point of view. Above all, make it entertaining and engaging to read: intimate, vivid, revealing, and unmistakably written by this particular character. This is not dialogue, narration, a recap, or an out-of-character analysis. It is what the character would write when nobody else can read it.\n\nFOCUS CHARACTER:\n- Use the character named by the request's `Character name:` line. In a group chat, this is the character who authored the message the diary is attached to.\n- Write in first person and preserve that character's established diction, temperament, values, blind spots, humor, and emotional defenses.\n- Never write the diary as {{user}} and never invent {{user}}'s private thoughts.\n\nPRIVATE, NOT OMNISCIENT:\n- The character may admit feelings, desires, resentments, fears, judgments, rationalizations, petty reactions, embarrassing details, or contradictions they would never say aloud.\n- They may misunderstand events or lie to themself. Their interpretation should feel subjective rather than authorially correct.\n- Use only what this character could know, observe, remember, suspect, or reasonably infer. Never reveal another character's thoughts, hidden lore, or future events merely because they exist in context.\n- Do not continue the plot, decide what {{user}} does next, resolve uncertainty, or manufacture a confession just to make the entry dramatic.\n\nMAKE IT WORTH OPENING:\n- Find the most emotionally charged, funny, awkward, suspicious, tender, infuriating, or surprising angle in the latest beat. Choose what this character would obsess over—not necessarily what an objective narrator would call important.\n- Include concrete details and sharp personal observations. Let the character quote a phrase that stuck with them, fixate on a gesture, contradict themself, make an unfair judgment, confess something sideways, or reveal more than they intended.\n- Favor momentum and personality. A fragment, aside, rhetorical question, crossed-wire rationalization, or dry joke is welcome when it fits the voice.\n- Avoid bland summaries, therapy-speak, generic poetic melancholy, moral-of-the-scene conclusions, and polished literary analysis. Do not begin by restating what just happened.\n- Emotional depth does not always mean solemnity. Be funny, messy, dramatic, irritated, horny, smug, frightened, sentimental, or mundane when that is true to the character and scene.\n\nENTRY SHAPE:\n- Center the entry on one revealing detail from the latest beat rather than summarizing the conversation.\n- Write 1 to 3 compact paragraphs, normally 80 to 160 words and never more than 180 words. End on a memorable final thought, admission, deflection, joke, or unresolved feeling—not a generic summary.\n- If a previous diary entry is supplied later in the prompt, preserve the established private voice and emotional continuity without repeating its observations, structure, or wording.\n\nOPTIONAL CURRENT WORLD STATE:\n{{sa_world_state}}\n\nDATELINE RULES:\n- If the resolved World State above supplies a known Date and/or Time, copy only the known values exactly into the dateline, joined with ` · `. Preserve fictional calendars and terminology. Ignore fields whose value is Unknown.\n- If no usable World State date or time is present, use a brief scene-relative label supported by the story, such as `Late that night` or `After the greenhouse`.\n- If even a relative label would require invention, write `Undated`. Never substitute the real-world date or create false precision.\n\nOUTPUT THIS BLOCK EXACTLY, and nothing else:\n\n[CHARACTER_DIARY|Character Name|short entry title|dateline]\nDiary entry\n[/CHARACTER_DIARY]\n\nFIELD GUIDE:\n- Character Name: the focus character's exact canonical name.\n- Short entry title: 2 to 7 intriguing words in the character's voice, not a generic label such as `Diary Entry`.\n- Dateline: the grounded World State date/time or the permitted fallback above.\n- Diary entry: plain text with paragraph breaks; no Markdown heading, signature, or surrounding quotation marks. The renderer adds the signature.\n\nRULES:\n- Output ONLY the [CHARACTER_DIARY] block.\n- Do not use a pipe character anywhere except as the three field separators in the opening tag.\n- Do not mention prompts, models, roleplay, character cards, or being fictional.\n- Keep private thoughts canon-compatible even when they are biased or unspoken.",
+    "phase": "post",
+    "injection": {
+        "position": 1,
+        "depth": 0,
+        "role": 1,
+        "order": 96,
+        "scan": false
+    },
+    "postProcess": {
+        "enabled": false,
+        "type": "regex",
+        "regexFind": "",
+        "regexReplace": "",
+        "regexFlags": "g",
+        "appendText": "",
+        "extractPattern": "",
+        "extractVariable": "",
+        "rewriteEnabled": false,
+        "rewriteMode": "rewrite",
+        "rewriteMaxTokens": 8192
+    },
+    "sidecarCall": {
+        "enabled": true,
+        "maxTokens": 450,
+        "responseKey": "character_diary",
+        "includeHistory": true,
+        "historyMessageCount": 10,
+        "richContext": {
+            "enabled": true,
+            "character": true,
+            "persona": true,
+            "worldInfo": true,
+            "summary": true,
+            "authorsNote": false,
+            "pendingUser": false,
+            "historyCount": 10
+        },
+        "display": {
+            "enabled": true,
+            "position": "bottom",
+            "hookClass": "character-diary-data",
+            "dataMap": {
+                "character": "data-character",
+                "title": "data-title",
+                "dateline": "data-dateline"
+            },
+            "contentField": "entry",
+            "inheritState": false
+        }
+    },
+    "mergeVariable": {
+        "enabled": true,
+        "mode": "snapshot",
+        "variableName": "sa_character_diary",
+        "extractPattern": "\\[CHARACTER_DIARY\\|([^|]+)\\|([^|]+)\\|([^\\]]+)\\]\\n([\\s\\S]*?)\\[\\/CHARACTER_DIARY\\]",
+        "fieldNames": ["character", "title", "dateline", "entry"],
+        "keyFields": [],
+        "stripFromResponse": true,
+        "injectFormatted": true,
+        "autoInject": false,
+        "formatHeader": "Previous private diary entry — use only for voice and emotional continuity:",
+        "formatItem": "{{character}} — {{title}} ({{dateline}})\n{{entry}}",
+        "formatEmpty": ""
+    },
+    "regexScripts": [],
+    "connectionProfile": "",
+    "maxTokens": 450,
+    "everyN": 10,
+    "everyNCadence": "new-replies",
+    "reuseSnapshotBetweenRuns": true,
+    "enabled": false,
+    "conditions": {
+        "triggerKeywords": [],
+        "triggerProbability": 50,
+        "generationTypes": ["normal", "continue"]
+    },
+    "groupId": null,
+    "sourceTemplateId": "tpl-character-diary"
+}

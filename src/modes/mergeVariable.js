@@ -19,18 +19,38 @@ import {
     substituteParams,
     saveChatDebounced,
 } from '../../../../../../script.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import { recordAgentRun } from '../core/idempotency.js';
 import { validateMergeItems } from '../data/stateValidation.js';
+import { canonicalizeMergeItems } from '../data/stateCanonicalization.js';
 import { applyStateRetention } from '../data/stateRetention.js';
 import { projectItemsForMainContext } from '../data/mainContextProjection.js';
 import { renderMainContextTemplate } from '../data/mainContextTemplate.js';
 import { extractJsonObjectCandidates } from '../data/structuredOutput.js';
-import { getConfiguredParticipantExclusion, projectActivePersona } from '../core/participants.js';
+import {
+    getActivePersonaName,
+    getConfiguredParticipantExclusion,
+    projectActivePersona,
+} from '../core/participants.js';
 import { emitStateTransaction } from '../integration/events.js';
 import { clearActivationPolicyState, markActivationPolicyComplete } from '../core/activationPolicy.js';
 
 const LOG_PREFIX = '[SuperAgents/mergeVar]';
+const INHERITED_SNAPSHOT_VERSION = 1;
+const INHERITED_SNAPSHOT_SEARCH_LIMIT = 100;
+
+function isInheritedSnapshot(value) {
+    return !Array.isArray(value)
+        && value?.saInheritedSnapshot === INHERITED_SNAPSHOT_VERSION;
+}
+
+function sameItems(left, right) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false;
+    const stable = value => JSON.stringify(value, (key, item) => (
+        key === '_addedAt' || key === '_messageIndex' ? undefined : item
+    ));
+    try { return stable(left) === stable(right); } catch { return false; }
+}
 
 // ============================================================================
 // READ / WRITE
@@ -93,6 +113,11 @@ export function clearAgentChatState(agent) {
         if (varName && message.saAgentSwipes && varName in message.saAgentSwipes) {
             delete message.saAgentSwipes[varName];
             if (Object.keys(message.saAgentSwipes).length === 0) delete message.saAgentSwipes;
+            touched = true;
+        }
+        if (varName && message.saAgentMessageState && varName in message.saAgentMessageState) {
+            delete message.saAgentMessageState[varName];
+            if (Object.keys(message.saAgentMessageState).length === 0) delete message.saAgentMessageState;
             touched = true;
         }
         if (agentId && message.saAgentStateTransactions && agentId in message.saAgentStateTransactions) {
@@ -297,6 +322,9 @@ function projectItemToActivePersona(item, jsonField) {
  */
 export function formatMergeVariableData(config, { projectPersona = false } = {}) {
     let arr = readMergeArray(config.variableName);
+    const activePersonaName = projectPersona
+        ? (getActivePersonaName() || 'active persona')
+        : '';
     const mainFormat = projectPersona ? config.mainContext : null;
     const formatHeader = typeof mainFormat?.formatHeader === 'string'
         ? mainFormat.formatHeader
@@ -327,7 +355,10 @@ export function formatMergeVariableData(config, { projectPersona = false } = {})
 
     const lines = arr.map(item => {
         if (projectPersona && typeof mainFormat?.formatItem === 'string') {
-            return renderMainContextTemplate(formatItem, item);
+            return renderMainContextTemplate(formatItem, {
+                ...item,
+                user: activePersonaName,
+            });
         }
         let line = formatItem;
         for (const field of config.fieldNames) {
@@ -360,12 +391,35 @@ export function formatMergeVariableData(config, { projectPersona = false } = {})
  * @param {object} message - chat[n]
  * @param {string} varName - merge variable name
  * @param {object[]} items - the items to store
+ * @param {{messageIndex?:number, allowInherit?:boolean}} [options]
  */
-function storePerSwipe(message, varName, items) {
+function storePerSwipe(message, varName, items, options = {}) {
     const swipeId = message.swipe_id ?? 0;
     if (!message.saAgentSwipes) message.saAgentSwipes = {};
     if (!message.saAgentSwipes[varName]) message.saAgentSwipes[varName] = {};
-    message.saAgentSwipes[varName][swipeId] = items;
+    let stored = items;
+    const messageIndex = Number(options.messageIndex);
+    if (options.allowInherit && items.length > 0 && Number.isInteger(messageIndex) && messageIndex > 0) {
+        const priorIndex = messageIndex - 1;
+        const priorSwipe = chat[priorIndex]?.swipe_id ?? 0;
+        const prior = resolveStateTraceDetailed(
+            chat,
+            priorIndex,
+            priorSwipe,
+            varName,
+            { maxDistance: INHERITED_SNAPSHOT_SEARCH_LIMIT },
+        );
+        if (prior.foundIndex >= 0 && sameItems(items, prior.items)) {
+            stored = {
+                saInheritedSnapshot: INHERITED_SNAPSHOT_VERSION,
+                messageIndex: prior.foundIndex,
+                swipeId: chat[prior.foundIndex]?.swipe_id ?? 0,
+                addedAt: items.at(-1)?._addedAt ?? null,
+                stateMessageIndex: items.at(-1)?._messageIndex ?? messageIndex,
+            };
+        }
+    }
+    message.saAgentSwipes[varName][swipeId] = stored;
 }
 
 function storeStateTransaction(agent, message, messageIndex, source, result, proposedItems) {
@@ -401,8 +455,14 @@ export function getStateTransaction(message, agentId, swipeId = message?.swipe_i
 /** Validate and atomically commit a complete merge-variable state. */
 function commitMergeItems(agent, message, messageIndex, proposedItems, source) {
     const mv = agent.mergeVariable;
+    if (typeof agent.utilityAnalysis?.isCurrent === 'function'
+        && !agent.utilityAnalysis.isCurrent()) {
+        debug(`${LOG_PREFIX} discarded stale utility result for "${agent.name}"`);
+        return { committed: false, items: null, errors: ['Utility task context changed before commit.'] };
+    }
     const previousItems = readMergeArray(mv.variableName);
-    const result = validateMergeItems(proposedItems, mv.validation, { previousItems });
+    const canonicalItems = canonicalizeMergeItems(proposedItems, mv.validation);
+    const result = validateMergeItems(canonicalItems, mv.validation, { previousItems });
     storeStateTransaction(agent, message, messageIndex, source, result, proposedItems);
 
     const eventDetail = {
@@ -442,7 +502,13 @@ function commitMergeItems(agent, message, messageIndex, proposedItems, source) {
     if (participantExclusion.normSet.size) retentionOptions.excludeNames = participantExclusion.normSet;
     const committedItems = applyStateRetention(result.items, mv.retention, retentionOptions);
     writeMergeArray(mv.variableName, committedItems);
-    if (message) storePerSwipe(message, mv.variableName, committedItems);
+    if (message) {
+        storePerSwipe(message, mv.variableName, committedItems, {
+            messageIndex,
+            // Episodic displays require an owned array on the exact swipe.
+            allowInherit: agent.sidecarCall?.display?.inheritState !== false,
+        });
+    }
     markActivationPolicyComplete(agent);
     emitStateTransaction(true, eventDetail);
     return { committed: true, items: committedItems, errors: [] };
@@ -462,6 +528,17 @@ export function bindVariableToSwipe(message, varName) {
     if (!message || !varName) return;
     const items = readMergeArray(varName);
     storePerSwipe(message, varName, items);
+}
+
+/**
+ * Pin author-controlled state to the message rather than one sibling swipe.
+ * Generated tracker outputs remain in saAgentSwipes; this small override is for
+ * local UtilityApp decisions that should survive swiping the same story turn.
+ */
+export function bindVariableToMessage(message, varName) {
+    if (!message || !varName) return;
+    if (!message.saAgentMessageState) message.saAgentMessageState = {};
+    message.saAgentMessageState[varName] = readMergeArray(varName);
 }
 
 // ============================================================================
@@ -513,19 +590,34 @@ export function resolveStateTrace(chat, messageIndex, swipeId, varName) {
  * @param {number} messageIndex
  * @param {number} swipeId
  * @param {string} varName
+ * @param {{maxDistance?:number}|number} [options] optional message-hop ceiling
  * @returns {{ items: object[]|null, distance: number, foundIndex: number }}
  *          items:      resolved array, or null if nothing anywhere down-trace.
  *          distance:   message hops from the start to where state was found
  *                      (0 = own record; Infinity when items is null).
  *          foundIndex: chat index the state came from (-1 when null).
  */
-export function resolveStateTraceDetailed(chat, messageIndex, swipeId, varName) {
+export function resolveStateTraceDetailed(chat, messageIndex, swipeId, varName, options = {}) {
     const MISS = { items: null, distance: Infinity, foundIndex: -1 };
     if (!Array.isArray(chat) || !varName) return MISS;
 
     const startIdx = Number(messageIndex);
+    const requestedMax = typeof options === 'number' ? options : options?.maxDistance;
+    const maxDistance = Number.isFinite(Number(requestedMax))
+        ? Math.max(0, Number(requestedMax))
+        : Infinity;
     let idx = startIdx;
     let swipe = Number(swipeId) || 0;
+    let inheritedDistance = null;
+    let inheritedMeta = null;
+    const withInheritedMeta = items => {
+        if (!inheritedMeta || !Array.isArray(items)) return items;
+        return items.map(item => item && typeof item === 'object' ? {
+            ...item,
+            _addedAt: inheritedMeta.addedAt ?? item._addedAt,
+            _messageIndex: inheritedMeta.stateMessageIndex ?? item._messageIndex,
+        } : item);
+    };
 
     // Bound the walk to the chat length as a belt-and-suspenders guard against
     // any pathological cycle (indices only ever decrease, so this can't loop,
@@ -533,6 +625,7 @@ export function resolveStateTraceDetailed(chat, messageIndex, swipeId, varName) 
     let steps = chat.length + 1;
 
     while (idx >= 0 && steps-- > 0) {
+        if (inheritedDistance === null && (startIdx - idx) > maxDistance) return MISS;
         const message = chat[idx];
         if (!message) return MISS;
 
@@ -544,12 +637,34 @@ export function resolveStateTraceDetailed(chat, messageIndex, swipeId, varName) 
             continue;
         }
 
+        const messageState = message.saAgentMessageState?.[varName];
+        if (messageState !== undefined) {
+            return {
+                items: withInheritedMeta(messageState ?? []),
+                distance: Math.max(0, startIdx - idx),
+                foundIndex: idx,
+            };
+        }
+
         const rec = message.saAgentSwipes?.[varName];
         if (rec && Object.prototype.hasOwnProperty.call(rec, swipe)) {
+            if (isInheritedSnapshot(rec[swipe])) {
+                if (inheritedDistance === null) inheritedDistance = Math.max(0, startIdx - idx);
+                if (!inheritedMeta) inheritedMeta = rec[swipe];
+                const targetIndex = Number(rec[swipe].messageIndex);
+                if (Number.isInteger(targetIndex) && targetIndex >= 0 && targetIndex < idx) {
+                    idx = targetIndex;
+                    swipe = Number(rec[swipe].swipeId) || 0;
+                } else {
+                    idx -= 1;
+                    swipe = idx >= 0 ? (chat[idx]?.swipe_id ?? 0) : 0;
+                }
+                continue;
+            }
             // Own record for this swipe — this is the answer, even if [].
             return {
-                items: rec[swipe] ?? [],
-                distance: Math.max(0, startIdx - idx),
+                items: withInheritedMeta(rec[swipe] ?? []),
+                distance: inheritedDistance ?? Math.max(0, startIdx - idx),
                 foundIndex: idx,
             };
         }
@@ -622,12 +737,28 @@ export function collectRecentStates(chat, startIndex, startSwipeId, varName, max
             continue;
         }
 
+        const messageState = message.saAgentMessageState?.[varName];
+        if (messageState !== undefined) {
+            if (Array.isArray(messageState) && messageState.length > 0) out.push(messageState);
+            idx -= 1;
+            swipe = idx >= 0 ? (chat[idx]?.swipe_id ?? 0) : 0;
+            continue;
+        }
+
         const rec = message.saAgentSwipes?.[varName];
         if (rec && Object.prototype.hasOwnProperty.call(rec, swipe)) {
             const items = rec[swipe] ?? [];
+            if (isInheritedSnapshot(items)) {
+                const targetIndex = Number(items.messageIndex);
+                if (Number.isInteger(targetIndex) && targetIndex >= 0 && targetIndex < idx) {
+                    idx = targetIndex;
+                    swipe = Number(items.swipeId) || 0;
+                    continue;
+                }
+            }
             // DIVERGENCE #2: skip tracked-empty rather than stopping on it; an
             // empty plan is nothing to show and must not cut off older plans.
-            if (Array.isArray(items) && items.length > 0) {
+            if (!isInheritedSnapshot(items) && Array.isArray(items) && items.length > 0) {
                 out.push(items);
             }
         }

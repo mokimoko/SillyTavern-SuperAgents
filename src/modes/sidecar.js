@@ -20,13 +20,14 @@ import {
     substituteParams,
 } from '../../../../../../script.js';
 import { getContext } from '../../../../../extensions.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import { callAgentLLM, isAbortError } from '../core/llm.js';
 import { recordAgentRun } from '../core/idempotency.js';
 import { buildRichContext, buildHistoryLines } from '../core/richContext.js';
 import {
     readMergeArray,
     formatMergeVariableData,
+    storeBatchedSidecarResult,
     storeSidecarResult,
     collectRecentStates,
     getStateTransaction,
@@ -35,6 +36,10 @@ import { getEffectiveConnectionProfile, getGlobalSettings } from '../data/store.
 import { buildRetentionPrompt } from '../data/stateRetention.js';
 import { getConfiguredParticipantExclusion } from '../core/participants.js';
 import { markActivationPolicyComplete } from '../core/activationPolicy.js';
+import { buildAfterDarkAnalysisContext } from '../afterDark/afterDarkContext.js';
+import { parseAfterDarkPlanResponse } from '../afterDark/afterDarkResponse.js';
+import { buildDramaQueenAnalysisContext, buildDramaQueenPlanOutputContract } from '../dramaQueen/dramaQueenContext.js';
+import { parseDramaQueenPlanResponse } from '../dramaQueen/dramaQueenResponse.js';
 
 const LOG_PREFIX = '[SuperAgents/sidecar]';
 
@@ -97,6 +102,7 @@ export function buildPreGenContext(messageCount = 15) {
  * @param {number} maxContext
  * @param {object} [opts]
  * @param {boolean} [opts.suppressSelfMemory=false]  blindfold self-memory this run.
+ * @param {object} [opts.contextCache] generation-local cache shared by a batch.
  * @returns {Promise<string>}
  */
 export async function buildAgentRichContext(agent, mesNum, pendingUserText = '', maxContext = 8192, opts = {}) {
@@ -128,6 +134,7 @@ export async function buildAgentRichContext(agent, mesNum, pendingUserText = '',
         return await buildRichContext({
             mesNum, flags, pendingUserText, maxContext,
             selfMemoryItems, selfMemoryFormatItem, selfMemoryFieldNames,
+            contextCache: opts.contextCache,
         });
     } catch (err) {
         debug(`${LOG_PREFIX} rich context failed for "${agent.name}":`, err?.message);
@@ -194,6 +201,7 @@ export function buildSidecarDisplayData(agent, message, messageIndex, extractedI
 
     message.extra.saAgentData[agent.id] = {
         _swipeId: currentSwipeId,
+        _revision: item._addedAt,
         scripts: [{
             extractions: [{
                 rendered: html,
@@ -316,13 +324,22 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
 
     const maxTokens = agent.sidecarCall?.maxTokens || agent.maxTokens || 8192;
     const globalSettings = getGlobalSettings();
-    const showNotifications = globalSettings.showNotifications;
+    const showNotifications = globalSettings.showNotifications && !agent.utilityAnalysis?.silent;
 
     // Rich context (opt-in): card / persona / World Info / Summary / Author's
     // Note. Post-gen, so no pending message. Appended to the system prompt.
     const richContext = await buildAgentRichContext(agent, messageIndex, '', maxTokens);
     if (richContext) {
         expandedPrompt += '\n\n' + richContext;
+    }
+    if (agent.afterDarkConfig?.enabled) {
+        const afterDarkContext = await buildAfterDarkAnalysisContext(agent);
+        if (afterDarkContext) expandedPrompt += '\n\n' + afterDarkContext;
+    }
+    if (agent.dramaQueenConfig?.enabled) {
+        const dramaQueenContext = await buildDramaQueenAnalysisContext(agent);
+        if (dramaQueenContext) expandedPrompt += '\n\n' + dramaQueenContext;
+        expandedPrompt += '\n\n' + buildDramaQueenPlanOutputContract(agent.dramaQueenConfig?.proposalCount);
     }
 
     // Build optional history context
@@ -373,14 +390,36 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
         }
 
         // Extract and store data directly from the LLM response
-        let extractedItems = storeSidecarResult(agent, response, message, messageIndex);
+        const isAfterDark = agent.afterDarkConfig?.enabled === true;
+        const isDramaQueen = agent.dramaQueenConfig?.enabled === true;
+        const recoveredAfterDark = isAfterDark
+            ? parseAfterDarkPlanResponse(response)
+            : null;
+        const recoveredDramaQueen = isDramaQueen
+            ? parseDramaQueenPlanResponse(response, {
+                // A private idea picker needs an actual choice. Still salvage two
+                // or three complete engines if a longer response is truncated.
+                minimumProposals: Math.min(2, Number(agent.dramaQueenConfig?.proposalCount) || 4),
+            })
+            : null;
+        const recoveredPlan = recoveredAfterDark || recoveredDramaQueen;
+        let extractedItems = isAfterDark || isDramaQueen
+            ? (recoveredPlan ? storeBatchedSidecarResult(
+                agent,
+                recoveredPlan,
+                message,
+                messageIndex,
+                isAfterDark ? 'sidecar_after_dark' : 'sidecar_drama_queen',
+            ) : null)
+            : storeSidecarResult(agent, response, message, messageIndex);
         let dataStored = !!extractedItems;
-        let stateRejected = getStateTransaction(message, agent.id)?.status === 'rejected';
+        let stateRejected = (!(isAfterDark || isDramaQueen) || recoveredPlan)
+            && getStateTransaction(message, agent.id)?.status === 'rejected';
 
         // Bounded single repair when a validated update was rejected (opt-out via
         // globalSettings.repairRejectedState = false). A successful repair commits
         // the corrected state in place, so everything below treats it as a store.
-        if (stateRejected && getGlobalSettings().repairRejectedState !== false) {
+        if (stateRejected && !isAfterDark && !isDramaQueen && getGlobalSettings().repairRejectedState !== false) {
             const repair = await repairRejectedState(agent, message, messageIndex, {
                 signal: opts.signal ?? null,
                 timeoutMs: opts.timeoutMs,
@@ -420,6 +459,10 @@ export async function executeSidecarAgent(agent, message, messageIndex, generati
             toastr.clear();
             if (dataStored) {
                 toastr.success('', agent.name, { timeOut: 3000 });
+            } else if (isAfterDark && !recoveredAfterDark) {
+                toastr.warning('The model returned no complete pitch. Try again, or use a model with a larger reliable JSON output.', agent.name, { timeOut: 7000 });
+            } else if (isDramaQueen && !recoveredDramaQueen) {
+                toastr.warning('The response ended before two complete drama options could be recovered. Your previous options were preserved.', agent.name, { timeOut: 7000 });
             } else if (stateRejected) {
                 toastr.warning('Invalid tracker update rejected; previous state preserved.', agent.name, { timeOut: 7000 });
             } else {

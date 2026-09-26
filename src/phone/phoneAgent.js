@@ -39,7 +39,7 @@ import {
 } from '../../../../../../script.js';
 import { getContext } from '../../../../../extensions.js';
 import { eventSource, event_types } from '../../../../../events.js';
-import { debug } from '../../index.js';
+import { debug } from '../core/runtime.js';
 import {
     getEnabledAgents,
     isAgentsPaused,
@@ -47,6 +47,8 @@ import {
     onAgentPauseChange,
 } from '../data/store.js';
 import { callAgentLLM } from '../core/llm.js';
+import { deletedTailStart, isAnchoredInDeletedTail, resolveQueueBranch } from '../core/branchPath.js';
+import { recentPromptLines, truncatePromptText } from '../core/promptText.js';
 import { getActiveSurfacePresentation } from '../presentation/presentationState.js';
 import { buildModelBehaviorContract, fillPresentationTemplate } from '../presentation/promptSemantics.js';
 import { buildPhoneStateContext } from './phoneContext.js';
@@ -70,6 +72,8 @@ const THREAD_VAR = 'sa_phone_threads';
 // alongside the per-agent prompt keys; the `_ctx` suffix mirrors the
 // sidecar-context convention in lifecycle.js.
 const PROMPT_KEY = 'sa_agent_phone_ctx';
+const MAX_INJECTED_TEXT_CHARS = 500;
+const MAX_PHONE_CONTEXT_CHARS = 5000;
 const TEXT_TAG_REGEX = /\[TEXT\|([^|]+)\|([^\]]+)\]/g;
 const NO_TEXT_REGEX = /\[NO_TEXT\]/;
 
@@ -446,7 +450,7 @@ export async function executePhoneEvaluation(
     requireText = false,
     externalCue = '',
 ) {
-    if (isAgentsPaused() || agent?.paused) {
+    if ((isAgentsPaused() && !forceEvaluate) || agent?.paused) {
         if (showFeedback) toastr.info('SuperAgents are paused. Phone state is frozen.');
         return { textsGenerated: 0, error: 'agents paused' };
     }
@@ -608,10 +612,7 @@ function getPhoneQueue() {
 }
 
 function phoneQueueKey(character, branch) {
-    const path = Array.isArray(branch.branchPath)
-        ? branch.branchPath.join('.')
-        : `${branch.messageIndex ?? 'none'}:${branch.swipeId ?? 0}`;
-    return `${String(character || '').trim().toLowerCase()}|${path}`;
+    return `${String(character || '').trim().toLowerCase()}|${branch.queuePath}`;
 }
 
 async function executeQueuedPhoneRequest(request) {
@@ -654,7 +655,7 @@ export function queuePhoneEvaluation({
     }
     const character = String(message?.name || '').trim();
     if (!character) return Promise.resolve({ accepted: false, textsGenerated: 0, error: 'character is required' });
-    const branch = resolvePhoneBranch(chat, {
+    const branch = resolveQueueBranch(chat, {
         messageIndex,
         swipeId: message?.swipe_id,
     });
@@ -700,10 +701,6 @@ export function addUserText(charKey, userMessage) {
  * @returns {Promise<Array<{from:string,name:string,content:string}>>}
  */
 export async function generateAndStoreReply(charKey, userMessage) {
-    if (isAgentsPaused()) {
-        toastr.info('SuperAgents are paused. Phone state is frozen.');
-        return [];
-    }
     const startedInChatEpoch = phoneChatEpoch;
     const agent = getPhoneAgent();
     if (!agent) {
@@ -861,7 +858,10 @@ function buildContextInjection(charKey, maxTexts = 8) {
     if (!thread?.messages?.length) return '';
 
     const limit = getPhoneConfig()?.maxInjectedTexts ?? maxTexts;
-    const lines = thread.messages.slice(-limit).map(t => `${t.name}: ${t.content}`);
+    const lines = recentPromptLines(
+        thread.messages.slice(-limit).map(t => `${t.name}: ${truncatePromptText(t.content, MAX_INJECTED_TEXT_CHARS)}`),
+        MAX_PHONE_CONTEXT_CHARS,
+    );
     const presentationPrompt = getActiveSurfacePresentation('phone')?.prompt || {};
     const header = fillPresentationTemplate(
         presentationPrompt.injectionHeader || 'Recent text messages between {{user}} and {name}',
@@ -999,6 +999,27 @@ export function initPhoneAgent() {
     });
     if (event_types.MESSAGE_SWIPED) {
         eventSource.on(event_types.MESSAGE_SWIPED, () => syncInjection());
+    }
+    if (event_types.MESSAGE_DELETED) {
+        eventSource.on(event_types.MESSAGE_DELETED, messageIndex => {
+            phoneChatEpoch += 1;
+            getPhoneQueue().clear('message deleted');
+            const start = deletedTailStart(chat, messageIndex);
+            const threads = readThreads();
+            let changed = false;
+            for (const thread of Object.values(threads)) {
+                const kept = thread.messages.filter(message => !isAnchoredInDeletedTail(message, start));
+                if (kept.length === thread.messages.length) continue;
+                thread.messages = kept;
+                thread.unread = kept.filter(message => message.unread).length;
+                changed = true;
+            }
+            if (changed) {
+                writeThreads(threads);
+                saveChatDebounced();
+            }
+            syncInjection();
+        });
     }
     eventSource.on(event_types.CHAT_CHANGED, () => {
         phoneChatEpoch += 1;
