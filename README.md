@@ -178,3 +178,12 @@ Use SillyTavern's built-in extension installer:
 - Start small. Turn on one or two agents, get a feel for them, then add more. Running everything at once means a lot of extra calls per turn.
 - Pre-gen agents cost you latency before the reply (you wait on them first); post-gen agents run after, so the reply shows up right away and the extras fill in behind it.
 - Post-gen rewrite agents keep the original — there's a per-message diff viewer to see what changed, with a revert.
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
