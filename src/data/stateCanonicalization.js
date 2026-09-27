@@ -287,6 +287,32 @@ function parseRepairableJson(value) {
     return null;
 }
 
+function canonicalizeRelationshipLedgerItem(item, rawConfig) {
+    const jsonField = String(rawConfig?.jsonField || 'json');
+    let ledger;
+    try {
+        ledger = JSON.parse(item[jsonField]);
+    } catch {
+        return { ...item };
+    }
+    const maxEvents = rawConfig?.schema?.properties?.personas?.additionalProperties
+        ?.properties?.characters?.additionalProperties?.properties?.significantEvents?.maxItems;
+    if (!Number.isInteger(maxEvents) || maxEvents < 1) return { ...item };
+
+    let changed = false;
+    for (const persona of Object.values(ledger?.personas || {})) {
+        for (const character of Object.values(persona?.characters || {})) {
+            if (!Array.isArray(character?.significantEvents)
+                || character.significantEvents.length <= maxEvents) continue;
+            // Events are chronological. Keep the latest when the model appends
+            // beyond the schema cap; milestones retain durable canon separately.
+            character.significantEvents = character.significantEvents.slice(-maxEvents);
+            changed = true;
+        }
+    }
+    return changed ? { ...item, [jsonField]: JSON.stringify(ledger) } : { ...item };
+}
+
 function enumValue(value, allowed, aliases = {}) {
     const source = clean(value, 100);
     if (!source) return null;
@@ -439,6 +465,9 @@ export function canonicalizeMergeItems(items, rawConfig) {
             return { ...item, [jsonField]: JSON.stringify(normalizeDramaQueenState(parsed)) };
         }
         if (canonicalizer === 'world-state') return canonicalizeWorldStateItem(item);
+        if (canonicalizer === 'relationship-ledger') {
+            return canonicalizeRelationshipLedgerItem(item, rawConfig);
+        }
         return { ...item };
     });
 }

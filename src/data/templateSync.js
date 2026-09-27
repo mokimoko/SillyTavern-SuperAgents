@@ -148,6 +148,12 @@ function applyTemplateFields(agent, template) {
                 && userMainContext?.formatItem?.includes('{{#each json.personas}}{{#each characters}}');
             const hasLegacyActivePersonaLabel = agent.sourceTemplateId === 'tpl-relationship-ledger'
                 && userMainContext?.formatItem?.includes('{{#each json.characters}}- {{@key}} → active persona');
+            const previousEventsBlock = '{{#if significantEvents}}  Significant events: {{significantEvents}}\n{{/if}}';
+            const currentMainTemplate = template.mergeVariable?.mainContext?.formatItem;
+            const hasPreviousRelationshipProjection = agent.sourceTemplateId === 'tpl-relationship-ledger'
+                && typeof currentMainTemplate === 'string'
+                && userMainContext?.formatItem?.includes(previousEventsBlock)
+                && userMainContext.formatItem.replace(previousEventsBlock, '') === currentMainTemplate;
             agent.mergeVariable = normalizeMergeVariable(template.mergeVariable);
             if (userAutoInject !== undefined) agent.mergeVariable.autoInject = userAutoInject;
             if (userMacroName) agent.mergeVariable.macroName = userMacroName;
@@ -156,7 +162,8 @@ function applyTemplateFields(agent, template) {
             // built-ins still upgrade to the current structured default once.
             if (hasUserMainTemplate
                 && !hasLegacyRelationshipProjection
-                && !hasLegacyActivePersonaLabel) {
+                && !hasLegacyActivePersonaLabel
+                && !hasPreviousRelationshipProjection) {
                 agent.mergeVariable.mainContext = {
                     ...agent.mergeVariable.mainContext,
                     formatHeader: userMainContext.formatHeader,
